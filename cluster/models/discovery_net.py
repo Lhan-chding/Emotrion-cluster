@@ -226,6 +226,28 @@ class _ViewAutoencoder(nn.Module):
         return self.decoder(z)
 
 
+class DECClusterHead(nn.Module):
+    def __init__(self, n_clusters: int, latent_dim: int, temperature: float = 1.0) -> None:
+        super().__init__()
+        n_clusters = int(n_clusters)
+        if n_clusters <= 1:
+            raise ValueError("DEC cluster head requires n_clusters > 1.")
+        temperature = float(temperature)
+        if temperature <= 0.0:
+            raise ValueError("DEC cluster temperature must be positive.")
+        self.n_clusters = n_clusters
+        self.temperature = temperature
+        self.cluster_centers = nn.Parameter(torch.empty(n_clusters, int(latent_dim)))
+        nn.init.xavier_uniform_(self.cluster_centers)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        squared_distances = torch.sum(
+            (z.unsqueeze(1) - self.cluster_centers.unsqueeze(0)) ** 2,
+            dim=-1,
+        )
+        return torch.softmax(-squared_distances / self.temperature, dim=1)
+
+
 class MusicMetadataDiscoveryNet(nn.Module):
     def __init__(
         self,
@@ -239,8 +261,11 @@ class MusicMetadataDiscoveryNet(nn.Module):
         metadata_aux_scale: float = 0.60,
         dropout: float = 0.0,
         metadata_logit_offset: float = 0.0,
+        cluster_head_k: int = 0,
+        cluster_temperature: float = 1.0,
     ) -> None:
         super().__init__()
+        cluster_head_k = int(cluster_head_k)
         self.audio_view = _ViewAutoencoder(audio_dim, hidden_dim, latent_dim, dropout=dropout)
         self.lyrics_view = _ViewAutoencoder(lyrics_dim, hidden_dim, latent_dim, dropout=dropout)
         self.metadata_view = _ViewAutoencoder(metadata_dim, metadata_hidden_dim, latent_dim, dropout=dropout)
@@ -286,6 +311,13 @@ class MusicMetadataDiscoveryNet(nn.Module):
         )
         self.metadata_aux_scale = float(metadata_aux_scale)
         self.metadata_logit_offset = float(metadata_logit_offset)
+        self.cluster_head_k = cluster_head_k
+        self.cluster_temperature = float(cluster_temperature)
+        self.cluster_head = (
+            DECClusterHead(cluster_head_k, latent_dim, temperature=self.cluster_temperature)
+            if cluster_head_k > 0
+            else None
+        )
         # Gate weight initialization: Xavier for learning, asymmetric bias
         for layer in self.gate_mlp:
             if isinstance(layer, nn.Linear):
@@ -362,7 +394,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
         fused_audio_recon = self.fused_audio_decoder(fused)
         fused_lyrics_recon = self.fused_lyrics_decoder(fused)
 
-        return {
+        outputs = {
             "z_audio": z_audio,
             "z_lyrics": z_lyrics,
             "z_metadata": z_metadata,
@@ -378,11 +410,28 @@ class MusicMetadataDiscoveryNet(nn.Module):
             "proj_fused": self.proj_fused(fused),
             "gate_weights": gate_weights,
         }
+        if self.cluster_head is not None:
+            outputs.update(
+                {
+                    "q_audio": self.cluster_head(z_audio),
+                    "q_lyrics": self.cluster_head(z_lyrics),
+                    "q_metadata": self.cluster_head(z_metadata),
+                    "q_fused": self.cluster_head(fused),
+                }
+            )
+        return outputs
 
 
 # ---------------------------------------------------------------------------
 # Loss computation
 # ---------------------------------------------------------------------------
+
+def target_distribution(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    q = torch.clamp(q, min=float(eps))
+    frequency = torch.clamp(q.sum(dim=0, keepdim=True), min=float(eps))
+    weight = (q ** 2) / frequency
+    return weight / torch.clamp(weight.sum(dim=1, keepdim=True), min=float(eps))
+
 
 def _cosine_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return 1.0 - F.cosine_similarity(x, y, dim=1)
@@ -411,6 +460,27 @@ def _masked_gate_balance_loss(gate: torch.Tensor, view_mask: torch.Tensor) -> to
     return torch.sum(mean_gate * (torch.log(mean_gate + 1e-8) - torch.log(uniform + 1e-8)))
 
 
+def _kl_per_sample(target: torch.Tensor, pred: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    target = torch.clamp(target, min=float(eps))
+    pred = torch.clamp(pred, min=float(eps))
+    return torch.sum(target * (torch.log(target) - torch.log(pred)), dim=1)
+
+
+def _kl_batchmean(target: torch.Tensor, pred: torch.Tensor) -> torch.Tensor:
+    return _kl_per_sample(target, pred).mean()
+
+
+def _masked_kl_mean(target: torch.Tensor, pred: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    return _masked_mean(_kl_per_sample(target, pred), mask)
+
+
+def _assignment_balance_loss(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    mean_assignment = torch.clamp(q.mean(dim=0), min=float(eps))
+    mean_assignment = mean_assignment / torch.clamp(mean_assignment.sum(), min=float(eps))
+    uniform = torch.full_like(mean_assignment, 1.0 / max(int(q.shape[1]), 1))
+    return torch.sum(mean_assignment * (torch.log(mean_assignment) - torch.log(uniform + eps)))
+
+
 def _discovery_loss(
     outputs: Dict[str, torch.Tensor],
     batch: Dict[str, Any],
@@ -419,6 +489,9 @@ def _discovery_loss(
     align_weight: float,
     metadata_align_weight: float,
     gate_entropy_weight: float = 0.0,
+    cluster_loss_weight: float = 0.0,
+    cvcl_loss_weight: float = 0.0,
+    assignment_balance_weight: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     audio = batch["audio"]
     lyrics = batch["lyrics"]
@@ -473,6 +546,34 @@ def _discovery_loss(
     if gate_entropy_weight > 0:
         total = total + gate_entropy_weight * _masked_gate_balance_loss(gate, view_mask)
 
+    zero = total.new_tensor(0.0)
+    cluster_loss = zero
+    cvcl_loss = zero
+    assignment_balance = zero
+    q_fused = outputs.get("q_fused")
+    if q_fused is not None:
+        cluster_target = target_distribution(q_fused.detach())
+        cluster_loss = _kl_batchmean(cluster_target, q_fused)
+        assignment_balance = _assignment_balance_loss(q_fused)
+
+        cvcl_terms = []
+        for key, mask in (
+            ("q_audio", audio_mask),
+            ("q_lyrics", lyrics_mask),
+            ("q_metadata", metadata_mask),
+        ):
+            if key in outputs:
+                cvcl_terms.append(_masked_kl_mean(q_fused.detach(), outputs[key], mask))
+        if cvcl_terms:
+            cvcl_loss = torch.stack(cvcl_terms).mean()
+
+        total = (
+            total
+            + float(cluster_loss_weight) * cluster_loss
+            + float(cvcl_loss_weight) * cvcl_loss
+            + float(assignment_balance_weight) * assignment_balance
+        )
+
     return {
         "loss": total,
         "recon_audio": recon_audio.detach(),
@@ -483,6 +584,9 @@ def _discovery_loss(
         "align_audio_metadata": align_audio_metadata.detach(),
         "align_lyrics_metadata": align_lyrics_metadata.detach(),
         "gate_entropy": gate_entropy.detach(),
+        "cluster_loss": cluster_loss.detach(),
+        "cvcl_loss": cvcl_loss.detach(),
+        "assignment_balance": assignment_balance.detach(),
     }
 
 
@@ -531,6 +635,9 @@ def _run_epoch(
     align_weight: float,
     metadata_align_weight: float,
     gate_entropy_weight: float = 0.0,
+    cluster_loss_weight: float = 0.0,
+    cvcl_loss_weight: float = 0.0,
+    assignment_balance_weight: float = 0.0,
     *,
     grad_clip_norm: float = 0.0,
     scaler: Optional[torch.amp.GradScaler] = None,
@@ -562,6 +669,9 @@ def _run_epoch(
                 align_weight=align_weight,
                 metadata_align_weight=metadata_align_weight,
                 gate_entropy_weight=gate_entropy_weight,
+                cluster_loss_weight=cluster_loss_weight,
+                cvcl_loss_weight=cvcl_loss_weight,
+                assignment_balance_weight=assignment_balance_weight,
             )
 
         if is_train:
@@ -601,6 +711,9 @@ def train_music_discovery_model(
     align_weight: float,
     metadata_align_weight: float,
     gate_entropy_weight: float = 0.0,
+    cluster_loss_weight: float = 0.0,
+    cvcl_loss_weight: float = 0.0,
+    assignment_balance_weight: float = 0.0,
     grad_clip_norm: float = 0.0,
     use_amp: bool = False,
     early_stopping_patience: int = 0,
@@ -649,6 +762,9 @@ def train_music_discovery_model(
             align_weight=align_weight,
             metadata_align_weight=metadata_align_weight,
             gate_entropy_weight=gate_entropy_weight,
+            cluster_loss_weight=cluster_loss_weight,
+            cvcl_loss_weight=cvcl_loss_weight,
+            assignment_balance_weight=assignment_balance_weight,
             grad_clip_norm=grad_clip_norm,
             scaler=amp_scaler,
             use_amp=use_amp,
@@ -664,6 +780,9 @@ def train_music_discovery_model(
                 align_weight=align_weight,
                 metadata_align_weight=metadata_align_weight,
                 gate_entropy_weight=gate_entropy_weight,
+                cluster_loss_weight=cluster_loss_weight,
+                cvcl_loss_weight=cvcl_loss_weight,
+                assignment_balance_weight=assignment_balance_weight,
                 use_amp=use_amp,
             )
 
@@ -712,6 +831,10 @@ def extract_split_embeddings(
         "z_metadata": [],
         "z_fused": [],
         "gate_weights": [],
+        "q_audio": [],
+        "q_lyrics": [],
+        "q_metadata": [],
+        "q_fused": [],
         "consistency": [],
         "va_diff": [],
         "raw_label_id": [],
@@ -738,6 +861,9 @@ def extract_split_embeddings(
             blocks["z_metadata"].append(outputs["z_metadata"].cpu().numpy().astype(np.float32))
             blocks["z_fused"].append(outputs["z_fused"].cpu().numpy().astype(np.float32))
             blocks["gate_weights"].append(outputs["gate_weights"].cpu().numpy().astype(np.float32))
+            for key in ("q_audio", "q_lyrics", "q_metadata", "q_fused"):
+                if key in outputs:
+                    blocks[key].append(outputs[key].cpu().numpy().astype(np.float32))
             blocks["consistency"].append(batch["consistency"].cpu().numpy().astype(np.float32).reshape(-1, 1))
             blocks["va_diff"].append(batch["va_diff"].cpu().numpy().astype(np.float32))
             blocks["raw_label_id"].append(batch["label_ref"].cpu().numpy().astype(np.int64).reshape(-1, 1))
@@ -874,6 +1000,8 @@ def load_music_discovery_checkpoint(
         metadata_aux_scale=float(config.get("metadata_aux_scale", 0.60)),
         dropout=float(config.get("dropout", 0.0)),
         metadata_logit_offset=float(config.get("metadata_logit_offset", 0.0)),
+        cluster_head_k=int(config.get("cluster_head_k", 0)),
+        cluster_temperature=float(config.get("cluster_temperature", 1.0)),
     ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)

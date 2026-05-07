@@ -1,4 +1,5 @@
 from cluster.models.discovery_net import (
+    DECClusterHead,
     MusicDiscoveryDataset,
     MusicDiscoveryDatasetArtifacts,
     MusicMetadataDiscoveryNet,
@@ -8,10 +9,12 @@ from cluster.models.discovery_net import (
     initialize_discovery_runtime,
     load_music_discovery_checkpoint,
     save_discovery_checkpoint,
+    target_distribution,
     train_music_discovery_model,
 )
 
 __all__ = [
+    "DECClusterHead",
     "MusicDiscoveryDataset",
     "MusicDiscoveryDatasetArtifacts",
     "MusicMetadataDiscoveryNet",
@@ -21,5 +24,6 @@ __all__ = [
     "initialize_discovery_runtime",
     "load_music_discovery_checkpoint",
     "save_discovery_checkpoint",
+    "target_distribution",
     "train_music_discovery_model",
 ]

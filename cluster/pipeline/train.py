@@ -81,6 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scheduler_Tmult", type=int, default=2)
     parser.add_argument("--scheduler_eta_min", type=float, default=1e-6)
     parser.add_argument("--gate_entropy_weight", type=float, default=0.01)
+    parser.add_argument("--cluster_head_k", type=int, default=0,
+                        help="Enable DEC/CVCL cluster head with this K; 0 disables it.")
+    parser.add_argument("--cluster_temperature", type=float, default=1.0,
+                        help="Soft assignment temperature for the optional DEC/CVCL cluster head.")
+    parser.add_argument("--cluster_loss_weight", type=float, default=0.0,
+                        help="Weight for fused DEC target-distribution KL loss.")
+    parser.add_argument("--cvcl_loss_weight", type=float, default=0.0,
+                        help="Weight for per-view assignment alignment to fused assignments.")
+    parser.add_argument("--assignment_balance_weight", type=float, default=0.0,
+                        help="Weight for balanced cluster assignment regularization.")
     parser.add_argument("--k_strategy", type=str, default="composite",
                         choices=["composite", "bic_only", "hierarchical"],
                         help="K-selection strategy: composite (multi-metric), bic_only (legacy), hierarchical (two-level)")
@@ -830,6 +840,7 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
         lines.append(f"- Min cluster size threshold: `{summary['min_cluster_size_threshold']}`")
     lines.append(f"- Training epochs: `{summary['epochs']}`")
     lines.append(f"- Latent dim: `{summary['latent_dim']}`")
+    lines.append(f"- DEC/CVCL head K: `{summary.get('cluster_head_k', 0)}`")
     lines.append(f"- Metadata feature dim: `{summary['metadata_feature_dim']}`")
     lines.append("")
     lines.append("## Outputs")
@@ -926,6 +937,8 @@ def main() -> None:
         metadata_aux_scale=float(args.metadata_aux_scale),
         dropout=float(args.dropout),
         metadata_logit_offset=float(args.metadata_logit_offset),
+        cluster_head_k=int(args.cluster_head_k),
+        cluster_temperature=float(args.cluster_temperature),
     ).to(device)
 
     best_state, history, best_metrics = train_music_discovery_model(
@@ -941,6 +954,9 @@ def main() -> None:
         align_weight=float(args.align_weight),
         metadata_align_weight=float(args.metadata_align_weight),
         gate_entropy_weight=float(args.gate_entropy_weight),
+        cluster_loss_weight=float(args.cluster_loss_weight),
+        cvcl_loss_weight=float(args.cvcl_loss_weight),
+        assignment_balance_weight=float(args.assignment_balance_weight),
         grad_clip_norm=float(args.grad_clip_norm),
         use_amp=_use_amp,
         early_stopping_patience=int(args.early_stopping_patience),
@@ -994,9 +1010,15 @@ def main() -> None:
             "scheduler_Tmult": int(args.scheduler_Tmult),
             "scheduler_eta_min": float(args.scheduler_eta_min),
             "gate_entropy_weight": float(args.gate_entropy_weight),
+            "cluster_head_k": int(args.cluster_head_k),
+            "cluster_temperature": float(args.cluster_temperature),
+            "cluster_loss_weight": float(args.cluster_loss_weight),
+            "cvcl_loss_weight": float(args.cvcl_loss_weight),
+            "assignment_balance_weight": float(args.assignment_balance_weight),
             "min_token_freq": int(args.min_token_freq),
             "max_tokens_per_field": int(args.max_tokens_per_field),
             "mask_aware_gate": True,
+            "dec_cvcl_head": int(args.cluster_head_k) > 0,
         },
         best_metrics=best_metrics,
         dataset_version=processed_meta.get("dataset_version"),
@@ -1161,6 +1183,11 @@ def main() -> None:
         "selection_mode": str(selection_info.get("selection_mode", k_strategy)),
         "epochs": int(args.epochs),
         "latent_dim": int(args.latent_dim),
+        "cluster_head_k": int(args.cluster_head_k),
+        "cluster_temperature": float(args.cluster_temperature),
+        "cluster_loss_weight": float(args.cluster_loss_weight),
+        "cvcl_loss_weight": float(args.cvcl_loss_weight),
+        "assignment_balance_weight": float(args.assignment_balance_weight),
         "metadata_feature_dim": int(metadata_bundle.features.shape[1]),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
