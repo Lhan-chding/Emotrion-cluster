@@ -33,8 +33,8 @@ class KSelectionConfig:
     w_min_size: float = 0.20
     w_stability: float = 0.20
     stability_runs: int = 5
-    cluster_backend: str = "sklearn"
-    eval_backend: str = "sklearn"
+    cluster_backend: str = "auto"
+    eval_backend: str = "auto"
     device: str = "cpu"
     silhouette_mode: str = "full"
     silhouette_sample_size: int = 0
@@ -97,6 +97,42 @@ def _n_parallel_jobs() -> int:
     return -1  # use all CPUs
 
 
+def _is_accelerated_backend_requested(cluster_backend: str, device: str) -> bool:
+    backend_name = str(cluster_backend or "").strip().lower()
+    device_name = str(device or "").strip().lower()
+    return backend_name in {"torch", "cuml"} or device_name.startswith("cuda")
+
+
+def _parallel_kwargs(cluster_backend: str, device: str, max_jobs: Optional[int] = None) -> Dict[str, Any]:
+    if _is_accelerated_backend_requested(cluster_backend, device):
+        return {"n_jobs": 1}
+    n_jobs = _n_parallel_jobs()
+    if max_jobs is not None:
+        n_jobs = min(int(max_jobs), int(n_jobs)) if int(n_jobs) > 0 else int(max_jobs)
+    return {"n_jobs": n_jobs}
+
+
+def _backend_runtime_info(config: KSelectionConfig, *, actual_cluster_backend: str, actual_eval_backend: str) -> Dict[str, Any]:
+    return {
+        "cluster_backend": config.cluster_backend,
+        "eval_backend": config.eval_backend,
+        "actual_cluster_backend": actual_cluster_backend,
+        "actual_eval_backend": actual_eval_backend,
+        "device": str(config.device),
+        "silhouette_mode": config.silhouette_mode,
+        "silhouette_sample_size": int(config.silhouette_sample_size),
+        "silhouette_chunk_size": int(config.silhouette_chunk_size),
+    }
+
+
+def _resolve_eval_backend_name(config: KSelectionConfig) -> str:
+    mode = str(config.silhouette_mode).strip().lower()
+    if mode == "sampled":
+        return "sklearn"
+    backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
+    return resolve_cluster_backend(backend_name, device=config.device).name
+
+
 def _fit_stability_run(
     features: np.ndarray,
     k: int,
@@ -106,7 +142,12 @@ def _fit_stability_run(
     device: str = "cpu",
 ) -> np.ndarray:
     """Fit a single GMM run for stability scoring."""
-    backend = resolve_cluster_backend(cluster_backend, device=device)
+    backend = resolve_cluster_backend(
+        cluster_backend,
+        device=device,
+        algorithm="gmm",
+        covariance_type=covariance_type,
+    )
     labels, _model = backend.fit_predict(
         features,
         algorithm="gmm",
@@ -131,7 +172,7 @@ def compute_stability_score(
     """Run GMM *n_runs* times in parallel and return mean pairwise ARI."""
     if n_runs < 2:
         return 1.0
-    all_labels: List[np.ndarray] = Parallel(n_jobs=min(n_runs, _n_parallel_jobs()))(
+    all_labels: List[np.ndarray] = Parallel(**_parallel_kwargs(cluster_backend, device, max_jobs=n_runs))(
         delayed(_fit_stability_run)(
             features,
             k,
@@ -188,7 +229,12 @@ def _fit_single_k(
         When provided, silhouette_score uses metric='precomputed' to
         avoid recomputing distances for every K.
     """
-    cluster_backend = resolve_cluster_backend(config.cluster_backend, device=config.device)
+    cluster_backend = resolve_cluster_backend(
+        config.cluster_backend,
+        device=config.device,
+        algorithm="gmm",
+        covariance_type=config.covariance_type,
+    )
     labels, gmm = cluster_backend.fit_predict(
         features,
         algorithm="gmm",
@@ -224,6 +270,7 @@ def _fit_single_k(
         "min_cluster_size": int(sizes.min()),
         "min_size_ok": bool(sizes.min() >= min_size_threshold),
         "min_size_threshold": min_size_threshold,
+        "actual_cluster_backend": cluster_backend.name,
     }
 
 
@@ -231,15 +278,16 @@ def _score_silhouette(features: np.ndarray, labels: np.ndarray, config: KSelecti
     if len(np.unique(labels)) < 2:
         return float("nan")
     mode = str(config.silhouette_mode).strip().lower()
-    eval_backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
-    backend = resolve_cluster_backend(eval_backend_name, device=config.device)
     if mode == "sampled":
+        backend = resolve_cluster_backend("sklearn", device=config.device)
         return backend.score_silhouette(
             features,
             labels,
             sample_size=int(config.silhouette_sample_size),
             random_state=int(config.random_state),
         )
+    eval_backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
+    backend = resolve_cluster_backend(eval_backend_name, device=config.device)
     return backend.score_silhouette(
         features,
         labels,
@@ -268,7 +316,7 @@ def search_gmm_composite(
     k_range = list(range(config.k_min, config.k_max + 1))
 
     # Parallel GMM fitting across K values
-    results: List[Dict[str, Any]] = Parallel(n_jobs=_n_parallel_jobs())(
+    results: List[Dict[str, Any]] = Parallel(**_parallel_kwargs(config.cluster_backend, config.device))(
         delayed(_fit_single_k)(features, k, config, dist_matrix)
         for k in k_range
     )
@@ -328,6 +376,8 @@ def search_gmm_composite(
 
     best_idx = int(np.argmax(composite))
     best_result = results[best_idx]
+    actual_cluster_backend = str(best_result.get("actual_cluster_backend", config.cluster_backend))
+    actual_eval_backend = _resolve_eval_backend_name(config)
 
     # Also compute BIC elbow for reference
     bic_elbow_k = detect_bic_elbow({r["k"]: r["bic"] for r in results})
@@ -343,9 +393,11 @@ def search_gmm_composite(
             "bic_elbow_k": bic_elbow_k,
             "min_cluster_size_threshold": best_result["min_size_threshold"],
             "stability_runs": config.stability_runs,
-            "cluster_backend": config.cluster_backend,
-            "eval_backend": config.eval_backend,
-            "silhouette_mode": config.silhouette_mode,
+            **_backend_runtime_info(
+                config,
+                actual_cluster_backend=actual_cluster_backend,
+                actual_eval_backend=actual_eval_backend,
+            ),
         },
     )
 
@@ -377,7 +429,12 @@ def search_gmm_bic_only(
     )
     rows: List[Dict[str, float]] = []
     fitted_models: Dict[int, Any] = {}
-    cluster_backend = resolve_cluster_backend(effective_config.cluster_backend, device=effective_config.device)
+    cluster_backend = resolve_cluster_backend(
+        effective_config.cluster_backend,
+        device=effective_config.device,
+        algorithm="gmm",
+        covariance_type=covariance_type,
+    )
     for k in range(int(k_min), int(k_max) + 1):
         labels, model = cluster_backend.fit_predict(
             features,
@@ -419,9 +476,11 @@ def search_gmm_bic_only(
             "selected_k": float(selected_k),
             "selection_mode": selection_mode,
             "min_cluster_size_threshold": float(min_size_threshold),
-            "cluster_backend": effective_config.cluster_backend,
-            "eval_backend": effective_config.eval_backend,
-            "silhouette_mode": effective_config.silhouette_mode,
+            **_backend_runtime_info(
+                effective_config,
+                actual_cluster_backend=cluster_backend.name,
+                actual_eval_backend=_resolve_eval_backend_name(effective_config),
+            ),
         },
     )
 
@@ -559,5 +618,10 @@ def hierarchical_cluster(
             "macro_silhouette": best_macro_sil,
             "micro_details": info_micro,
             "total_clusters": global_label,
+            **_backend_runtime_info(
+                config,
+                actual_cluster_backend="sklearn",
+                actual_eval_backend="sklearn",
+            ),
         },
     )

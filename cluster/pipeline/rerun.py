@@ -56,9 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--covariance_type", type=str, default="full",
                         choices=["full", "diag", "tied", "spherical"])
     parser.add_argument("--stability_runs", type=int, default=5)
-    parser.add_argument("--cluster_backend", type=str, default="sklearn",
+    parser.add_argument("--cluster_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"])
-    parser.add_argument("--eval_backend", type=str, default="sklearn",
+    parser.add_argument("--eval_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"])
     parser.add_argument("--silhouette_mode", type=str, default="full",
                         choices=["full", "sampled", "torch_chunked"])
@@ -179,6 +179,7 @@ def main() -> None:
                     "cluster_feature_strategy": feature_strategy,
                     "pca_target_dim": int(args.pca_target_dim),
                     "checkpoint_path": checkpoint_path,
+                    "selection_info": selection_info,
                 },
             },
             f,
@@ -251,7 +252,13 @@ def main() -> None:
         "selection_mode": str(selection_info.get("selection_mode", k_strategy)),
         "cluster_backend": str(args.cluster_backend),
         "eval_backend": str(args.eval_backend),
+        "actual_cluster_backend": str(selection_info.get("actual_cluster_backend", args.cluster_backend)),
+        "actual_eval_backend": str(selection_info.get("actual_eval_backend", args.eval_backend)),
+        "device": str(selection_info.get("device", device)),
         "silhouette_mode": str(args.silhouette_mode),
+        "silhouette_sample_size": int(args.silhouette_sample_size),
+        "silhouette_chunk_size": int(args.silhouette_chunk_size),
+        "selection_info": selection_info,
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "split_outputs": split_outputs,
@@ -271,6 +278,10 @@ def main() -> None:
         "selected_k": selected_k,
         "k_strategy": k_strategy,
         "selection_mode": str(selection_info.get("selection_mode", k_strategy)),
+        "cluster_backend": str(args.cluster_backend),
+        "eval_backend": str(args.eval_backend),
+        "actual_cluster_backend": str(selection_info.get("actual_cluster_backend", args.cluster_backend)),
+        "actual_eval_backend": str(selection_info.get("actual_eval_backend", args.eval_backend)),
         "epochs": sidecar.get("config", {}).get("epochs", "reused"),
         "latent_dim": sidecar.get("config", {}).get("latent_dim", "reused"),
         "metadata_feature_dim": len(datasets.metadata_feature_names),

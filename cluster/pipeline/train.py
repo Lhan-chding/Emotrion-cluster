@@ -99,10 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="GMM covariance type (full recommended for A100)")
     parser.add_argument("--stability_runs", type=int, default=5,
                         help="Number of GMM runs for stability scoring (composite strategy)")
-    parser.add_argument("--cluster_backend", type=str, default="sklearn",
+    parser.add_argument("--cluster_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"],
-                        help="Clustering backend. Use torch/cuml for GPU-first runs; sklearn is the stable CPU default.")
-    parser.add_argument("--eval_backend", type=str, default="sklearn",
+                        help="Clustering backend. auto uses GPU-capable backends when compatible with the algorithm.")
+    parser.add_argument("--eval_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"],
                         help="Backend used for clustering metrics such as silhouette.")
     parser.add_argument("--silhouette_mode", type=str, default="full",
@@ -233,8 +233,8 @@ def run_k_selection(
     min_cluster_size_ratio: float,
     covariance_type: str = "full",
     stability_runs: int = 5,
-    cluster_backend: str = "sklearn",
-    eval_backend: str = "sklearn",
+    cluster_backend: str = "auto",
+    eval_backend: str = "auto",
     device: str = "cpu",
     silhouette_mode: str = "full",
     silhouette_sample_size: int = 0,
@@ -293,6 +293,14 @@ def run_k_selection(
             "selection_mode": "hierarchical",
             "macro_k": hier_result.macro_k,
             "label_names": hier_result.label_names,
+            "cluster_backend": info.get("cluster_backend", cluster_backend),
+            "eval_backend": info.get("eval_backend", eval_backend),
+            "actual_cluster_backend": info.get("actual_cluster_backend", "sklearn"),
+            "actual_eval_backend": info.get("actual_eval_backend", "sklearn"),
+            "device": info.get("device", device),
+            "silhouette_mode": info.get("silhouette_mode", silhouette_mode),
+            "silhouette_sample_size": info.get("silhouette_sample_size", silhouette_sample_size),
+            "silhouette_chunk_size": info.get("silhouette_chunk_size", silhouette_chunk_size),
         }
         return hier_result, metrics, selection_info
 
@@ -836,6 +844,10 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
     lines.append(f"- Selected K: `{summary['selected_k']}`")
     if "selection_mode" in summary:
         lines.append(f"- K selection mode: `{summary['selection_mode']}`")
+    if "actual_cluster_backend" in summary:
+        lines.append(f"- Cluster backend: `{summary.get('cluster_backend')}` -> `{summary['actual_cluster_backend']}`")
+    if "actual_eval_backend" in summary:
+        lines.append(f"- Eval backend: `{summary.get('eval_backend')}` -> `{summary['actual_eval_backend']}`")
     if "min_cluster_size_threshold" in summary:
         lines.append(f"- Min cluster size threshold: `{summary['min_cluster_size_threshold']}`")
     lines.append(f"- Training epochs: `{summary['epochs']}`")
@@ -1106,6 +1118,7 @@ def main() -> None:
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
                     "pca_target_dim": int(args.pca_target_dim),
+                    "selection_info": selection_info,
                 },
             },
             f,
@@ -1197,7 +1210,13 @@ def main() -> None:
         "pca_target_dim": int(args.pca_target_dim),
         "cluster_backend": str(args.cluster_backend),
         "eval_backend": str(args.eval_backend),
+        "actual_cluster_backend": str(selection_info.get("actual_cluster_backend", args.cluster_backend)),
+        "actual_eval_backend": str(selection_info.get("actual_eval_backend", args.eval_backend)),
+        "device": str(selection_info.get("device", device)),
         "silhouette_mode": str(args.silhouette_mode),
+        "silhouette_sample_size": int(args.silhouette_sample_size),
+        "silhouette_chunk_size": int(args.silhouette_chunk_size),
+        "selection_info": selection_info,
         "split_outputs": split_outputs,
     }
     if is_hierarchical:

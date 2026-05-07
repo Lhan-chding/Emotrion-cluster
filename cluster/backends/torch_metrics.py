@@ -45,6 +45,7 @@ def torch_silhouette_score_chunked(
         return float("nan")
 
     cluster_masks = [(y == cluster_id) for cluster_id in unique]
+    cluster_counts = [int(mask.sum().item()) for mask in cluster_masks]
     silhouettes = torch.zeros(n_rows, device=features.device, dtype=dtype)
 
     for start, distances in torch_pairwise_distances_chunked(
@@ -59,9 +60,8 @@ def torch_silhouette_score_chunked(
         b_values = torch.full((distances.shape[0],), float("inf"), device=features.device, dtype=dtype)
         singleton = torch.zeros(distances.shape[0], device=features.device, dtype=torch.bool)
 
-        for cluster_id, mask in zip(unique, cluster_masks):
+        for cluster_id, mask, count in zip(unique, cluster_masks, cluster_counts):
             in_cluster = chunk_labels == cluster_id
-            count = int(mask.sum().item())
             if count <= 0:
                 continue
             mean_dist = distances[:, mask].mean(dim=1)
@@ -76,9 +76,10 @@ def torch_silhouette_score_chunked(
                     a_values = torch.where(in_cluster, a_cluster, a_values)
 
         denom = torch.maximum(a_values, b_values)
-        scores = torch.where(denom > 0, (b_values - a_values) / denom, torch.zeros_like(denom))
+        valid = torch.isfinite(b_values) & (denom > 0)
+        scores = torch.where(valid, (b_values - a_values) / denom, torch.zeros_like(denom))
+        scores = torch.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
         scores = torch.where(singleton, torch.zeros_like(scores), scores)
         silhouettes[start:end] = scores
 
     return float(silhouettes.mean().detach().cpu().item())
-

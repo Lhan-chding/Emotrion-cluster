@@ -41,10 +41,12 @@ class TorchGaussianMixture:
         self.converged_: bool = False
         self.n_iter_: int = 0
 
-    def _tensor(self, X: np.ndarray | torch.Tensor) -> torch.Tensor:
+    def _tensor(self, X: np.ndarray | torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        dtype = dtype or self.dtype
         if torch.is_tensor(X):
-            return X.to(device=self.device, dtype=self.dtype)
-        return torch.as_tensor(np.asarray(X, dtype=np.float32), device=self.device, dtype=self.dtype)
+            return X.to(device=self.device, dtype=dtype)
+        np_dtype = np.float64 if dtype == torch.float64 else np.float32
+        return torch.as_tensor(np.asarray(X, dtype=np_dtype), device=self.device, dtype=dtype)
 
     def _initial_means(self, X: torch.Tensor, run: int) -> torch.Tensor:
         generator = torch.Generator(device=X.device)
@@ -56,10 +58,16 @@ class TorchGaussianMixture:
         return X[indices].clone()
 
     def _estimate_log_gaussian_prob(self, X: torch.Tensor, means: torch.Tensor, variances: torch.Tensor) -> torch.Tensor:
-        diff = X[:, None, :] - means[None, :, :]
+        n_samples = int(X.shape[0])
+        n_components = int(means.shape[0])
+        log_prob = torch.empty((n_samples, n_components), device=X.device, dtype=X.dtype)
         log_det = torch.log(variances).sum(dim=1)
-        mahal = (diff * diff / variances[None, :, :]).sum(dim=2)
-        return -0.5 * (X.shape[1] * math.log(2.0 * math.pi) + log_det[None, :] + mahal)
+        constant = X.shape[1] * math.log(2.0 * math.pi)
+        for cluster_id in range(n_components):
+            diff = X - means[cluster_id]
+            mahal = (diff * diff / variances[cluster_id]).sum(dim=1)
+            log_prob[:, cluster_id] = -0.5 * (constant + log_det[cluster_id] + mahal)
+        return log_prob
 
     def _fit_once(self, X: torch.Tensor, run: int):
         n_samples, n_features = X.shape
@@ -79,8 +87,12 @@ class TorchGaussianMixture:
             nk = responsibilities.sum(dim=0).clamp_min(1e-8)
             weights = nk / float(n_samples)
             means = responsibilities.T @ X / nk[:, None]
-            centered = X[:, None, :] - means[None, :, :]
-            variances = (responsibilities[:, :, None] * centered * centered).sum(dim=0) / nk[:, None]
+            variance_rows = []
+            for cluster_id in range(self.n_components):
+                centered = X - means[cluster_id]
+                weighted_square = responsibilities[:, cluster_id : cluster_id + 1] * centered * centered
+                variance_rows.append(weighted_square.sum(dim=0) / nk[cluster_id])
+            variances = torch.stack(variance_rows, dim=0)
             variances = variances.clamp_min(self.reg_covar)
 
             lower = log_norm.mean()
@@ -122,16 +134,23 @@ class TorchGaussianMixture:
         if self.means_ is None or self.covariances_ is None or self.weights_ is None:
             raise RuntimeError("TorchGaussianMixture must be fit before prediction.")
 
-    def _estimate_weighted_log_prob(self, X: np.ndarray | torch.Tensor) -> torch.Tensor:
+    def _estimate_weighted_log_prob(
+        self,
+        X: np.ndarray | torch.Tensor,
+        *,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
         self._require_fit()
-        features = self._tensor(X)
-        means = self._tensor(self.means_)
-        variances = self._tensor(self.covariances_)
-        weights = self._tensor(self.weights_)
-        return self._estimate_log_gaussian_prob(features, means, variances) + torch.log(weights.clamp_min(1e-12))[None, :]
+        dtype = dtype or self.dtype
+        features = self._tensor(X, dtype=dtype)
+        means = self._tensor(self.means_, dtype=dtype)
+        variances = self._tensor(self.covariances_, dtype=dtype)
+        weights = self._tensor(self.weights_, dtype=dtype)
+        min_weight = 1e-300 if dtype == torch.float64 else 1e-12
+        return self._estimate_log_gaussian_prob(features, means, variances) + torch.log(weights.clamp_min(min_weight))[None, :]
 
-    def score_samples(self, X: np.ndarray | torch.Tensor) -> np.ndarray:
-        log_prob = self._estimate_weighted_log_prob(X)
+    def score_samples(self, X: np.ndarray | torch.Tensor, *, dtype: torch.dtype | None = None) -> np.ndarray:
+        log_prob = self._estimate_weighted_log_prob(X, dtype=dtype)
         return torch.logsumexp(log_prob, dim=1).detach().cpu().numpy().astype(np.float64)
 
     def score(self, X: np.ndarray | torch.Tensor) -> float:
@@ -151,11 +170,13 @@ class TorchGaussianMixture:
         return (self.n_components - 1) + self.n_components * n_features + self.n_components * n_features
 
     def bic(self, X: np.ndarray | torch.Tensor) -> float:
-        features = np.asarray(X, dtype=np.float32)
-        log_likelihood = float(np.sum(self.score_samples(features)))
-        return -2.0 * log_likelihood + self._n_parameters(features.shape[1]) * math.log(features.shape[0])
+        features = self._tensor(X, dtype=torch.float64)
+        log_prob = self._estimate_weighted_log_prob(features, dtype=torch.float64)
+        log_likelihood = float(torch.logsumexp(log_prob, dim=1).sum().detach().cpu())
+        return -2.0 * log_likelihood + self._n_parameters(int(features.shape[1])) * math.log(int(features.shape[0]))
 
     def aic(self, X: np.ndarray | torch.Tensor) -> float:
-        features = np.asarray(X, dtype=np.float32)
-        log_likelihood = float(np.sum(self.score_samples(features)))
-        return -2.0 * log_likelihood + 2.0 * self._n_parameters(features.shape[1])
+        features = self._tensor(X, dtype=torch.float64)
+        log_prob = self._estimate_weighted_log_prob(features, dtype=torch.float64)
+        log_likelihood = float(torch.logsumexp(log_prob, dim=1).sum().detach().cpu())
+        return -2.0 * log_likelihood + 2.0 * self._n_parameters(int(features.shape[1]))

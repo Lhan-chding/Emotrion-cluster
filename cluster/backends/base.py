@@ -28,29 +28,42 @@ class ClusterBackend(Protocol):
         ...
 
 
-def resolve_cluster_backend(name: str = "auto", *, device: str = "cpu") -> ClusterBackend:
+def resolve_cluster_backend(
+    name: str = "auto",
+    *,
+    device: str = "cpu",
+    algorithm: str | None = None,
+    covariance_type: str | None = None,
+) -> ClusterBackend:
     requested = str(name or "auto").strip().lower()
     device_name = str(device or "cpu").strip().lower()
+    algorithm_name = str(algorithm or "").strip().lower()
+    covariance_name = str(covariance_type or "").strip().lower()
 
     from cluster.backends.cuml_backend import CuMLBackend
     from cluster.backends.sklearn_backend import SklearnBackend
     from cluster.backends.torch_backend import TorchBackend
 
     if requested == "auto":
+        if algorithm_name == "gmm":
+            if (
+                device_name.startswith("cuda")
+                and covariance_name in {"", "diag"}
+                and TorchBackend.is_device_available(device_name)
+            ):
+                return TorchBackend(device=device_name)
+            return SklearnBackend()
         if device_name.startswith("cuda") and CuMLBackend.is_available():
             return CuMLBackend()
-        if device_name.startswith("cuda") and TorchBackend.is_available():
+        if device_name.startswith("cuda") and TorchBackend.is_device_available(device_name):
             return TorchBackend(device=device_name)
         return SklearnBackend()
     if requested == "sklearn":
         return SklearnBackend()
     if requested == "torch":
-        if not TorchBackend.is_available():
-            raise RuntimeError("PyTorch backend requested but torch is not available.")
         return TorchBackend(device=device_name)
     if requested == "cuml":
         if not CuMLBackend.is_available():
             raise RuntimeError("cuML backend requested but RAPIDS cuML/cupy are not available.")
         return CuMLBackend()
     raise ValueError("Unsupported cluster backend '{}'. Expected auto, sklearn, torch, or cuml.".format(name))
-

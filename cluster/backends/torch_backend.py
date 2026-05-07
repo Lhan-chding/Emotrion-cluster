@@ -13,6 +13,8 @@ from cluster.backends.torch_metrics import torch_silhouette_score_chunked
 @dataclass
 class TorchKMeansModel:
     centers_: np.ndarray
+    inertia_: float = 0.0
+    n_iter_: int = 0
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         features = torch.as_tensor(np.asarray(X, dtype=np.float32))
@@ -25,11 +27,29 @@ class TorchBackend:
     name = "torch"
 
     def __init__(self, *, device: str = "cpu") -> None:
-        self.device = device if torch.cuda.is_available() or not str(device).startswith("cuda") else "cpu"
+        device_name = str(device or "cpu").strip().lower()
+        if not self.is_device_available(device_name):
+            raise RuntimeError(f"CUDA device '{device}' was requested for TorchBackend, but it is not available.")
+        self.device = device_name
 
     @classmethod
     def is_available(cls) -> bool:
         return True
+
+    @classmethod
+    def is_device_available(cls, device: str = "cpu") -> bool:
+        device_name = str(device or "cpu").strip().lower()
+        if not device_name.startswith("cuda"):
+            return True
+        if not torch.cuda.is_available():
+            return False
+        if ":" not in device_name:
+            return True
+        try:
+            index = int(device_name.split(":", 1)[1])
+        except ValueError:
+            return False
+        return 0 <= index < torch.cuda.device_count()
 
     def _kmeans(
         self,
@@ -45,6 +65,7 @@ class TorchBackend:
         best_labels = None
         best_centers = None
         best_inertia = float("inf")
+        best_n_iter = 0
         for run in range(max(int(n_init), 1)):
             generator = torch.Generator(device=features.device)
             generator.manual_seed(int(random_state) + run * 997)
@@ -52,7 +73,8 @@ class TorchBackend:
             centers = features[indices].clone()
             previous_inertia = None
             labels = torch.zeros(features.shape[0], device=features.device, dtype=torch.long)
-            for _ in range(int(max_iter)):
+            n_iter_run = 0
+            for iteration in range(1, int(max_iter) + 1):
                 distances = torch.cdist(features, centers)
                 labels = torch.argmin(distances, dim=1)
                 new_centers = centers.clone()
@@ -60,20 +82,51 @@ class TorchBackend:
                     mask = labels == cluster_id
                     if bool(mask.any()):
                         new_centers[cluster_id] = features[mask].mean(dim=0)
-                inertia = float(torch.sum((features - new_centers[labels]) ** 2).detach().cpu())
+
+                new_distances = torch.cdist(features, new_centers)
+                new_labels = torch.argmin(new_distances, dim=1)
+                new_centers = self._reinitialize_empty_clusters(features, new_labels, new_centers)
+                new_distances = torch.cdist(features, new_centers)
+                new_labels = torch.argmin(new_distances, dim=1)
+                inertia = float(torch.sum((features - new_centers[new_labels]) ** 2).detach().cpu())
+                n_iter_run = iteration
                 if previous_inertia is not None and abs(previous_inertia - inertia) < float(tol):
                     centers = new_centers
+                    labels = new_labels
                     break
                 previous_inertia = inertia
                 centers = new_centers
+                labels = new_labels
+            final_distances = torch.cdist(features, centers)
+            labels = torch.argmin(final_distances, dim=1)
             inertia = float(torch.sum((features - centers[labels]) ** 2).detach().cpu())
             if inertia < best_inertia:
                 best_inertia = inertia
                 best_labels = labels.detach().cpu().numpy().astype(np.int64)
                 best_centers = centers.detach().cpu().numpy().astype(np.float32)
+                best_n_iter = n_iter_run
         if best_labels is None or best_centers is None:
             raise RuntimeError("Torch KMeans failed to produce labels.")
-        return best_labels, TorchKMeansModel(centers_=best_centers)
+        return best_labels, TorchKMeansModel(centers_=best_centers, inertia_=float(best_inertia), n_iter_=int(best_n_iter))
+
+    def _reinitialize_empty_clusters(
+        self,
+        features: torch.Tensor,
+        labels: torch.Tensor,
+        centers: torch.Tensor,
+    ) -> torch.Tensor:
+        updated_centers = centers.clone()
+        distances = torch.sum((features - updated_centers[labels]) ** 2, dim=1)
+        used_indices: set[int] = set()
+        for cluster_id in range(int(updated_centers.shape[0])):
+            if bool((labels == cluster_id).any()):
+                continue
+            for index in torch.argsort(distances, descending=True).detach().cpu().tolist():
+                if int(index) not in used_indices:
+                    updated_centers[cluster_id] = features[int(index)]
+                    used_indices.add(int(index))
+                    break
+        return updated_centers
 
     def fit_predict(
         self,
@@ -95,6 +148,7 @@ class TorchBackend:
                 reg_covar=float(kwargs.get("reg_covar", 1e-6)),
                 random_state=int(kwargs.get("random_state", 42)),
                 device=self.device,
+                dtype=kwargs.get("dtype", torch.float32),
             )
             labels = model.fit_predict(X)
             return labels.astype(np.int64), model
@@ -120,4 +174,3 @@ class TorchBackend:
     def pairwise_distances(self, X: np.ndarray, **kwargs: Any) -> np.ndarray:
         features = torch.as_tensor(np.asarray(X, dtype=np.float32), device=self.device)
         return torch.cdist(features, features).detach().cpu().numpy().astype(np.float32)
-
