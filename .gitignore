@@ -1,9 +1,11 @@
 .pytest_tmp/
+.pytest_cache/
 .ruff_cache/
 .venv/
 __pycache__/
 *.py[cod]
 pytest_tmp_run*/
+*pytest_hook_tmp*/
 
 output*/
 *.pth
@@ -11,4 +13,3 @@ output*/
 *.pkl
 *.npy
 *.png
-
