@@ -13,7 +13,7 @@ dependencies:
   - joblib>=1.3
   - pytest>=7.0
   - pytorch>=2.0
-  - pytorch-cuda=12.4
+  # Compatible with NVIDIA driver 535.x hosts reporting CUDA 12.2 in nvidia-smi.
+  - pytorch-cuda=12.1
   # Install RAPIDS/cuML separately with a version matching the target CUDA
   # stack when running GPU-first clustering on the A800 host.
-
