@@ -89,6 +89,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="GMM covariance type (full recommended for A100)")
     parser.add_argument("--stability_runs", type=int, default=5,
                         help="Number of GMM runs for stability scoring (composite strategy)")
+    parser.add_argument("--cluster_backend", type=str, default="sklearn",
+                        choices=["auto", "sklearn", "torch", "cuml"],
+                        help="Clustering backend. Use torch/cuml for GPU-first runs; sklearn is the stable CPU default.")
+    parser.add_argument("--eval_backend", type=str, default="sklearn",
+                        choices=["auto", "sklearn", "torch", "cuml"],
+                        help="Backend used for clustering metrics such as silhouette.")
+    parser.add_argument("--silhouette_mode", type=str, default="full",
+                        choices=["full", "sampled", "torch_chunked"],
+                        help="Silhouette evaluation mode. torch_chunked avoids a full pairwise matrix.")
+    parser.add_argument("--silhouette_sample_size", type=int, default=0)
+    parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
                         choices=["full", "fused_residual", "fused_only", "pca_reduced"],
                         help="Clustering feature strategy")
@@ -212,6 +223,12 @@ def run_k_selection(
     min_cluster_size_ratio: float,
     covariance_type: str = "full",
     stability_runs: int = 5,
+    cluster_backend: str = "sklearn",
+    eval_backend: str = "sklearn",
+    device: str = "cpu",
+    silhouette_mode: str = "full",
+    silhouette_sample_size: int = 0,
+    silhouette_chunk_size: int = 4096,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -227,6 +244,12 @@ def run_k_selection(
             min_cluster_size=min_cluster_size_abs,
             min_cluster_size_ratio=min_cluster_size_ratio,
             stability_runs=stability_runs,
+            cluster_backend=cluster_backend,
+            eval_backend=eval_backend,
+            device=device,
+            silhouette_mode=silhouette_mode,
+            silhouette_sample_size=silhouette_sample_size,
+            silhouette_chunk_size=silhouette_chunk_size,
         )
         result = search_gmm_composite(features, config)
         return result.best_model, result.metrics, result.selection_info
@@ -240,6 +263,12 @@ def run_k_selection(
             min_cluster_size=min_cluster_size_abs,
             min_cluster_size_ratio=min_cluster_size_ratio,
             stability_runs=stability_runs,
+            cluster_backend=cluster_backend,
+            eval_backend=eval_backend,
+            device=device,
+            silhouette_mode=silhouette_mode,
+            silhouette_sample_size=silhouette_sample_size,
+            silhouette_chunk_size=silhouette_chunk_size,
         )
         hier_result = hierarchical_cluster(features, config)
         # Build a summary metrics DataFrame for reporting
@@ -258,6 +287,21 @@ def run_k_selection(
         return hier_result, metrics, selection_info
 
     else:  # bic_only (legacy)
+        config = KSelectionConfig(
+            k_min=k_min,
+            k_max=k_max,
+            covariance_type=covariance_type,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size_abs,
+            min_cluster_size_ratio=min_cluster_size_ratio,
+            stability_runs=stability_runs,
+            cluster_backend=cluster_backend,
+            eval_backend=eval_backend,
+            device=device,
+            silhouette_mode=silhouette_mode,
+            silhouette_sample_size=silhouette_sample_size,
+            silhouette_chunk_size=silhouette_chunk_size,
+        )
         result = search_gmm_bic_only(
             features=features,
             k_min=k_min,
@@ -267,6 +311,7 @@ def run_k_selection(
             min_cluster_size_ratio=min_cluster_size_ratio,
             covariance_type=covariance_type,
             n_init=10,
+            config=config,
         )
         return result.best_model, result.metrics, result.selection_info
 
@@ -994,6 +1039,12 @@ def main() -> None:
         min_cluster_size_ratio=float(args.min_cluster_size_ratio),
         covariance_type=str(args.covariance_type),
         stability_runs=int(args.stability_runs),
+        cluster_backend=str(args.cluster_backend),
+        eval_backend=str(args.eval_backend),
+        device=str(device),
+        silhouette_mode=str(args.silhouette_mode),
+        silhouette_sample_size=int(args.silhouette_sample_size),
+        silhouette_chunk_size=int(args.silhouette_chunk_size),
     )
 
     # Resolve GMM model and selected_k depending on strategy
@@ -1023,6 +1074,11 @@ def main() -> None:
                     "min_cluster_size_ratio": float(args.min_cluster_size_ratio),
                     "covariance_type": str(args.covariance_type),
                     "stability_runs": int(args.stability_runs),
+                    "cluster_backend": str(args.cluster_backend),
+                    "eval_backend": str(args.eval_backend),
+                    "silhouette_mode": str(args.silhouette_mode),
+                    "silhouette_sample_size": int(args.silhouette_sample_size),
+                    "silhouette_chunk_size": int(args.silhouette_chunk_size),
                     "metadata_cluster_weight": float(args.metadata_cluster_weight),
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
@@ -1112,6 +1168,9 @@ def main() -> None:
         "metadata_summary_path": metadata_summary_path,
         "cluster_feature_strategy": feature_strategy,
         "pca_target_dim": int(args.pca_target_dim),
+        "cluster_backend": str(args.cluster_backend),
+        "eval_backend": str(args.eval_backend),
+        "silhouette_mode": str(args.silhouette_mode),
         "split_outputs": split_outputs,
     }
     if is_hierarchical:

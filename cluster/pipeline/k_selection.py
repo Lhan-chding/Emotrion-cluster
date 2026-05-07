@@ -15,6 +15,8 @@ from joblib import Parallel, delayed
 from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, pairwise_distances, silhouette_score
 from sklearn.mixture import GaussianMixture
 
+from cluster.backends import resolve_cluster_backend
+
 
 @dataclass(frozen=True)
 class KSelectionConfig:
@@ -31,6 +33,12 @@ class KSelectionConfig:
     w_min_size: float = 0.20
     w_stability: float = 0.20
     stability_runs: int = 5
+    cluster_backend: str = "sklearn"
+    eval_backend: str = "sklearn"
+    device: str = "cpu"
+    silhouette_mode: str = "full"
+    silhouette_sample_size: int = 0
+    silhouette_chunk_size: int = 4096
     # Hierarchical
     macro_k_min: int = 4
     macro_k_max: int = 8
@@ -94,16 +102,21 @@ def _fit_stability_run(
     k: int,
     covariance_type: str,
     random_state: int,
+    cluster_backend: str = "sklearn",
+    device: str = "cpu",
 ) -> np.ndarray:
     """Fit a single GMM run for stability scoring."""
-    gmm = GaussianMixture(
-        n_components=k,
+    backend = resolve_cluster_backend(cluster_backend, device=device)
+    labels, _model = backend.fit_predict(
+        features,
+        algorithm="gmm",
+        n_clusters=k,
         covariance_type=covariance_type,
         reg_covar=1e-5,
         n_init=1,
         random_state=random_state,
     )
-    return gmm.fit_predict(features)
+    return labels.astype(np.int64)
 
 
 def compute_stability_score(
@@ -112,12 +125,21 @@ def compute_stability_score(
     n_runs: int = 5,
     covariance_type: str = "full",
     random_state: int = 42,
+    cluster_backend: str = "sklearn",
+    device: str = "cpu",
 ) -> float:
     """Run GMM *n_runs* times in parallel and return mean pairwise ARI."""
     if n_runs < 2:
         return 1.0
     all_labels: List[np.ndarray] = Parallel(n_jobs=min(n_runs, _n_parallel_jobs()))(
-        delayed(_fit_stability_run)(features, k, covariance_type, random_state + run * 1000)
+        delayed(_fit_stability_run)(
+            features,
+            k,
+            covariance_type,
+            random_state + run * 1000,
+            cluster_backend,
+            device,
+        )
         for run in range(n_runs)
     )
     ari_scores: List[float] = []
@@ -166,14 +188,16 @@ def _fit_single_k(
         When provided, silhouette_score uses metric='precomputed' to
         avoid recomputing distances for every K.
     """
-    gmm = GaussianMixture(
-        n_components=k,
+    cluster_backend = resolve_cluster_backend(config.cluster_backend, device=config.device)
+    labels, gmm = cluster_backend.fit_predict(
+        features,
+        algorithm="gmm",
+        n_clusters=k,
         covariance_type=config.covariance_type,
         reg_covar=1e-5,
         n_init=config.n_init,
         random_state=config.random_state,
     )
-    labels = gmm.fit_predict(features)
     n_unique = len(np.unique(labels))
     sizes = np.bincount(labels, minlength=k)
     min_size_threshold = max(
@@ -181,10 +205,10 @@ def _fit_single_k(
         int(np.ceil(config.min_cluster_size_ratio * features.shape[0])),
     )
     if n_unique > 1:
-        if dist_matrix is not None:
+        if dist_matrix is not None and str(config.eval_backend).lower() == "sklearn":
             sil = _safe_metric(silhouette_score, dist_matrix, labels, metric="precomputed")
         else:
-            sil = _safe_metric(silhouette_score, features, labels)
+            sil = _score_silhouette(features, labels, config)
         db = _safe_metric(davies_bouldin_score, features, labels)
     else:
         sil = float("nan")
@@ -203,6 +227,26 @@ def _fit_single_k(
     }
 
 
+def _score_silhouette(features: np.ndarray, labels: np.ndarray, config: KSelectionConfig) -> float:
+    if len(np.unique(labels)) < 2:
+        return float("nan")
+    mode = str(config.silhouette_mode).strip().lower()
+    eval_backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
+    backend = resolve_cluster_backend(eval_backend_name, device=config.device)
+    if mode == "sampled":
+        return backend.score_silhouette(
+            features,
+            labels,
+            sample_size=int(config.silhouette_sample_size),
+            random_state=int(config.random_state),
+        )
+    return backend.score_silhouette(
+        features,
+        labels,
+        chunk_size=int(config.silhouette_chunk_size),
+    )
+
+
 def search_gmm_composite(
     features: np.ndarray,
     config: KSelectionConfig,
@@ -214,8 +258,12 @@ def search_gmm_composite(
     - Parallelises GMM fitting across K values using joblib.
     - Parallelises stability scoring within each K.
     """
-    # Precompute distance matrix once (used for all silhouette calls)
-    dist_matrix = pairwise_distances(features, metric="euclidean")
+    # Precompute distance matrix once only for the sklearn full silhouette path.
+    use_precomputed = (
+        str(config.eval_backend).lower() == "sklearn"
+        and str(config.silhouette_mode).lower() == "full"
+    )
+    dist_matrix = pairwise_distances(features, metric="euclidean") if use_precomputed else None
 
     k_range = list(range(config.k_min, config.k_max + 1))
 
@@ -232,6 +280,8 @@ def search_gmm_composite(
             n_runs=config.stability_runs,
             covariance_type=config.covariance_type,
             random_state=config.random_state,
+            cluster_backend=config.cluster_backend,
+            device=config.device,
         )
 
     if not results:
@@ -293,6 +343,9 @@ def search_gmm_composite(
             "bic_elbow_k": bic_elbow_k,
             "min_cluster_size_threshold": best_result["min_size_threshold"],
             "stability_runs": config.stability_runs,
+            "cluster_backend": config.cluster_backend,
+            "eval_backend": config.eval_backend,
+            "silhouette_mode": config.silhouette_mode,
         },
     )
 
@@ -310,26 +363,38 @@ def search_gmm_bic_only(
     min_cluster_size_ratio: float,
     covariance_type: str = "diag",
     n_init: int = 10,
+    config: Optional[KSelectionConfig] = None,
 ) -> KSearchResult:
     """Original BIC + size-constraint selection (backward compatible)."""
+    effective_config = config or KSelectionConfig(
+        k_min=k_min,
+        k_max=k_max,
+        covariance_type=covariance_type,
+        n_init=n_init,
+        random_state=random_state,
+        min_cluster_size=min_cluster_size_abs,
+        min_cluster_size_ratio=min_cluster_size_ratio,
+    )
     rows: List[Dict[str, float]] = []
-    fitted_models: Dict[int, GaussianMixture] = {}
+    fitted_models: Dict[int, Any] = {}
+    cluster_backend = resolve_cluster_backend(effective_config.cluster_backend, device=effective_config.device)
     for k in range(int(k_min), int(k_max) + 1):
-        model = GaussianMixture(
-            n_components=int(k),
+        labels, model = cluster_backend.fit_predict(
+            features,
+            algorithm="gmm",
+            n_clusters=int(k),
             covariance_type=covariance_type,
             reg_covar=1e-5,
             n_init=int(n_init),
             random_state=int(random_state),
         )
-        labels = model.fit_predict(features)
         fitted_models[int(k)] = model
         n_unique = len(np.unique(labels))
         rows.append({
             "k": float(k),
             "bic": float(model.bic(features)),
             "aic": float(model.aic(features)),
-            "silhouette": _safe_metric(silhouette_score, features, labels) if n_unique > 1 else float("nan"),
+            "silhouette": _safe_metric(_score_silhouette, features, labels, effective_config) if n_unique > 1 else float("nan"),
             "davies_bouldin": _safe_metric(davies_bouldin_score, features, labels) if n_unique > 1 else float("nan"),
             "min_cluster_size": float(np.bincount(labels, minlength=k).min()),
         })
@@ -354,6 +419,9 @@ def search_gmm_bic_only(
             "selected_k": float(selected_k),
             "selection_mode": selection_mode,
             "min_cluster_size_threshold": float(min_size_threshold),
+            "cluster_backend": effective_config.cluster_backend,
+            "eval_backend": effective_config.eval_backend,
+            "silhouette_mode": effective_config.silhouette_mode,
         },
     )
 

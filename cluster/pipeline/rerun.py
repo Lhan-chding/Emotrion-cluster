@@ -56,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--covariance_type", type=str, default="full",
                         choices=["full", "diag", "tied", "spherical"])
     parser.add_argument("--stability_runs", type=int, default=5)
+    parser.add_argument("--cluster_backend", type=str, default="sklearn",
+                        choices=["auto", "sklearn", "torch", "cuml"])
+    parser.add_argument("--eval_backend", type=str, default="sklearn",
+                        choices=["auto", "sklearn", "torch", "cuml"])
+    parser.add_argument("--silhouette_mode", type=str, default="full",
+                        choices=["full", "sampled", "torch_chunked"])
+    parser.add_argument("--silhouette_sample_size", type=int, default=0)
+    parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
                         choices=["full", "fused_residual", "fused_only", "pca_reduced"],
                         help="Clustering feature strategy")
@@ -126,6 +134,12 @@ def main() -> None:
         min_cluster_size_ratio=float(args.min_cluster_size_ratio),
         covariance_type=str(args.covariance_type),
         stability_runs=int(args.stability_runs),
+        cluster_backend=str(args.cluster_backend),
+        eval_backend=str(args.eval_backend),
+        device=str(device),
+        silhouette_mode=str(args.silhouette_mode),
+        silhouette_sample_size=int(args.silhouette_sample_size),
+        silhouette_chunk_size=int(args.silhouette_chunk_size),
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
@@ -154,6 +168,11 @@ def main() -> None:
                     "min_cluster_size_ratio": float(args.min_cluster_size_ratio),
                     "covariance_type": str(args.covariance_type),
                     "stability_runs": int(args.stability_runs),
+                    "cluster_backend": str(args.cluster_backend),
+                    "eval_backend": str(args.eval_backend),
+                    "silhouette_mode": str(args.silhouette_mode),
+                    "silhouette_sample_size": int(args.silhouette_sample_size),
+                    "silhouette_chunk_size": int(args.silhouette_chunk_size),
                     "metadata_cluster_weight": float(args.metadata_cluster_weight),
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
@@ -230,6 +249,9 @@ def main() -> None:
         "selected_k": selected_k,
         "k_strategy": k_strategy,
         "selection_mode": str(selection_info.get("selection_mode", k_strategy)),
+        "cluster_backend": str(args.cluster_backend),
+        "eval_backend": str(args.eval_backend),
+        "silhouette_mode": str(args.silhouette_mode),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "split_outputs": split_outputs,
