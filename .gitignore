@@ -1,0 +1,14 @@
+.pytest_tmp/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+pytest_tmp_run*/
+
+output*/
+*.pth
+*.pt
+*.pkl
+*.npy
+*.png
+
