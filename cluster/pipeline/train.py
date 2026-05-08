@@ -17,7 +17,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
-from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES
+from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
@@ -46,7 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="End-to-end music discovery pipeline: metadata build, multiview training, variable-K clustering, and reports."
     )
-    parser.add_argument("--aligned_root", type=str, required=True)
+    parser.add_argument("--aligned_root", type=str, default=None,
+                        help="Required only when --metadata_mode=rebuild_from_aligned")
     parser.add_argument("--processed_dir", type=str, required=True)
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--split_protocol", type=str, default="70_15_15")
@@ -67,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fused_recon_weight", type=float, default=0.50)
     parser.add_argument("--align_weight", type=float, default=0.20)
     parser.add_argument("--metadata_align_weight", type=float, default=0.08)
+    parser.add_argument("--metadata_mode", type=str, default="processed",
+                        choices=["processed", "rebuild_from_aligned", "none"],
+                        help="processed: use existing metadata.npy; rebuild_from_aligned: rebuild from aligned_root; none: zero metadata (ablation)")
     parser.add_argument("--min_token_freq", type=int, default=3)
     parser.add_argument("--max_tokens_per_field", type=int, default=128)
     parser.add_argument("--k_min", type=int, default=4)
@@ -137,6 +141,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # ---------------------------------------------------------------------------
+# Mask-purity diagnostics
+# ---------------------------------------------------------------------------
+
+def compute_mask_purity(
+    assignments: np.ndarray,
+    view_mask: np.ndarray,
+) -> List[Dict[str, Any]]:
+    """Compute mask-pattern purity per cluster.
+
+    Returns a list of dicts with cluster_id, mask_purity, dominant_mask_combo,
+    and mask_combo_distribution. A cluster with mask_purity > 0.85 is likely
+    a missingness cluster rather than an affective cluster.
+    """
+    mask_patterns = []
+    for row in view_mask:
+        pattern = "".join(["1" if v > 0 else "0" for v in row[:2]])
+        mask_patterns.append(pattern)
+    mask_patterns = np.array(mask_patterns)
+
+    results = []
+    for cluster_id in sorted(np.unique(assignments).tolist()):
+        cluster_mask = assignments == cluster_id
+        cluster_size = int(cluster_mask.sum())
+        if cluster_size == 0:
+            continue
+        cluster_patterns = mask_patterns[cluster_mask]
+        unique_patterns, counts = np.unique(cluster_patterns, return_counts=True)
+        distribution = {str(p): int(c) for p, c in zip(unique_patterns.tolist(), counts.tolist())}
+        dominant_idx = int(counts.argmax())
+        dominant_combo = str(unique_patterns[dominant_idx])
+        purity = float(counts[dominant_idx]) / cluster_size
+        results.append({
+            "cluster_id": int(cluster_id),
+            "size": cluster_size,
+            "mask_purity": round(purity, 4),
+            "dominant_mask_combo": dominant_combo,
+            "mask_combo_distribution": distribution,
+            "has_audio_ratio": round(float((view_mask[cluster_mask, 0] > 0).mean()), 4),
+            "has_lyrics_ratio": round(float((view_mask[cluster_mask, 1] > 0).mean()), 4),
+        })
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Clustering feature strategies
 # ---------------------------------------------------------------------------
 
@@ -163,15 +211,22 @@ def _mean_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
 
 
 def _va_geometry_features(embeddings: Dict[str, Any]) -> np.ndarray:
+    """Return only the 14 observed geometry features for clustering (no mask dims)."""
     geometry = embeddings.get("va_geometry")
     if geometry is None:
         raise ValueError("cluster_feature_strategy='va_geometry' requires va_geometry embeddings.")
     features = np.asarray(geometry, dtype=np.float32)
-    if features.ndim != 2 or features.shape[1] != len(VA_GEOMETRY_FEATURE_NAMES):
+    if features.ndim != 2:
+        raise ValueError(f"va_geometry must be 2D, got shape {features.shape}.")
+    if features.shape[1] == len(VA_GEOMETRY_FEATURE_NAMES):
+        # Full 17-dim: strip the last 3 mask columns for clustering
+        return features[:, :VA_GEOMETRY_OBSERVED_DIM]
+    elif features.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
+        return features
+    else:
         raise ValueError(
-            f"va_geometry must have shape [N, {len(VA_GEOMETRY_FEATURE_NAMES)}], got {features.shape}."
+            f"va_geometry must have shape [N, {len(VA_GEOMETRY_FEATURE_NAMES)}] or [N, {VA_GEOMETRY_OBSERVED_DIM}], got {features.shape}."
         )
-    return features
 
 
 def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
@@ -189,6 +244,9 @@ def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.
     if geometry is not None:
         features = np.asarray(geometry, dtype=np.float32)
         if features.ndim == 2 and features.shape[1] == len(VA_GEOMETRY_FEATURE_NAMES):
+            # Strip mask dims — only use observed geometry for conflict representation
+            return features[:, :VA_GEOMETRY_OBSERVED_DIM]
+        elif features.ndim == 2 and features.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
             return features
     return np.concatenate(
         [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
@@ -282,16 +340,14 @@ def cluster_feature_weights(
 ) -> np.ndarray:
     base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
     weights = np.ones(int(feature_dim), dtype=np.float32)
-    if base_strategy in {"va_geometry", "mean_va_diff"} and int(feature_dim) == len(VA_GEOMETRY_FEATURE_NAMES):
+    if base_strategy in {"va_geometry", "mean_va_diff"} and int(feature_dim) == VA_GEOMETRY_OBSERVED_DIM:
         weights[0:2] = 2.0
-        weights[2:14] = float(conflict_cluster_weight)
-        weights[14:17] = float(gate_cluster_weight)
-    elif base_strategy == "fused_va_geometry" and int(feature_dim) > len(VA_GEOMETRY_FEATURE_NAMES):
-        latent_dim = int(feature_dim) - len(VA_GEOMETRY_FEATURE_NAMES)
+        weights[2:VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
+    elif base_strategy == "fused_va_geometry" and int(feature_dim) > VA_GEOMETRY_OBSERVED_DIM:
+        latent_dim = int(feature_dim) - VA_GEOMETRY_OBSERVED_DIM
         weights[:latent_dim] = 0.5
         weights[latent_dim : latent_dim + 2] = 2.0
-        weights[latent_dim + 2 : latent_dim + 14] = float(conflict_cluster_weight)
-        weights[latent_dim + 14 : latent_dim + 17] = float(gate_cluster_weight)
+        weights[latent_dim + 2 : latent_dim + VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
     return weights.astype(np.float32)
 
 
@@ -822,6 +878,9 @@ def _cluster_summary(
                 "mean_lyrics_arousal": float(raw_lyrics[mask & (view_mask[:, 1] > 0), 1].mean()) if np.any(mask & (view_mask[:, 1] > 0)) else float("nan"),
                 "mean_valence": float(mean_va[mask, 0].mean()),
                 "mean_arousal": float(mean_va[mask, 1].mean()),
+                "has_audio_ratio": round(float((view_mask[mask, 0] > 0).mean()), 4),
+                "has_lyrics_ratio": round(float((view_mask[mask, 1] > 0).mean()), 4),
+                "diff_observed_ratio": round(float(((view_mask[mask, 0] > 0) & (view_mask[mask, 1] > 0)).mean()), 4),
                 "quadrant_distribution": {
                     MUSIC_LABEL_NAMES[idx]: {
                         "count": int(label_counts[idx]),
@@ -1020,12 +1079,37 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
                 str(item["feature"]).split("::", 1)[-1]
                 for item in cluster.get("top_metadata_tokens", [])[:3]
             )
+            diff_ratio = cluster.get("diff_observed_ratio", -1)
+            mask_warning = ""
+            if diff_ratio >= 0 and diff_ratio < 0.15:
+                mask_warning = " **[WARNING: possible missingness cluster]**"
+            elif cluster.get("has_lyrics_ratio", 1.0) < 0.15:
+                mask_warning = " **[WARNING: possible missingness cluster]**"
             lines.append(
                 f"- Cluster {cluster['cluster_id']}: size={cluster['num_samples']}, "
                 f"dominant={cluster['dominant_quadrant']} ({cluster['dominant_quadrant_ratio']:.2%}), "
                 f"mean_va=({cluster['mean_valence']:.3f}, {cluster['mean_arousal']:.3f}), "
-                f"tokens={tokens or 'n/a'}"
+                f"diff_obs={diff_ratio:.2%}, "
+                f"tokens={tokens or 'n/a'}{mask_warning}"
             )
+        lines.append("")
+    mask_purity_data = summary.get("mask_purity_diagnostics")
+    if mask_purity_data:
+        lines.append("## Mask-Purity Diagnostics")
+        lines.append("")
+        has_warning = False
+        for entry in mask_purity_data:
+            purity = entry["mask_purity"]
+            warning = " **[FAIL: missingness cluster]**" if purity > 0.85 else ""
+            if purity > 0.85:
+                has_warning = True
+            lines.append(
+                f"- Cluster {entry['cluster_id']}: mask_purity={purity:.4f}, "
+                f"dominant={entry['dominant_mask_combo']}, size={entry['size']}{warning}"
+            )
+        if has_warning:
+            lines.append("")
+            lines.append("> **WARNING**: One or more clusters have mask_purity > 0.85, indicating the GMM is clustering by missingness pattern rather than emotion.")
         lines.append("")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).strip() + "\n")
@@ -1040,23 +1124,58 @@ def main() -> None:
     models_dir = os.path.join(out_dir, "models")
     _ensure_dir(models_dir)
 
-    canonical = build_canonical_metadata(
-        aligned_root=str(args.aligned_root),
-        processed_dir=str(args.processed_dir),
-    )
-    metadata_bundle = build_metadata_features(
-        canonical_metadata=canonical,
-        min_token_freq=int(args.min_token_freq),
-        max_tokens_per_field=int(args.max_tokens_per_field),
-    )
-    written_files = save_metadata_feature_bundle(metadata_bundle, out_dir=str(args.processed_dir))
-    metadata_summary = {
-        "num_samples": int(metadata_bundle.features.shape[0]),
-        "feature_dim": int(metadata_bundle.features.shape[1]),
-        "min_token_freq": int(args.min_token_freq),
-        "max_tokens_per_field": int(args.max_tokens_per_field),
-        "written_files": written_files,
-    }
+    metadata_mode = str(getattr(args, "metadata_mode", "processed")).strip().lower()
+    if metadata_mode == "rebuild_from_aligned":
+        if not args.aligned_root:
+            parser.error("--aligned_root is required when --metadata_mode=rebuild_from_aligned")
+        canonical = build_canonical_metadata(
+            aligned_root=str(args.aligned_root),
+            processed_dir=str(args.processed_dir),
+        )
+        metadata_bundle = build_metadata_features(
+            canonical_metadata=canonical,
+            min_token_freq=int(args.min_token_freq),
+            max_tokens_per_field=int(args.max_tokens_per_field),
+        )
+        written_files = save_metadata_feature_bundle(metadata_bundle, out_dir=str(args.processed_dir))
+        metadata_summary = {
+            "num_samples": int(metadata_bundle.features.shape[0]),
+            "feature_dim": int(metadata_bundle.features.shape[1]),
+            "min_token_freq": int(args.min_token_freq),
+            "max_tokens_per_field": int(args.max_tokens_per_field),
+            "written_files": written_files,
+            "metadata_mode": "rebuild_from_aligned",
+        }
+    elif metadata_mode == "none":
+        metadata_path = os.path.join(str(args.processed_dir), "metadata.npy")
+        if os.path.exists(metadata_path):
+            existing = np.load(metadata_path)
+            n_samples = existing.shape[0]
+        else:
+            n_samples = 0
+        zero_metadata = np.zeros((n_samples, 1), dtype=np.float32)
+        np.save(metadata_path, zero_metadata)
+        names_path = os.path.join(str(args.processed_dir), "metadata_feature_names.json")
+        with open(names_path, "w", encoding="utf-8") as f:
+            json.dump(["numeric::zero"], f)
+        metadata_summary = {
+            "num_samples": n_samples,
+            "feature_dim": 1,
+            "metadata_mode": "none",
+        }
+    else:
+        metadata_path = os.path.join(str(args.processed_dir), "metadata.npy")
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(
+                f"metadata_mode='processed' but {metadata_path} does not exist. "
+                f"Run prepare_unimodal_dataset.py first or use --metadata_mode rebuild_from_aligned."
+            )
+        existing = np.load(metadata_path)
+        metadata_summary = {
+            "num_samples": int(existing.shape[0]),
+            "feature_dim": int(existing.shape[1]),
+            "metadata_mode": "processed",
+        }
     metadata_summary_path = os.path.join(out_dir, "metadata_build_summary.json")
     with open(metadata_summary_path, "w", encoding="utf-8") as f:
         json.dump(metadata_summary, f, ensure_ascii=False, indent=2)
@@ -1285,6 +1404,7 @@ def main() -> None:
         )
 
     split_outputs: Dict[str, Dict[str, Any]] = {}
+    split_assignments: Dict[str, np.ndarray] = {}
     for split in eval_splits:
         features_raw, _ = build_cluster_features(
             embeddings=embeddings_by_split[split],
@@ -1329,6 +1449,7 @@ def main() -> None:
         else:
             assignments = gmm_model.predict(features).astype(np.int64)
 
+        split_assignments[split] = assignments
         split_dir = os.path.join(out_dir, split)
         payload = _write_split_outputs(
             out_dir=split_dir,
@@ -1365,7 +1486,7 @@ def main() -> None:
         "cluster_loss_weight": float(args.cluster_loss_weight),
         "cvcl_loss_weight": float(args.cvcl_loss_weight),
         "assignment_balance_weight": float(args.assignment_balance_weight),
-        "metadata_feature_dim": int(metadata_bundle.features.shape[1]),
+        "metadata_feature_dim": int(metadata_summary["feature_dim"]),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": history_path,
@@ -1390,6 +1511,12 @@ def main() -> None:
         pipeline_summary["label_names"] = {str(k): v for k, v in k_result.label_names.items()}
     if "min_cluster_size_threshold" in selection_info:
         pipeline_summary["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
+
+    if search_split in split_assignments:
+        search_dataset = eval_datasets[search_split]
+        search_view_mask = getattr(search_dataset, "view_mask", np.ones((len(search_dataset), 3), dtype=np.float32))
+        mask_purity_results = compute_mask_purity(split_assignments[search_split], search_view_mask)
+        pipeline_summary["mask_purity_diagnostics"] = mask_purity_results
 
     pipeline_summary_path = os.path.join(out_dir, "pipeline_summary.json")
     with open(pipeline_summary_path, "w", encoding="utf-8") as f:

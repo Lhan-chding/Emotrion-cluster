@@ -126,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot_va_source", type=str, default="mean",
                         choices=["mean", "original"],
                         help="VA coordinates used in cluster scatter and summaries.")
+    parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
+                        help="Allow checkpoint with mismatched metadata_dim (true/false)")
     return parser
 
 
@@ -149,6 +151,17 @@ def main() -> None:
             )
         checkpoint_path = os.path.join(str(args.run_dir), "models", "music_discovery_model_best.pth")
         model, sidecar = load_music_discovery_checkpoint(checkpoint_path=checkpoint_path, device=device)
+        _allow_incompat = str(getattr(args, "allow_incompatible_checkpoint", "false")).strip().lower() in {"1", "true", "yes"}
+        checkpoint_metadata_dim = len(sidecar.get("scaler_state", {}).get("metadata", {}).get("mean", []))
+        current_metadata_path = os.path.join(str(args.processed_dir), "metadata.npy")
+        if os.path.exists(current_metadata_path) and checkpoint_metadata_dim > 0:
+            current_metadata_dim = int(np.load(current_metadata_path).shape[1])
+            if current_metadata_dim != checkpoint_metadata_dim and not _allow_incompat:
+                raise ValueError(
+                    f"Checkpoint metadata_dim={checkpoint_metadata_dim} != processed metadata_dim={current_metadata_dim}. "
+                    f"The checkpoint was trained with different metadata. Either retrain or pass "
+                    f"--allow_incompatible_checkpoint true to proceed anyway."
+                )
 
     split_protocol = parse_split_protocol(
         str(sidecar.get("config", {}).get("split_protocol", str(args.split_protocol)))

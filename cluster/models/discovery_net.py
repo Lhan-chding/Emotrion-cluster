@@ -80,6 +80,7 @@ class MusicDiscoveryDataset(Dataset):
         view_mask = load_optional_array(self.data_dir, "view_mask", np.float32, cache=_cache)
         consistency = load_required_array(self.data_dir, "consistency", np.float32, cache=_cache)
         va_diff = load_required_array(self.data_dir, "va_diff", np.float32, cache=_cache)
+        diff_observed = load_optional_array(self.data_dir, "diff_observed", np.float32, cache=_cache)
         labels = load_required_array(self.data_dir, "labels_emotion", np.int64, cache=_cache)
         original_va = load_optional_array(self.data_dir, "original_va", np.float32, cache=_cache)
         n_samples = int(audio.shape[0])
@@ -94,6 +95,8 @@ class MusicDiscoveryDataset(Dataset):
             original_va = 0.5 * (audio + lyrics)
         if original_va.shape != (n_samples, 2):
             raise ValueError(f"original_va.npy must have shape [{n_samples}, 2], got {original_va.shape}.")
+        if diff_observed is None:
+            diff_observed = ((view_mask[:, 0] > 0.0) & (view_mask[:, 1] > 0.0)).astype(np.float32)
 
         indices = _resolve_split_indices(
             data_dir=self.data_dir,
@@ -114,6 +117,7 @@ class MusicDiscoveryDataset(Dataset):
         self.va_diff = va_diff[indices].astype(np.float32)
         self.labels = labels[indices].astype(np.int64)
         self.original_va = original_va[indices].astype(np.float32)
+        self.diff_observed = diff_observed[indices].astype(np.float32)
 
         self.audio = apply_scale(self.raw_audio, scaler_state, "audio")
         self.lyrics = apply_scale(self.raw_lyrics, scaler_state, "lyrics")

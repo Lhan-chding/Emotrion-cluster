@@ -526,6 +526,8 @@ def prepare_unimodal_dataset(
     np.save(os.path.join(out_processed_dir, "signed_va_diff.npy"), signed_va_diff.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "labels_emotion.npy"), labels.astype(np.int64))
     np.save(os.path.join(out_processed_dir, "original_va.npy"), original_va.astype(np.float32))
+    diff_observed = both_audio_lyrics.astype(np.float32)
+    np.save(os.path.join(out_processed_dir, "diff_observed.npy"), diff_observed)
 
     with open(os.path.join(out_processed_dir, "metadata_feature_names.json"), "w", encoding="utf-8") as f:
         json.dump(metadata_feature_names, f, ensure_ascii=False, indent=2)
@@ -545,6 +547,7 @@ def prepare_unimodal_dataset(
             "consistency.npy",
             "va_diff.npy",
             "signed_va_diff.npy",
+            "diff_observed.npy",
         ],
         "source_columns": list(combined.columns),
         "metadata_schema": metadata_schema,

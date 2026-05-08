@@ -2,7 +2,14 @@ import math
 
 import numpy as np
 
-from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, build_va_geometry_features
+from cluster.features.va_geometry import (
+    VA_GEOMETRY_FEATURE_NAMES,
+    VA_GEOMETRY_OBSERVED_NAMES,
+    VA_GEOMETRY_OBSERVED_DIM,
+    build_va_geometry_features,
+    build_va_geometry_observed_features,
+    build_va_geometry_mask,
+)
 
 
 def test_va_geometry_features_include_consensus_and_circumplex_disagreement():
@@ -80,3 +87,25 @@ def test_va_geometry_features_treat_missing_pair_conflict_as_unknown_not_agreeme
     np.testing.assert_allclose(features[:, :2], np.asarray([[0.7, 0.4], [0.2, 0.8]], dtype=np.float32))
     np.testing.assert_allclose(features[:, 2:14], np.zeros((2, 12), dtype=np.float32))
     np.testing.assert_allclose(features[:, 14:17], np.asarray([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32))
+
+
+def test_va_geometry_observed_features_excludes_mask():
+    audio = np.asarray([[0.8, 0.6], [0.7, 0.4]], dtype=np.float32)
+    lyrics = np.asarray([[0.2, 0.7], [0.0, 0.0]], dtype=np.float32)
+    view_mask = np.asarray([[1.0, 1.0, 1.0], [1.0, 0.0, 1.0]], dtype=np.float32)
+
+    observed = build_va_geometry_observed_features(audio, lyrics, view_mask)
+    assert observed.shape == (2, VA_GEOMETRY_OBSERVED_DIM)
+    assert VA_GEOMETRY_OBSERVED_DIM == 14
+    assert len(VA_GEOMETRY_OBSERVED_NAMES) == 14
+
+    full = build_va_geometry_features(audio, lyrics, view_mask)
+    np.testing.assert_allclose(observed, full[:, :14])
+
+
+def test_va_geometry_mask_returns_correct_patterns():
+    view_mask = np.asarray([[1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    mask = build_va_geometry_mask(view_mask)
+    assert mask.shape == (3, 3)
+    expected = np.asarray([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    np.testing.assert_allclose(mask, expected)

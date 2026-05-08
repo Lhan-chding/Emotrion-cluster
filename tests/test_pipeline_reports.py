@@ -137,7 +137,7 @@ def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
         strategy="va_geometry",
     )
 
-    np.testing.assert_allclose(features, embeddings["va_geometry"])
+    np.testing.assert_allclose(features, embeddings["va_geometry"][:, :14])
     assert pca is None
 
 
@@ -154,22 +154,21 @@ def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():
         strategy="va_geometry",
     )
 
-    np.testing.assert_allclose(features, embeddings["va_geometry"])
+    np.testing.assert_allclose(features, embeddings["va_geometry"][:, :14])
     assert pca is None
 
 
 def test_va_geometry_feature_weights_keep_mean_va_primary_after_scaling():
     weights = cluster_feature_weights(
         "va_geometry",
-        17,
+        14,
         conflict_cluster_weight=0.4,
         gate_cluster_weight=0.2,
     )
 
     np.testing.assert_allclose(weights[:2], np.asarray([2.0, 2.0], dtype=np.float32))
     np.testing.assert_allclose(weights[2:14], np.full(12, 0.4, dtype=np.float32))
-    np.testing.assert_allclose(weights[14:17], np.full(3, 0.2, dtype=np.float32))
-    weighted = apply_cluster_feature_weights(np.ones((1, 17), dtype=np.float32), weights)
+    weighted = apply_cluster_feature_weights(np.ones((1, 14), dtype=np.float32), weights)
     np.testing.assert_allclose(weighted[0], weights)
 
 
@@ -205,7 +204,7 @@ def test_full_cluster_feature_strategy_uses_va_geometry_as_conflict_block():
         strategy="full",
     )
 
-    np.testing.assert_allclose(features[:, -17:], np.ones((2, 17), dtype=np.float32) * 2.0)
+    np.testing.assert_allclose(features[:, -14:], np.ones((2, 14), dtype=np.float32) * 2.0)
     assert pca is None
 
 
@@ -237,11 +236,10 @@ def test_fused_va_geometry_uses_trained_fused_embedding_and_weighted_va_geometry
     )
 
     np.testing.assert_allclose(features[:, :2], embeddings["z_fused"])
-    np.testing.assert_allclose(features[:, 2:], embeddings["va_geometry"])
+    np.testing.assert_allclose(features[:, 2:], embeddings["va_geometry"][:, :14])
     np.testing.assert_allclose(weights[:2], np.full(2, 0.5, dtype=np.float32))
     np.testing.assert_allclose(weights[2:4], np.full(2, 2.0, dtype=np.float32))
     np.testing.assert_allclose(weights[4:16], np.full(12, 0.4, dtype=np.float32))
-    np.testing.assert_allclose(weights[16:19], np.full(3, 0.2, dtype=np.float32))
     assert pca is None
 
 
