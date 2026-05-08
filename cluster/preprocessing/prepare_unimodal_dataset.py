@@ -248,6 +248,93 @@ def _label_to_id(value: object) -> int:
     return numeric if 0 <= numeric <= 3 else -1
 
 
+def _derive_labels_from_va(
+    va: np.ndarray,
+    available: np.ndarray,
+    *,
+    threshold: float = 0.5,
+) -> np.ndarray:
+    labels = np.full(int(va.shape[0]), -1, dtype=np.int64)
+    valid = available.astype(bool) & np.isfinite(va[:, 0]) & np.isfinite(va[:, 1])
+    high_valence = va[:, 0] >= float(threshold)
+    high_arousal = va[:, 1] >= float(threshold)
+    labels[valid & high_valence & high_arousal] = 0
+    labels[valid & ~high_valence & high_arousal] = 1
+    labels[valid & ~high_valence & ~high_arousal] = 2
+    labels[valid & high_valence & ~high_arousal] = 3
+    return labels
+
+
+def _available_view_mean_va(
+    audio: np.ndarray,
+    has_audio: np.ndarray,
+    lyrics: np.ndarray,
+    has_lyrics: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    audio_mask = has_audio.astype(np.float32).reshape(-1, 1)
+    lyrics_mask = has_lyrics.astype(np.float32).reshape(-1, 1)
+    weights = audio_mask + lyrics_mask
+    summed = audio * audio_mask + lyrics * lyrics_mask
+    mean_va = np.divide(
+        summed,
+        np.maximum(weights, 1.0),
+        out=np.zeros_like(summed, dtype=np.float32),
+        where=weights > 0,
+    )
+    return mean_va.astype(np.float32), weights.reshape(-1) > 0
+
+
+def _resolve_labels(
+    combined: pd.DataFrame,
+    *,
+    audio: np.ndarray,
+    has_audio: np.ndarray,
+    lyrics: np.ndarray,
+    has_lyrics: np.ndarray,
+    original_va: np.ndarray,
+    has_original: np.ndarray,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    label_col = _optional_column(
+        combined.columns,
+        ["labels_emotion", "label_emotion", "quadrant", "label", "emotion_label"],
+    )
+    if label_col is not None:
+        labels = np.asarray([_label_to_id(value) for value in combined[label_col].tolist()], dtype=np.int64)
+        primary_source = f"explicit_column:{label_col}"
+    else:
+        labels = np.full(len(combined), -1, dtype=np.int64)
+        primary_source = "derived_original_va"
+
+    original_labels = _derive_labels_from_va(original_va, has_original)
+    view_mean_va, has_view_mean = _available_view_mean_va(audio, has_audio, lyrics, has_lyrics)
+    view_mean_labels = _derive_labels_from_va(view_mean_va, has_view_mean)
+
+    missing = labels < 0
+    use_original = missing & (original_labels >= 0)
+    labels[use_original] = original_labels[use_original]
+
+    missing = labels < 0
+    use_view_mean = missing & (view_mean_labels >= 0)
+    labels[use_view_mean] = view_mean_labels[use_view_mean]
+
+    unresolved = labels < 0
+    info = {
+        "primary_source": primary_source,
+        "explicit_column": label_col,
+        "derived_from_original_va": int(use_original.sum()),
+        "derived_from_view_mean_va": int(use_view_mean.sum()),
+        "unresolved": int(unresolved.sum()),
+        "thresholds": {"valence": 0.5, "arousal": 0.5},
+        "mapping": {
+            "Q1": "valence>=0.5 and arousal>=0.5",
+            "Q2": "valence<0.5 and arousal>=0.5",
+            "Q3": "valence<0.5 and arousal<0.5",
+            "Q4": "valence>=0.5 and arousal<0.5",
+        },
+    }
+    return labels.astype(np.int64), info
+
+
 def _load_previous_splits(previous_manifest: Optional[str]) -> Dict[str, str]:
     if not previous_manifest:
         return {}
@@ -415,13 +502,14 @@ def prepare_unimodal_dataset(
             1.0 + np.linalg.norm(va_diff[both_audio_lyrics], axis=1)
         )
 
-    label_col = _optional_column(
-        combined.columns,
-        ["labels_emotion", "label_emotion", "quadrant", "label", "emotion_label"],
-    )
-    labels = np.asarray(
-        [_label_to_id(value) for value in combined[label_col].tolist()] if label_col else [-1] * len(combined),
-        dtype=np.int64,
+    labels, label_source_info = _resolve_labels(
+        combined,
+        audio=audio,
+        has_audio=has_audio,
+        lyrics=lyrics,
+        has_lyrics=has_lyrics,
+        original_va=original_va,
+        has_original=_has_original,
     )
     quadrants = [MUSIC_LABEL_NAMES.get(int(label), "") for label in labels.tolist()]
 
@@ -452,6 +540,7 @@ def prepare_unimodal_dataset(
         "view_mask_columns": ["has_audio", "has_lyrics", "has_metadata"],
         "source_columns": list(combined.columns),
         "metadata_schema": metadata_schema,
+        "label_source": label_source_info,
     }
     schema_hash = _json_hash(schema_payload)
     schema_payload["schema_hash"] = schema_hash
@@ -498,6 +587,7 @@ def prepare_unimodal_dataset(
         "dataset_hash": dataset_hash,
         "schema_hash": schema_hash,
         "source_combined_csv": os.path.abspath(combined_csv),
+        "label_source": label_source_info,
     }
     with open(os.path.join(out_processed_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -146,3 +146,62 @@ def test_placeholder_aligned_metadata_supports_no_meta_baseline(tmp_path):
     assert canonical["Genres"].tolist() == ["", ""]
     assert canonical["MoodsAll"].tolist() == ["", ""]
     assert bundle.features.shape[0] == 2
+
+
+def test_prepare_unimodal_dataset_derives_quadrants_from_original_va_when_label_missing(tmp_path):
+    combined_csv = tmp_path / "multimodal_va.csv"
+    pd.DataFrame(
+        [
+            {
+                "Song": "q1",
+                "Audio_Arousal": 0.8,
+                "Audio_Valence": 0.8,
+                "Lyrics_Arousal": 0.8,
+                "Lyrics_Valence": 0.8,
+                "Original_Arousal": 0.9,
+                "Original_Valence": 0.9,
+            },
+            {
+                "Song": "q2",
+                "Audio_Arousal": 0.8,
+                "Audio_Valence": 0.2,
+                "Lyrics_Arousal": 0.8,
+                "Lyrics_Valence": 0.2,
+                "Original_Arousal": 0.9,
+                "Original_Valence": 0.1,
+            },
+            {
+                "Song": "q3",
+                "Audio_Arousal": 0.2,
+                "Audio_Valence": 0.2,
+                "Lyrics_Arousal": 0.2,
+                "Lyrics_Valence": 0.2,
+                "Original_Arousal": 0.1,
+                "Original_Valence": 0.1,
+            },
+            {
+                "Song": "q4",
+                "Audio_Arousal": 0.2,
+                "Audio_Valence": 0.8,
+                "Lyrics_Arousal": 0.2,
+                "Lyrics_Valence": 0.8,
+                "Original_Arousal": 0.1,
+                "Original_Valence": 0.9,
+            },
+        ]
+    ).to_csv(combined_csv, index=False)
+
+    out_dir = tmp_path / "processed"
+    aligned_root = tmp_path / "aligned"
+    prepare_unimodal_dataset(
+        combined_csv=str(combined_csv),
+        out_processed_dir=str(out_dir),
+        out_aligned_root=str(aligned_root),
+        seed=42,
+    )
+
+    np.testing.assert_array_equal(np.load(out_dir / "labels_emotion.npy"), np.asarray([0, 1, 2, 3]))
+    manifest = pd.read_csv(out_dir / "dataset_manifest.csv")
+    assert manifest["quadrant"].tolist() == ["Q1", "Q2", "Q3", "Q4"]
+    audio_aligned = pd.read_csv(aligned_root / "aligned_audio_metadata.csv")
+    assert audio_aligned["Quadrant"].tolist() == ["Q1", "Q2", "Q3", "Q4"]

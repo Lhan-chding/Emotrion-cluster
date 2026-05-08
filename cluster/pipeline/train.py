@@ -555,17 +555,23 @@ def _plot_cluster_size_bar(assignments: np.ndarray, out_path: str, palette: Dict
     plt.close(fig)
 
 
-def _plot_quadrant_heatmap(assignments: np.ndarray, labels: np.ndarray, out_path: str) -> None:
+def _quadrant_heatmap_matrix(assignments: np.ndarray, labels: np.ndarray) -> Tuple[List[int], np.ndarray, int]:
     cluster_ids = sorted(np.unique(assignments).tolist())
     heatmap = np.zeros((len(cluster_ids), 4), dtype=np.float32)
+    valid_total = 0
     for row_idx, cluster_id in enumerate(cluster_ids):
         mask = assignments == cluster_id
         valid_labels = labels[mask].astype(np.int64)
         valid_labels = valid_labels[(valid_labels >= 0) & (valid_labels < 4)]
+        valid_total += int(valid_labels.shape[0])
         counts = np.bincount(valid_labels, minlength=4).astype(np.float32)
         total = max(float(valid_labels.shape[0]), 1.0)
         heatmap[row_idx] = counts / total
+    return [int(item) for item in cluster_ids], heatmap, valid_total
 
+
+def _plot_quadrant_heatmap(assignments: np.ndarray, labels: np.ndarray, out_path: str) -> None:
+    cluster_ids, heatmap, valid_total = _quadrant_heatmap_matrix(assignments, labels)
     fig, ax = plt.subplots(figsize=(7, max(4, 0.45 * len(cluster_ids))))
     im = ax.imshow(heatmap, aspect="auto", cmap="YlOrRd", norm=Normalize(vmin=0.0, vmax=1.0))
     ax.set_xticks(np.arange(4))
@@ -578,6 +584,18 @@ def _plot_quadrant_heatmap(assignments: np.ndarray, labels: np.ndarray, out_path
     for i in range(heatmap.shape[0]):
         for j in range(heatmap.shape[1]):
             ax.text(j, i, f"{heatmap[i, j]:.2f}", ha="center", va="center", fontsize=8, color="black")
+    if valid_total == 0:
+        ax.set_title("Quadrant Composition per Cluster (no valid labels)")
+        ax.text(
+            1.5,
+            max((len(cluster_ids) - 1) / 2.0, 0.0),
+            "No valid quadrant labels",
+            ha="center",
+            va="center",
+            fontsize=11,
+            color="black",
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "black", "alpha": 0.85},
+        )
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
     fig.savefig(out_path, dpi=180)
