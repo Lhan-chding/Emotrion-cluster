@@ -99,9 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--k_strategy", type=str, default="composite",
                         choices=["composite", "bic_only", "hierarchical"],
                         help="K-selection strategy: composite (multi-metric), bic_only (legacy), hierarchical (two-level)")
-    parser.add_argument("--covariance_type", type=str, default="full",
+    parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
-                        help="GMM covariance type (full recommended for A100)")
+                        help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
     parser.add_argument("--stability_runs", type=int, default=5,
                         help="Number of GMM runs for stability scoring (composite strategy)")
     parser.add_argument("--cluster_backend", type=str, default="auto",

@@ -22,7 +22,7 @@ from cluster.backends import resolve_cluster_backend
 class KSelectionConfig:
     k_min: int = 4
     k_max: int = 24
-    covariance_type: str = "full"
+    covariance_type: str = "diag"
     n_init: int = 10
     min_cluster_size: int = 20
     min_cluster_size_ratio: float = 0.01
@@ -164,7 +164,7 @@ def compute_stability_score(
     features: np.ndarray,
     k: int,
     n_runs: int = 5,
-    covariance_type: str = "full",
+    covariance_type: str = "diag",
     random_state: int = 42,
     cluster_backend: str = "sklearn",
     device: str = "cpu",

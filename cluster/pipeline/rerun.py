@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--k_strategy", type=str, default="composite",
                         choices=["composite", "bic_only", "hierarchical"],
                         help="K-selection strategy")
-    parser.add_argument("--covariance_type", type=str, default="full",
+    parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
     parser.add_argument("--stability_runs", type=int, default=5)
     parser.add_argument("--cluster_backend", type=str, default="auto",
