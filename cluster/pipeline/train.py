@@ -318,13 +318,16 @@ def build_cluster_features(
 
     if features is None:
         z_fused = embeddings["z_fused"].astype(np.float32)
-        z_audio = embeddings["z_audio"].astype(np.float32) * view_mask[:, 0:1]
-        z_lyrics = embeddings["z_lyrics"].astype(np.float32) * view_mask[:, 1:2]
-        z_metadata = (
-            float(metadata_cluster_weight)
-            * embeddings["z_metadata"].astype(np.float32)
-            * view_mask[:, 2:3]
-        )
+        z_audio = embeddings["z_audio"].astype(np.float32)
+        z_lyrics = embeddings["z_lyrics"].astype(np.float32)
+        z_metadata = float(metadata_cluster_weight) * embeddings["z_metadata"].astype(np.float32)
+        # Impute missing-view embeddings with z_fused to avoid zero-vector leakage
+        audio_missing = view_mask[:, 0:1] <= 0.0
+        lyrics_missing = view_mask[:, 1:2] <= 0.0
+        metadata_missing = view_mask[:, 2:3] <= 0.0
+        z_audio = np.where(audio_missing, z_fused, z_audio)
+        z_lyrics = np.where(lyrics_missing, z_fused, z_lyrics)
+        z_metadata = np.where(metadata_missing, 0.0, z_metadata)
         gate = float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32)
         raw_conflict = _conflict_features(embeddings, view_mask)
         if raw_conflict.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
@@ -575,13 +578,20 @@ def _build_cluster_features(
     if view_mask is None:
         view_mask = np.ones((embeddings["z_fused"].shape[0], 3), dtype=np.float32)
     view_mask = view_mask.astype(np.float32)
+    z_fused = embeddings["z_fused"].astype(np.float32)
+    z_audio = embeddings["z_audio"].astype(np.float32)
+    z_lyrics = embeddings["z_lyrics"].astype(np.float32)
+    z_metadata = float(metadata_cluster_weight) * embeddings["z_metadata"].astype(np.float32)
+    z_audio = np.where(view_mask[:, 0:1] <= 0.0, z_fused, z_audio)
+    z_lyrics = np.where(view_mask[:, 1:2] <= 0.0, z_fused, z_lyrics)
+    z_metadata = np.where(view_mask[:, 2:3] <= 0.0, 0.0, z_metadata)
     conflict = _conflict_features(embeddings, view_mask)
     return np.concatenate(
         [
-            embeddings["z_fused"].astype(np.float32),
-            embeddings["z_audio"].astype(np.float32) * view_mask[:, 0:1],
-            embeddings["z_lyrics"].astype(np.float32) * view_mask[:, 1:2],
-            float(metadata_cluster_weight) * embeddings["z_metadata"].astype(np.float32) * view_mask[:, 2:3],
+            z_fused,
+            z_audio,
+            z_lyrics,
+            z_metadata,
             float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32),
             float(conflict_cluster_weight) * conflict,
         ],
