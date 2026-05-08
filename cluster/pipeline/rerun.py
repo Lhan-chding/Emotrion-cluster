@@ -45,9 +45,14 @@ def _strategy_requires_checkpoint(strategy: str) -> bool:
 
 
 def _availability_gate(view_mask: np.ndarray) -> np.ndarray:
-    mask = np.asarray(view_mask, dtype=np.float32)
-    weights = mask / np.maximum(mask.sum(axis=1, keepdims=True), 1.0)
-    return weights.astype(np.float32)
+    """Uniform gate weights for raw-feature mode (no learned model).
+
+    Returns uniform 1/3 weights regardless of view availability to avoid
+    leaking missingness patterns into cluster features.
+    """
+    n = view_mask.shape[0]
+    n_views = view_mask.shape[1] if view_mask.ndim == 2 else 3
+    return np.full((n, n_views), 1.0 / n_views, dtype=np.float32)
 
 
 def _raw_feature_embeddings(dataset) -> Dict[str, Any]:
