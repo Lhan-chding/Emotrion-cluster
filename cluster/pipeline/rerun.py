@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata_cluster_weight", type=float, default=0.75)
     parser.add_argument("--conflict_cluster_weight", type=float, default=0.40)
     parser.add_argument("--gate_cluster_weight", type=float, default=0.20)
+    parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--k_strategy", type=str, default="composite",
                         choices=["composite", "bic_only", "hierarchical"],
@@ -120,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "fused_residual",
                             "fused_only",
                             "fused_va_geometry",
+                            "masked_diffaware",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
@@ -251,6 +253,7 @@ def main() -> None:
         strategy=feature_strategy,
         pca_target_dim=int(args.pca_target_dim),
         fit_mask=both_mask,
+        diff_cluster_weight=float(args.diff_cluster_weight),
     )
     # Fit scaler on complete-pair rows when complete_first, else all rows
     if both_mask is not None:
@@ -381,6 +384,7 @@ def main() -> None:
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
             fitted_imputation=search_imputation,
+            diff_cluster_weight=float(args.diff_cluster_weight),
         )
         features = apply_cluster_feature_weights(
             cluster_scaler.transform(features_raw).astype(np.float32),

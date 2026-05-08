@@ -82,6 +82,7 @@ class MusicDiscoveryDataset(Dataset):
         va_diff = load_required_array(self.data_dir, "va_diff", np.float32, cache=_cache)
         labels = load_required_array(self.data_dir, "labels_emotion", np.int64, cache=_cache)
         original_va = load_optional_array(self.data_dir, "original_va", np.float32, cache=_cache)
+        diff_observed = load_optional_array(self.data_dir, "diff_observed", np.float32, cache=_cache)
         n_samples = int(audio.shape[0])
 
         if not (lyrics.shape[0] == metadata.shape[0] == consistency.shape[0] == va_diff.shape[0] == labels.shape[0] == n_samples):
@@ -94,6 +95,12 @@ class MusicDiscoveryDataset(Dataset):
             original_va = 0.5 * (audio + lyrics)
         if original_va.shape != (n_samples, 2):
             raise ValueError(f"original_va.npy must have shape [{n_samples}, 2], got {original_va.shape}.")
+        if diff_observed is None:
+            diff_observed = np.zeros((n_samples, 1), dtype=np.float32)
+        if diff_observed.ndim == 1:
+            diff_observed = diff_observed.reshape(-1, 1)
+        if diff_observed.shape[0] != n_samples:
+            raise ValueError(f"diff_observed.npy must have {n_samples} rows, got {diff_observed.shape[0]}.")
 
         indices = _resolve_split_indices(
             data_dir=self.data_dir,
@@ -114,6 +121,12 @@ class MusicDiscoveryDataset(Dataset):
         self.va_diff = va_diff[indices].astype(np.float32)
         self.labels = labels[indices].astype(np.int64)
         self.original_va = original_va[indices].astype(np.float32)
+
+        # Diff geometry features (computed eagerly from raw VAs)
+        from cluster.features.diff_geometry import build_diff_geometry_features
+        self.diff_geometry, self.diff_observed = build_diff_geometry_features(
+            self.raw_audio, self.raw_lyrics, self.view_mask,
+        )
 
         self.audio = apply_scale(self.raw_audio, scaler_state, "audio")
         self.lyrics = apply_scale(self.raw_lyrics, scaler_state, "lyrics")
@@ -156,6 +169,8 @@ class MusicDiscoveryDataset(Dataset):
             "mean_va": torch.from_numpy(self._mean_va(idx)),
             "signed_va_diff": torch.from_numpy(self._signed_va_diff(idx)),
             "va_geometry": torch.from_numpy(self._va_geometry(idx)),
+            "diff_geometry": torch.from_numpy(self.diff_geometry[idx]),
+            "diff_observed": torch.tensor(self.diff_observed[idx, 0], dtype=torch.float32),
             "original_va": torch.from_numpy(self.original_va[idx]),
             "label_ref": int(self.labels[idx]),
             "label_emotion": int(self.labels[idx]),
@@ -250,6 +265,54 @@ class _ViewAutoencoder(nn.Module):
         return self.decoder(z)
 
 
+class DiffEncoder(nn.Module):
+    """Encodes diff geometry features (26-dim) into latent space.
+
+    Output is gated by diff_observed so audio-only or lyrics-only samples
+    produce zero vectors, preventing missingness leakage.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        latent_dim: int,
+        hidden_dim: int = 128,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.LayerNorm(int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Linear(64, int(latent_dim)),
+        )
+
+    def forward(self, diff_features: torch.Tensor, diff_observed: torch.Tensor) -> torch.Tensor:
+        z = self.net(diff_features)
+        gate = diff_observed.to(device=z.device, dtype=z.dtype).reshape(-1, 1)
+        return z * gate
+
+
+class VAHead(nn.Module):
+    """Predicts consensus VA coordinates from a latent vector."""
+
+    def __init__(self, latent_dim: int, hidden_dim: int = 64) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(latent_dim), int(hidden_dim)),
+            nn.ReLU(),
+            nn.Linear(int(hidden_dim), 2),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
 class DECClusterHead(nn.Module):
     def __init__(self, n_clusters: int, latent_dim: int, temperature: float = 1.0) -> None:
         super().__init__()
@@ -288,6 +351,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
         cluster_head_k: int = 0,
         cluster_temperature: float = 1.0,
         gate_context_dim: int = len(VA_GEOMETRY_FEATURE_NAMES) + 3,
+        diff_input_dim: int = 26,
     ) -> None:
         super().__init__()
         cluster_head_k = int(cluster_head_k)
@@ -344,6 +408,12 @@ class MusicMetadataDiscoveryNet(nn.Module):
             if cluster_head_k > 0
             else None
         )
+        self.diff_encoder = DiffEncoder(
+            input_dim=diff_input_dim,
+            latent_dim=latent_dim,
+            dropout=dropout,
+        )
+        self.va_head = VAHead(latent_dim=latent_dim)
         # Gate weight initialization: Xavier for learning, asymmetric bias
         for layer in self.gate_mlp:
             if isinstance(layer, nn.Linear):
@@ -364,6 +434,8 @@ class MusicMetadataDiscoveryNet(nn.Module):
         va_diff: torch.Tensor,
         va_geometry: Optional[torch.Tensor] = None,
         view_mask: Optional[torch.Tensor] = None,
+        diff_features: Optional[torch.Tensor] = None,
+        diff_observed: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         if view_mask is None:
             view_mask = torch.ones((audio.shape[0], 3), dtype=audio.dtype, device=audio.device)
@@ -437,6 +509,19 @@ class MusicMetadataDiscoveryNet(nn.Module):
         fused_audio_recon = self.fused_audio_decoder(fused)
         fused_lyrics_recon = self.fused_lyrics_decoder(fused)
 
+        # Diff encoder: encode pairwise geometry
+        if diff_features is None:
+            diff_features = torch.zeros(
+                (audio.shape[0], self.diff_encoder.net[0].in_features),
+                dtype=audio.dtype, device=audio.device,
+            )
+        if diff_observed is None:
+            diff_observed = torch.zeros(audio.shape[0], dtype=audio.dtype, device=audio.device)
+        z_diff = self.diff_encoder(diff_features, diff_observed)
+
+        # VA head: predict consensus VA from fused latent
+        va_pred = self.va_head(fused)
+
         outputs = {
             "z_audio": z_audio,
             "z_lyrics": z_lyrics,
@@ -452,6 +537,8 @@ class MusicMetadataDiscoveryNet(nn.Module):
             "proj_metadata": self.proj_metadata(z_metadata),
             "proj_fused": self.proj_fused(fused),
             "gate_weights": gate_weights,
+            "z_diff": z_diff,
+            "va_pred": va_pred,
         }
         if self.cluster_head is not None:
             outputs.update(
@@ -535,6 +622,8 @@ def _discovery_loss(
     cluster_loss_weight: float = 0.0,
     cvcl_loss_weight: float = 0.0,
     assignment_balance_weight: float = 0.0,
+    consensus_va_weight: float = 0.0,
+    diff_preserve_weight: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     audio = batch["audio"]
     lyrics = batch["lyrics"]
@@ -574,6 +663,31 @@ def _discovery_loss(
     align_fused_audio = _masked_mean(_cosine_distance(outputs["proj_fused"], outputs["proj_audio"]), audio_mask)
     align_fused_lyrics = _masked_mean(_cosine_distance(outputs["proj_fused"], outputs["proj_lyrics"]), lyrics_mask)
 
+    # Consensus VA preservation: keep z_fused grounded in VA space
+    consensus_loss = audio.new_tensor(0.0)
+    diff_preserve_loss = audio.new_tensor(0.0)
+    if consensus_va_weight > 0:
+        mean_va = batch.get("mean_va")
+        if mean_va is not None:
+            va_pred = outputs["va_pred"]
+            any_view_mask = (audio_mask + lyrics_mask) > 0.0
+            consensus_loss = _masked_mse(va_pred, mean_va, any_view_mask)
+
+    # Disagreement preservation: keep latent distance proportional to VA distance
+    if diff_preserve_weight > 0:
+        signed_va_diff = batch.get("signed_va_diff")
+        diff_obs = batch.get("diff_observed")
+        if signed_va_diff is not None and diff_obs is not None:
+            diff_mask = (diff_obs > 0.0).to(dtype=audio.dtype)
+            if diff_mask.any():
+                z_dist = torch.norm(outputs["z_audio"] - outputs["z_lyrics"], dim=1)
+                va_dist = torch.norm(signed_va_diff, dim=1)
+                alpha = 0.5
+                diff_preserve_loss = _masked_mean(
+                    F.smooth_l1_loss(z_dist, alpha * va_dist, reduction="none"),
+                    diff_mask,
+                )
+
     total = (
         recon_audio
         + recon_lyrics
@@ -588,6 +702,11 @@ def _discovery_loss(
     gate_entropy = -(gate * (gate + 1e-8).log()).sum(dim=-1).mean()
     if gate_entropy_weight > 0:
         total = total + gate_entropy_weight * _masked_gate_balance_loss(gate, view_mask)
+
+    if consensus_va_weight > 0:
+        total = total + consensus_va_weight * consensus_loss
+    if diff_preserve_weight > 0:
+        total = total + diff_preserve_weight * diff_preserve_loss
 
     zero = total.new_tensor(0.0)
     cluster_loss = zero
@@ -630,6 +749,8 @@ def _discovery_loss(
         "cluster_loss": cluster_loss.detach(),
         "cvcl_loss": cvcl_loss.detach(),
         "assignment_balance": assignment_balance.detach(),
+        "consensus_va": consensus_loss.detach(),
+        "diff_preserve": diff_preserve_loss.detach(),
     }
 
 
@@ -681,6 +802,8 @@ def _run_epoch(
     cluster_loss_weight: float = 0.0,
     cvcl_loss_weight: float = 0.0,
     assignment_balance_weight: float = 0.0,
+    consensus_va_weight: float = 0.0,
+    diff_preserve_weight: float = 0.0,
     *,
     grad_clip_norm: float = 0.0,
     scaler: Optional[torch.amp.GradScaler] = None,
@@ -704,6 +827,8 @@ def _run_epoch(
                 va_diff=batch["va_diff"],
                 va_geometry=batch.get("va_geometry"),
                 view_mask=batch.get("view_mask"),
+                diff_features=batch.get("diff_geometry"),
+                diff_observed=batch.get("diff_observed"),
             )
             losses = _discovery_loss(
                 outputs=outputs,
@@ -716,6 +841,8 @@ def _run_epoch(
                 cluster_loss_weight=cluster_loss_weight,
                 cvcl_loss_weight=cvcl_loss_weight,
                 assignment_balance_weight=assignment_balance_weight,
+                consensus_va_weight=consensus_va_weight,
+                diff_preserve_weight=diff_preserve_weight,
             )
 
         if is_train:
@@ -758,6 +885,8 @@ def train_music_discovery_model(
     cluster_loss_weight: float = 0.0,
     cvcl_loss_weight: float = 0.0,
     assignment_balance_weight: float = 0.0,
+    consensus_va_weight: float = 0.0,
+    diff_preserve_weight: float = 0.0,
     grad_clip_norm: float = 0.0,
     use_amp: bool = False,
     early_stopping_patience: int = 0,
@@ -809,6 +938,8 @@ def train_music_discovery_model(
             cluster_loss_weight=cluster_loss_weight,
             cvcl_loss_weight=cvcl_loss_weight,
             assignment_balance_weight=assignment_balance_weight,
+            consensus_va_weight=consensus_va_weight,
+            diff_preserve_weight=diff_preserve_weight,
             grad_clip_norm=grad_clip_norm,
             scaler=amp_scaler,
             use_amp=use_amp,
@@ -827,6 +958,8 @@ def train_music_discovery_model(
                 cluster_loss_weight=cluster_loss_weight,
                 cvcl_loss_weight=cvcl_loss_weight,
                 assignment_balance_weight=assignment_balance_weight,
+                consensus_va_weight=consensus_va_weight,
+                diff_preserve_weight=diff_preserve_weight,
                 use_amp=use_amp,
             )
 
@@ -886,7 +1019,10 @@ def extract_split_embeddings(
         "mean_va": [],
         "signed_va_diff": [],
         "va_geometry": [],
+        "diff_geometry": [],
+        "diff_observed": [],
         "original_va": [],
+        "z_diff": [],
     }
     identifiers: List[str] = []
     lyric_identifiers: List[str] = []
@@ -903,6 +1039,8 @@ def extract_split_embeddings(
                 va_diff=batch["va_diff"],
                 va_geometry=batch.get("va_geometry"),
                 view_mask=batch.get("view_mask"),
+                diff_features=batch.get("diff_geometry"),
+                diff_observed=batch.get("diff_observed"),
             )
             blocks["z_audio"].append(outputs["z_audio"].cpu().numpy().astype(np.float32))
             blocks["z_lyrics"].append(outputs["z_lyrics"].cpu().numpy().astype(np.float32))
@@ -919,7 +1057,10 @@ def extract_split_embeddings(
             blocks["mean_va"].append(batch["mean_va"].cpu().numpy().astype(np.float32))
             blocks["signed_va_diff"].append(batch["signed_va_diff"].cpu().numpy().astype(np.float32))
             blocks["va_geometry"].append(batch["va_geometry"].cpu().numpy().astype(np.float32))
+            blocks["diff_geometry"].append(batch["diff_geometry"].cpu().numpy().astype(np.float32))
+            blocks["diff_observed"].append(batch["diff_observed"].cpu().numpy().astype(np.float32).reshape(-1, 1))
             blocks["original_va"].append(batch["original_va"].cpu().numpy().astype(np.float32))
+            blocks["z_diff"].append(outputs["z_diff"].cpu().numpy().astype(np.float32))
 
     out: Dict[str, Any] = {
         key: np.concatenate(value, axis=0) if value else np.zeros((0, 0), dtype=np.float32)

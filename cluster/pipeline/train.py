@@ -96,6 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Weight for per-view assignment alignment to fused assignments.")
     parser.add_argument("--assignment_balance_weight", type=float, default=0.0,
                         help="Weight for balanced cluster assignment regularization.")
+    parser.add_argument("--consensus_va_weight", type=float, default=0.1,
+                        help="Weight for consensus VA preservation loss (MSE between va_pred and mean_va)")
+    parser.add_argument("--diff_preserve_weight", type=float, default=0.05,
+                        help="Weight for disagreement preservation loss (SmoothL1 between latent and VA distances)")
+    parser.add_argument("--diff_input_dim", type=int, default=26,
+                        help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
                         choices=["composite", "bic_only", "hierarchical"],
                         help="K-selection strategy: composite (multi-metric), bic_only (legacy), hierarchical (two-level)")
@@ -121,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "fused_residual",
                             "fused_only",
                             "fused_va_geometry",
+                            "masked_diffaware",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
@@ -136,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata_cluster_weight", type=float, default=0.75)
     parser.add_argument("--conflict_cluster_weight", type=float, default=0.40)
     parser.add_argument("--gate_cluster_weight", type=float, default=0.20)
+    parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
                         choices=["joint", "complete_first"],
@@ -303,6 +311,7 @@ def build_cluster_features(
     fitted_pca: Optional[PCA] = None,
     fitted_imputation: Optional[np.ndarray] = None,
     fit_mask: Optional[np.ndarray] = None,
+    diff_cluster_weight: float = 0.35,
 ) -> Tuple[np.ndarray, Optional[PCA], Optional[np.ndarray]]:
     """Build clustering features from embeddings using the specified strategy.
 
@@ -331,7 +340,24 @@ def build_cluster_features(
 
     imputation_fill: Optional[np.ndarray] = None
 
-    if base_strategy == "mean_va":
+    if base_strategy == "masked_diffaware":
+        z_fused = embeddings["z_fused"].astype(np.float32)
+        z_diff = embeddings.get("z_diff")
+        if z_diff is None:
+            z_diff = np.zeros((z_fused.shape[0], z_fused.shape[1]), dtype=np.float32)
+        z_diff = z_diff.astype(np.float32)
+        z_meta = embeddings["z_metadata"].astype(np.float32)
+        metadata_missing = view_mask[:, 2:3] <= 0.0
+        z_meta = np.where(metadata_missing, 0.0, z_meta)
+        features = np.concatenate(
+            [
+                z_fused,
+                float(diff_cluster_weight) * z_diff,
+                float(metadata_cluster_weight) * z_meta,
+            ],
+            axis=1,
+        )
+    elif base_strategy == "mean_va":
         features = _mean_va_features(embeddings)
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
         raw_geom = _va_geometry_features(embeddings)
@@ -1422,6 +1448,7 @@ def main() -> None:
         metadata_logit_offset=float(args.metadata_logit_offset),
         cluster_head_k=int(args.cluster_head_k),
         cluster_temperature=float(args.cluster_temperature),
+        diff_input_dim=int(args.diff_input_dim),
     ).to(device)
 
     best_state, history, best_metrics = train_music_discovery_model(
@@ -1440,6 +1467,8 @@ def main() -> None:
         cluster_loss_weight=float(args.cluster_loss_weight),
         cvcl_loss_weight=float(args.cvcl_loss_weight),
         assignment_balance_weight=float(args.assignment_balance_weight),
+        consensus_va_weight=float(args.consensus_va_weight),
+        diff_preserve_weight=float(args.diff_preserve_weight),
         grad_clip_norm=float(args.grad_clip_norm),
         use_amp=_use_amp,
         early_stopping_patience=int(args.early_stopping_patience),
@@ -1550,6 +1579,7 @@ def main() -> None:
         strategy=feature_strategy,
         pca_target_dim=int(args.pca_target_dim),
         fit_mask=both_mask,
+        diff_cluster_weight=float(args.diff_cluster_weight),
     )
     # Fit scaler on complete-pair rows when complete_first, else all rows
     if both_mask is not None:
@@ -1680,6 +1710,7 @@ def main() -> None:
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
             fitted_imputation=search_imputation,
+            diff_cluster_weight=float(args.diff_cluster_weight),
         )
         features = apply_cluster_feature_weights(
             cluster_scaler.transform(features_raw).astype(np.float32),
