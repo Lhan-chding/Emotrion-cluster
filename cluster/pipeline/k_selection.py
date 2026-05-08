@@ -389,18 +389,21 @@ def search_gmm_composite(
         for r in results
     ], dtype=np.float64)
 
-    composite = (
+    raw_composite = (
         config.w_bic * bic_norm
         + config.w_silhouette * sil_norm
         + config.w_min_size * size_scores
         + config.w_stability * stab_norm
     )
     # Subtract mask-purity penalty if view_mask was provided
+    mask_penalty_arr: Optional[np.ndarray] = None
     if mask_nmi_arr and config.w_mask_purity > 0:
-        mask_penalty = np.array([
+        mask_penalty_arr = np.array([
             mask_nmi_arr.get(r["k"], 0.0) for r in results
         ], dtype=np.float64)
-        composite -= config.w_mask_purity * mask_penalty
+        composite = raw_composite - config.w_mask_purity * mask_penalty_arr
+    else:
+        composite = raw_composite
     metrics["composite_score"] = composite
 
     best_idx = int(np.argmax(composite))
@@ -411,23 +414,30 @@ def search_gmm_composite(
     # Also compute BIC elbow for reference
     bic_elbow_k = detect_bic_elbow({r["k"]: r["bic"] for r in results})
 
+    selection_info: Dict[str, Any] = {
+        "selected_k": best_result["k"],
+        "selection_mode": "composite",
+        "composite_score": float(composite[best_idx]),
+        "bic_elbow_k": bic_elbow_k,
+        "min_cluster_size_threshold": best_result["min_size_threshold"],
+        "stability_runs": config.stability_runs,
+        "w_mask_purity": config.w_mask_purity,
+        "mask_nmi": mask_nmi_arr.get(best_result["k"], float("nan")),
+        "raw_composite_score": float(raw_composite[best_idx]),
+        **_backend_runtime_info(
+            config,
+            actual_cluster_backend=actual_cluster_backend,
+            actual_eval_backend=actual_eval_backend,
+        ),
+    }
+    if mask_penalty_arr is not None:
+        selection_info["mask_penalty_applied"] = float(config.w_mask_purity * mask_penalty_arr[best_idx])
+
     return KSearchResult(
         best_k=best_result["k"],
         best_model=best_result["gmm"],
         metrics=metrics,
-        selection_info={
-            "selected_k": best_result["k"],
-            "selection_mode": "composite",
-            "composite_score": float(composite[best_idx]),
-            "bic_elbow_k": bic_elbow_k,
-            "min_cluster_size_threshold": best_result["min_size_threshold"],
-            "stability_runs": config.stability_runs,
-            **_backend_runtime_info(
-                config,
-                actual_cluster_backend=actual_cluster_backend,
-                actual_eval_backend=actual_eval_backend,
-            ),
-        },
+        selection_info=selection_info,
     )
 
 

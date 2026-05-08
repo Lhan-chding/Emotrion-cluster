@@ -134,6 +134,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
                         help="Allow checkpoint with mismatched metadata_dim (true/false)")
+    parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
+                        choices=["joint", "complete_first"],
+                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples, then predict all")
     return parser
 
 
@@ -223,6 +226,23 @@ def main() -> None:
         }
 
     search_split = str(args.search_split).strip().lower()
+    # Determine complete_first fit mask early so PCA/scaler fit on complete-pair rows only
+    assignment_mode = str(getattr(args, "cluster_assignment_mode", "joint")).strip().lower()
+    search_view_mask = embeddings_by_split[search_split].get("view_mask")
+    both_mask: Optional[np.ndarray] = None
+    if assignment_mode == "complete_first":
+        if search_view_mask is None:
+            raise ValueError(
+                "complete_first mode requires view_mask in embeddings for search split "
+                f"'{search_split}' — got None."
+            )
+        both_mask = (search_view_mask[:, 0] > 0) & (search_view_mask[:, 1] > 0)
+        if not both_mask.any():
+            raise ValueError(
+                "complete_first mode requires at least one track with both audio+lyrics "
+                f"in search split '{search_split}', but none found."
+            )
+
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=float(args.metadata_cluster_weight),
@@ -230,8 +250,13 @@ def main() -> None:
         gate_cluster_weight=float(args.gate_cluster_weight),
         strategy=feature_strategy,
         pca_target_dim=int(args.pca_target_dim),
+        fit_mask=both_mask,
     )
-    cluster_scaler = StandardScaler().fit(search_features_raw)
+    # Fit scaler on complete-pair rows when complete_first, else all rows
+    if both_mask is not None:
+        cluster_scaler = StandardScaler().fit(search_features_raw[both_mask])
+    else:
+        cluster_scaler = StandardScaler().fit(search_features_raw)
     feature_weights = cluster_feature_weights(
         feature_strategy,
         int(search_features_raw.shape[1]),
@@ -259,16 +284,51 @@ def main() -> None:
         silhouette_mode=str(args.silhouette_mode),
         silhouette_sample_size=int(args.silhouette_sample_size),
         silhouette_chunk_size=int(args.silhouette_chunk_size),
-        view_mask=embeddings_by_split[search_split].get("view_mask"),
+        view_mask=search_view_mask,
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
+
+    # Block hierarchical + complete_first combination
+    if assignment_mode == "complete_first" and is_hierarchical:
+        raise ValueError(
+            "cluster_assignment_mode='complete_first' is incompatible with "
+            "k_strategy='hierarchical'. Hierarchical clustering uses two-level "
+            "macro/micro GMMs that cannot be refitted on complete-pair subset. "
+            "Use k_strategy='composite' or 'bic_only' instead."
+        )
+
     if is_hierarchical:
         gmm_model = k_result.macro_model
         selected_k = k_result.total_clusters
     else:
         gmm_model = k_result
         selected_k = int(gmm_model.n_components)
+
+    # Complete-pair-first: re-fit GMM on both-pair samples only
+    if assignment_mode == "complete_first":
+        assert both_mask is not None
+        if both_mask.sum() < selected_k:
+            raise ValueError(
+                f"complete_first mode: selected_k={selected_k} exceeds "
+                f"complete-pair sample count ({both_mask.sum()}) in search split "
+                f"'{search_split}'. Reduce k_max (currently {args.k_max}) or use "
+                f"cluster_assignment_mode='joint'."
+            )
+        if both_mask.any() and not both_mask.all():
+            from sklearn.mixture import GaussianMixture
+            refitted = GaussianMixture(
+                n_components=selected_k,
+                covariance_type=str(args.covariance_type),
+                reg_covar=1e-5,
+                n_init=10,
+                random_state=int(args.random_state),
+            )
+            refitted.fit(search_features[both_mask])
+            gmm_model = refitted
+            selection_info["complete_first_refit"] = True
+            selection_info["complete_pair_samples"] = int(both_mask.sum())
+            selection_info["total_samples"] = int(search_features.shape[0])
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
     with open(gmm_bundle_path, "wb") as f:
