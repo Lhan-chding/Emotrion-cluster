@@ -251,3 +251,53 @@ def test_dataset_plot_va_can_use_original_va():
         original_va = np.asarray([[0.7, 0.6], [0.3, 0.4]], dtype=np.float32)
 
     np.testing.assert_allclose(_dataset_plot_va(Dataset(), "original"), Dataset.original_va)
+
+
+def test_full_strategy_no_missingness_leakage():
+    """Missing-view rows should not be identifiable by their feature values."""
+    rng = np.random.default_rng(42)
+    n = 100
+    z_fused = rng.standard_normal((n, 4)).astype(np.float32)
+    z_audio = z_fused + rng.standard_normal((n, 4)).astype(np.float32) * 0.1
+    z_lyrics = z_fused + rng.standard_normal((n, 4)).astype(np.float32) * 0.1
+    z_metadata = rng.standard_normal((n, 4)).astype(np.float32)
+    gate_weights = np.full((n, 3), 1.0 / 3, dtype=np.float32)
+    consistency = rng.uniform(0.5, 1.0, (n, 1)).astype(np.float32)
+    va_diff = rng.standard_normal((n, 2)).astype(np.float32) * 0.1
+
+    view_mask = np.ones((n, 3), dtype=np.float32)
+    # Make 30% of rows missing audio
+    missing_audio = rng.choice(n, size=30, replace=False)
+    view_mask[missing_audio, 0] = 0.0
+    consistency[missing_audio] = 0.0
+    va_diff[missing_audio] = 0.0
+
+    embeddings = {
+        "z_fused": z_fused,
+        "z_audio": z_audio,
+        "z_lyrics": z_lyrics,
+        "z_metadata": z_metadata,
+        "gate_weights": gate_weights,
+        "consistency": consistency,
+        "va_diff": va_diff,
+        "view_mask": view_mask,
+    }
+
+    features, _, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="full",
+    )
+
+    # No column should be all-zero for missing rows and non-zero for observed
+    observed_mask = view_mask[:, 0] > 0
+    for col in range(features.shape[1]):
+        obs_std = features[observed_mask, col].std()
+        miss_std = features[~observed_mask, col].std()
+        if obs_std > 0.01:
+            assert miss_std > 0.001, (
+                f"Column {col} has near-zero variance for missing rows "
+                f"(obs_std={obs_std:.4f}, miss_std={miss_std:.6f}) — likely leakage"
+            )
