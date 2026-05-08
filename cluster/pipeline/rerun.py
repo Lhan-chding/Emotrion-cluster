@@ -259,6 +259,7 @@ def main() -> None:
         silhouette_mode=str(args.silhouette_mode),
         silhouette_sample_size=int(args.silhouette_sample_size),
         silhouette_chunk_size=int(args.silhouette_chunk_size),
+        view_mask=embeddings_by_split[search_split].get("view_mask"),
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)

@@ -453,6 +453,7 @@ def run_k_selection(
     silhouette_mode: str = "full",
     silhouette_sample_size: int = 0,
     silhouette_chunk_size: int = 4096,
+    view_mask: Optional[np.ndarray] = None,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -475,7 +476,7 @@ def run_k_selection(
             silhouette_sample_size=silhouette_sample_size,
             silhouette_chunk_size=silhouette_chunk_size,
         )
-        result = search_gmm_composite(features, config)
+        result = search_gmm_composite(features, config, view_mask=view_mask)
         return result.best_model, result.metrics, result.selection_info
 
     elif k_strategy == "hierarchical":
@@ -1551,6 +1552,7 @@ def main() -> None:
         silhouette_mode=str(args.silhouette_mode),
         silhouette_sample_size=int(args.silhouette_sample_size),
         silhouette_chunk_size=int(args.silhouette_chunk_size),
+        view_mask=embeddings_by_split[search_split].get("view_mask"),
     )
 
     # Resolve GMM model and selected_k depending on strategy

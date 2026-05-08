@@ -39,6 +39,8 @@ class KSelectionConfig:
     silhouette_mode: str = "full"
     silhouette_sample_size: int = 0
     silhouette_chunk_size: int = 4096
+    # Mask purity
+    w_mask_purity: float = 0.15
     # Hierarchical
     macro_k_min: int = 4
     macro_k_max: int = 8
@@ -298,6 +300,7 @@ def _score_silhouette(features: np.ndarray, labels: np.ndarray, config: KSelecti
 def search_gmm_composite(
     features: np.ndarray,
     config: KSelectionConfig,
+    view_mask: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """Multi-metric K selection with composite scoring.
 
@@ -305,6 +308,12 @@ def search_gmm_composite(
     - Precomputes pairwise distance matrix once for silhouette scoring.
     - Parallelises GMM fitting across K values using joblib.
     - Parallelises stability scoring within each K.
+
+    Parameters
+    ----------
+    view_mask : ndarray [N, >=2] or None
+        If provided, NMI between cluster labels and mask patterns is
+        computed for each K and subtracted as a penalty in composite score.
     """
     # Precompute distance matrix once only for the sklearn full silhouette path.
     use_precomputed = (
@@ -335,6 +344,19 @@ def search_gmm_composite(
     if not results:
         raise RuntimeError("GMM composite search produced no results.")
 
+    # Mask-purity penalty: penalise K values where clusters align with mask patterns
+    mask_nmi_arr: Dict[int, float] = {}
+    if view_mask is not None and config.w_mask_purity > 0:
+        from sklearn.metrics import normalized_mutual_info_score
+        mask_patterns = np.array([
+            "".join(["1" if v > 0 else "0" for v in row[:2]])
+            for row in np.asarray(view_mask, dtype=np.float32)
+        ])
+        for r in results:
+            lbls = r["labels"]
+            nmi = float(normalized_mutual_info_score(lbls, mask_patterns))
+            mask_nmi_arr[r["k"]] = nmi
+
     # Build metrics DataFrame
     rows = []
     for r in results:
@@ -347,6 +369,7 @@ def search_gmm_composite(
             "min_cluster_size": r["min_cluster_size"],
             "min_size_ok": r["min_size_ok"],
             "stability": r["stability"],
+            "mask_nmi": mask_nmi_arr.get(r["k"], float("nan")),
         })
     metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
 
@@ -372,6 +395,12 @@ def search_gmm_composite(
         + config.w_min_size * size_scores
         + config.w_stability * stab_norm
     )
+    # Subtract mask-purity penalty if view_mask was provided
+    if mask_nmi_arr and config.w_mask_purity > 0:
+        mask_penalty = np.array([
+            mask_nmi_arr.get(r["k"], 0.0) for r in results
+        ], dtype=np.float64)
+        composite -= config.w_mask_purity * mask_penalty
     metrics["composite_score"] = composite
 
     best_idx = int(np.argmax(composite))
