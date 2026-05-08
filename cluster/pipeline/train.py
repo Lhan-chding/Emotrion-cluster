@@ -259,12 +259,12 @@ def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.
     if geometry is not None:
         features = np.asarray(geometry, dtype=np.float32)
         if features.ndim == 2 and features.shape[1] == len(VA_GEOMETRY_FEATURE_NAMES):
-            # Strip mask dims — only use observed geometry for conflict representation
             return features[:, :VA_GEOMETRY_OBSERVED_DIM]
         elif features.ndim == 2 and features.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
             return features
+    # Legacy fallback: consistency + |va_diff| (no view_mask to avoid leakage)
     return np.concatenate(
-        [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
+        [embeddings["consistency"], np.abs(embeddings["va_diff"])],
         axis=1,
     ).astype(np.float32)
 
