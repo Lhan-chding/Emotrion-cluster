@@ -301,6 +301,56 @@ def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.
     return raw
 
 
+def _impute_unobserved_diff_latents(
+    z_diff: np.ndarray,
+    view_mask: np.ndarray,
+    anchors: np.ndarray,
+    fitted_state: Optional[Any] = None,
+    fit_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    values = np.array(z_diff, dtype=np.float32, copy=True)
+    mask = np.asarray(view_mask, dtype=np.float32)
+    has_both = (mask[:, 0] > 0.0) & (mask[:, 1] > 0.0)
+    anchor_matrix = np.asarray(anchors, dtype=np.float32)
+    if anchor_matrix.ndim != 2 or anchor_matrix.shape[0] != values.shape[0]:
+        anchor_matrix = np.arange(values.shape[0], dtype=np.float32).reshape(-1, 1)
+
+    if isinstance(fitted_state, dict) and fitted_state.get("kind") == "diff_latent_knn":
+        state = fitted_state
+    else:
+        reference_mask = has_both.copy()
+        if fit_mask is not None:
+            reference_mask &= np.asarray(fit_mask, dtype=bool)
+        reference_idx = np.where(reference_mask)[0]
+        if reference_idx.size == 0:
+            reference_idx = np.where(has_both)[0]
+        if reference_idx.size == 0:
+            state = {
+                "kind": "diff_latent_knn",
+                "anchors": np.zeros((1, anchor_matrix.shape[1]), dtype=np.float32),
+                "values": np.zeros((1, values.shape[1]), dtype=np.float32),
+                "k": 1,
+            }
+        else:
+            state = {
+                "kind": "diff_latent_knn",
+                "anchors": anchor_matrix[reference_idx].astype(np.float32),
+                "values": values[reference_idx].astype(np.float32),
+                "k": int(min(5, reference_idx.size)),
+            }
+
+    unobserved_idx = np.where(~has_both)[0]
+    if unobserved_idx.size:
+        ref_anchors = np.asarray(state["anchors"], dtype=np.float32)
+        ref_values = np.asarray(state["values"], dtype=np.float32)
+        k = max(1, min(int(state.get("k", 1)), ref_values.shape[0]))
+        for idx in unobserved_idx.tolist():
+            diff = ref_anchors.astype(np.float64) - anchor_matrix[idx].astype(np.float64)
+            nearest = np.argpartition(np.sum(diff ** 2, axis=1), k - 1)[:k]
+            values[idx] = ref_values[nearest].mean(axis=0).astype(np.float32)
+    return values.astype(np.float32), state
+
+
 def build_cluster_features(
     embeddings: Dict[str, Any],
     metadata_cluster_weight: float,
@@ -309,10 +359,10 @@ def build_cluster_features(
     strategy: str = "full",
     pca_target_dim: int = 32,
     fitted_pca: Optional[PCA] = None,
-    fitted_imputation: Optional[np.ndarray] = None,
+    fitted_imputation: Optional[Any] = None,
     fit_mask: Optional[np.ndarray] = None,
     diff_cluster_weight: float = 0.35,
-) -> Tuple[np.ndarray, Optional[PCA], Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, Optional[PCA], Optional[Any]]:
     """Build clustering features from embeddings using the specified strategy.
 
     When *strategy* is ``pca_reduced``:
@@ -325,9 +375,9 @@ def build_cluster_features(
       rows (fit mode, use on search split).
     - If provided, those values are reused (transform mode, use on eval splits).
 
-    Returns ``(features, pca_model, imputation_fill)`` where *pca_model* is the
-    fitted PCA (or ``None``) and *imputation_fill* is the [12] fill vector
-    (or ``None`` when no geometry features are used).
+    Returns ``(features, pca_model, imputation_state)`` where *pca_model* is the
+    fitted PCA (or ``None``). Geometry strategies return a fill vector; the
+    masked_diffaware strategy returns a KNN imputation state for z_diff.
     """
     base_strategy = strategy.lower().replace("pca_reduced_", "")
     use_pca = strategy.lower().startswith("pca_reduced") or strategy.lower() == "pca_reduced"
@@ -344,16 +394,23 @@ def build_cluster_features(
         z_fused = embeddings["z_fused"].astype(np.float32)
         z_diff = embeddings.get("z_diff")
         if z_diff is None:
-            z_diff = np.zeros((z_fused.shape[0], z_fused.shape[1]), dtype=np.float32)
+            raise ValueError("cluster_feature_strategy='masked_diffaware' requires z_diff embeddings.")
         z_diff = z_diff.astype(np.float32)
+        z_diff, imputation_fill = _impute_unobserved_diff_latents(
+            z_diff=z_diff,
+            view_mask=view_mask,
+            anchors=z_fused,
+            fitted_state=fitted_imputation,
+            fit_mask=fit_mask,
+        )
         z_meta = embeddings["z_metadata"].astype(np.float32)
         metadata_missing = view_mask[:, 2:3] <= 0.0
         z_meta = np.where(metadata_missing, 0.0, z_meta)
         features = np.concatenate(
             [
                 z_fused,
-                float(diff_cluster_weight) * z_diff,
-                float(metadata_cluster_weight) * z_meta,
+                z_diff,
+                z_meta,
             ],
             axis=1,
         )
@@ -427,6 +484,8 @@ def cluster_feature_weights(
     *,
     conflict_cluster_weight: float,
     gate_cluster_weight: float,
+    metadata_cluster_weight: float = 1.0,
+    diff_cluster_weight: float = 1.0,
 ) -> np.ndarray:
     base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
     weights = np.ones(int(feature_dim), dtype=np.float32)
@@ -438,6 +497,10 @@ def cluster_feature_weights(
         weights[:latent_dim] = 0.5
         weights[latent_dim : latent_dim + 2] = 2.0
         weights[latent_dim + 2 : latent_dim + VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
+    elif base_strategy == "masked_diffaware" and int(feature_dim) % 3 == 0:
+        latent_dim = int(feature_dim) // 3
+        weights[latent_dim : 2 * latent_dim] = float(diff_cluster_weight)
+        weights[2 * latent_dim : 3 * latent_dim] = float(metadata_cluster_weight)
     return weights.astype(np.float32)
 
 
@@ -1528,6 +1591,10 @@ def main() -> None:
             "cluster_loss_weight": float(args.cluster_loss_weight),
             "cvcl_loss_weight": float(args.cvcl_loss_weight),
             "assignment_balance_weight": float(args.assignment_balance_weight),
+            "consensus_va_weight": float(args.consensus_va_weight),
+            "diff_preserve_weight": float(args.diff_preserve_weight),
+            "diff_input_dim": int(args.diff_input_dim),
+            "diff_encoder_trained": float(args.diff_preserve_weight) > 0.0,
             "min_token_freq": int(args.min_token_freq),
             "max_tokens_per_field": int(args.max_tokens_per_field),
             "mask_aware_gate": True,
@@ -1553,6 +1620,11 @@ def main() -> None:
 
     search_split = str(args.search_split).strip().lower()
     feature_strategy = str(args.cluster_feature_strategy).strip().lower()
+    if feature_strategy == "masked_diffaware" and float(args.diff_preserve_weight) <= 0.0:
+        raise ValueError(
+            "cluster_feature_strategy='masked_diffaware' requires --diff_preserve_weight > 0 "
+            "so DiffEncoder is trained before clustering."
+        )
 
     # Determine complete_first fit mask early so PCA/scaler fit on complete-pair rows only
     assignment_mode = str(getattr(args, "cluster_assignment_mode", "joint")).strip().lower()
@@ -1591,6 +1663,8 @@ def main() -> None:
         int(search_features_raw.shape[1]),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
+        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        diff_cluster_weight=float(args.diff_cluster_weight),
     )
     search_features = apply_cluster_feature_weights(
         cluster_scaler.transform(search_features_raw).astype(np.float32),

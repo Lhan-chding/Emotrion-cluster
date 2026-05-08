@@ -681,10 +681,13 @@ def _discovery_loss(
             diff_mask = (diff_obs > 0.0).to(dtype=audio.dtype)
             if diff_mask.any():
                 z_dist = torch.norm(outputs["z_audio"] - outputs["z_lyrics"], dim=1)
+                z_diff_dist = torch.norm(outputs["z_diff"], dim=1)
                 va_dist = torch.norm(signed_va_diff, dim=1)
                 alpha = 0.5
+                latent_pair_loss = F.smooth_l1_loss(z_dist, alpha * va_dist, reduction="none")
+                diff_latent_loss = F.smooth_l1_loss(z_diff_dist, alpha * va_dist, reduction="none")
                 diff_preserve_loss = _masked_mean(
-                    F.smooth_l1_loss(z_dist, alpha * va_dist, reduction="none"),
+                    0.5 * (latent_pair_loss + diff_latent_loss),
                     diff_mask,
                 )
 
@@ -1207,8 +1210,35 @@ def load_music_discovery_checkpoint(
         cluster_head_k=int(config.get("cluster_head_k", 0)),
         cluster_temperature=float(config.get("cluster_temperature", 1.0)),
         gate_context_dim=int(config.get("gate_context_dim", inferred_gate_context_dim or len(VA_GEOMETRY_FEATURE_NAMES) + 3)),
+        diff_input_dim=int(config.get("diff_input_dim", 26)),
     ).to(device)
 
-    model.load_state_dict(state_dict, strict=True)
+    load_result = model.load_state_dict(state_dict, strict=False)
+    allowed_missing_prefixes = ("diff_encoder.", "va_head.")
+    disallowed_missing = [
+        key for key in load_result.missing_keys
+        if not key.startswith(allowed_missing_prefixes)
+    ]
+    if disallowed_missing or load_result.unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint model_state is incompatible with MusicMetadataDiscoveryNet. "
+            f"Missing keys: {disallowed_missing}; unexpected keys: {list(load_result.unexpected_keys)}."
+        )
+    initialized_modules = sorted(
+        {
+            key.split(".", 1)[0]
+            for key in load_result.missing_keys
+            if key.startswith(allowed_missing_prefixes)
+        }
+    )
+    if initialized_modules:
+        sidecar["checkpoint_compatibility"] = {
+            "initialized_missing_modules": initialized_modules,
+            "message": (
+                "Checkpoint predates diff/VA auxiliary modules; missing modules were "
+                "left at fresh initialization. Do not use this checkpoint with "
+                "cluster_feature_strategy='masked_diffaware'."
+            ),
+        }
     model.eval()
     return model, sidecar

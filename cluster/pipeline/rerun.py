@@ -162,6 +162,16 @@ def main() -> None:
             )
         checkpoint_path = os.path.join(str(args.run_dir), "models", "music_discovery_model_best.pth")
         model, sidecar = load_music_discovery_checkpoint(checkpoint_path=checkpoint_path, device=device)
+        if feature_strategy == "masked_diffaware":
+            compatibility = sidecar.get("checkpoint_compatibility", {})
+            initialized = compatibility.get("initialized_missing_modules", [])
+            config = sidecar.get("config", {})
+            if initialized or not bool(config.get("diff_encoder_trained", False)):
+                raise ValueError(
+                    "cluster_feature_strategy='masked_diffaware' requires a checkpoint "
+                    "trained with DiffEncoder preservation loss. Retrain with "
+                    "--diff_preserve_weight > 0 before using this strategy."
+                )
         _allow_incompat = str(getattr(args, "allow_incompatible_checkpoint", "false")).strip().lower() in {"1", "true", "yes"}
 
         # Schema-level validation: compare feature names, not just dimension
@@ -265,6 +275,8 @@ def main() -> None:
         int(search_features_raw.shape[1]),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
+        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        diff_cluster_weight=float(args.diff_cluster_weight),
     )
     search_features = apply_cluster_feature_weights(
         cluster_scaler.transform(search_features_raw).astype(np.float32),

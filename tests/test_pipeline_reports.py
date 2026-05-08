@@ -243,6 +243,57 @@ def test_fused_va_geometry_uses_trained_fused_embedding_and_weighted_va_geometry
     assert pca is None
 
 
+def test_masked_diffaware_imputes_missing_diff_latents_conditionally():
+    observed_positions = np.asarray([[0.0], [1.0], [2.0], [3.0], [4.0], [100.0]], dtype=np.float32)
+    missing_positions = np.asarray([[0.2], [99.8]], dtype=np.float32)
+    z_fused = np.vstack([observed_positions, missing_positions]).astype(np.float32)
+    z_diff = np.vstack(
+        [
+            observed_positions * 2.0 + 1.0,
+            np.zeros_like(missing_positions),
+        ]
+    ).astype(np.float32)
+    z_metadata = np.ones_like(z_fused, dtype=np.float32)
+    view_mask = np.ones((8, 3), dtype=np.float32)
+    view_mask[6:, 1] = 0.0
+    embeddings = {
+        "z_fused": z_fused,
+        "z_diff": z_diff,
+        "z_metadata": z_metadata,
+        "view_mask": view_mask,
+    }
+
+    features, _, state = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="masked_diffaware",
+        diff_cluster_weight=0.35,
+    )
+
+    assert state is not None
+    diff_block = features[:, 1:2]
+    assert diff_block[6, 0] != 0.0
+    assert diff_block[7, 0] != 0.0
+    assert abs(float(diff_block[6, 0] - diff_block[7, 0])) > 1.0
+
+
+def test_masked_diffaware_feature_weights_apply_after_scaling():
+    weights = cluster_feature_weights(
+        "masked_diffaware",
+        6,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        metadata_cluster_weight=0.75,
+        diff_cluster_weight=0.35,
+    )
+
+    np.testing.assert_allclose(weights[:2], np.ones(2, dtype=np.float32))
+    np.testing.assert_allclose(weights[2:4], np.full(2, 0.35, dtype=np.float32))
+    np.testing.assert_allclose(weights[4:6], np.full(2, 0.75, dtype=np.float32))
+
+
 def test_dataset_plot_va_can_use_original_va():
     class Dataset:
         raw_audio = np.asarray([[0.1, 0.1], [0.9, 0.9]], dtype=np.float32)
