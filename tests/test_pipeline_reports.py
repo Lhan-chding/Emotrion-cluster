@@ -1,6 +1,6 @@
 import numpy as np
 
-from cluster.pipeline.train import _quadrant_heatmap_matrix
+from cluster.pipeline.train import _dataset_plot_va, _quadrant_heatmap_matrix, build_cluster_features
 
 
 def test_quadrant_heatmap_matrix_reports_missing_labels():
@@ -32,3 +32,38 @@ def test_quadrant_heatmap_matrix_uses_only_valid_labels():
             dtype=np.float32,
         ),
     )
+
+
+def test_original_va_cluster_feature_strategy_uses_original_va_only():
+    embeddings = {
+        "z_fused": np.ones((2, 3), dtype=np.float32),
+        "z_audio": np.ones((2, 3), dtype=np.float32) * 2.0,
+        "z_lyrics": np.ones((2, 3), dtype=np.float32) * 3.0,
+        "z_metadata": np.ones((2, 3), dtype=np.float32) * 4.0,
+        "gate_weights": np.ones((2, 3), dtype=np.float32) / 3.0,
+        "consistency": np.ones((2, 1), dtype=np.float32),
+        "va_diff": np.zeros((2, 2), dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+        "original_va": np.asarray([[0.8, 0.7], [0.2, 0.3]], dtype=np.float32),
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="original_va",
+    )
+
+    np.testing.assert_allclose(features, embeddings["original_va"])
+    assert pca is None
+
+
+def test_dataset_plot_va_can_use_original_va():
+    class Dataset:
+        raw_audio = np.asarray([[0.1, 0.1], [0.9, 0.9]], dtype=np.float32)
+        raw_lyrics = np.asarray([[0.2, 0.2], [0.8, 0.8]], dtype=np.float32)
+        view_mask = np.ones((2, 3), dtype=np.float32)
+        original_va = np.asarray([[0.7, 0.6], [0.3, 0.4]], dtype=np.float32)
+
+    np.testing.assert_allclose(_dataset_plot_va(Dataset(), "original"), Dataset.original_va)

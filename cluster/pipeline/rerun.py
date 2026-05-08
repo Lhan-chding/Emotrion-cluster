@@ -65,10 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
-                        choices=["full", "fused_residual", "fused_only", "pca_reduced"],
+                        choices=["full", "fused_residual", "fused_only", "original_va", "pca_reduced"],
                         help="Clustering feature strategy")
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction")
+    parser.add_argument("--plot_va_source", type=str, default="mean",
+                        choices=["mean", "original"],
+                        help="VA coordinates used in cluster scatter and summaries.")
     return parser
 
 
@@ -177,6 +180,7 @@ def main() -> None:
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
+                    "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "checkpoint_path": checkpoint_path,
                     "selection_info": selection_info,
@@ -234,6 +238,7 @@ def main() -> None:
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
             search_metrics=search_metrics if split == search_split else None,
+            plot_va_source=str(args.plot_va_source),
         )
         split_outputs[split] = payload
 
@@ -259,6 +264,8 @@ def main() -> None:
         "silhouette_sample_size": int(args.silhouette_sample_size),
         "silhouette_chunk_size": int(args.silhouette_chunk_size),
         "selection_info": selection_info,
+        "cluster_feature_strategy": feature_strategy,
+        "plot_va_source": str(args.plot_va_source),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "split_outputs": split_outputs,

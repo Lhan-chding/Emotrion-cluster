@@ -111,10 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
-                        choices=["full", "fused_residual", "fused_only", "pca_reduced"],
+                        choices=["full", "fused_residual", "fused_only", "original_va", "pca_reduced"],
                         help="Clustering feature strategy")
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction (pca_reduced strategy)")
+    parser.add_argument("--plot_va_source", type=str, default="mean",
+                        choices=["mean", "original"],
+                        help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument("--metadata_cluster_weight", type=float, default=0.75)
     parser.add_argument("--conflict_cluster_weight", type=float, default=0.40)
     parser.add_argument("--gate_cluster_weight", type=float, default=0.20)
@@ -130,7 +133,18 @@ class ClusterFeatureStrategy(Enum):
     FULL = "full"                     # z_fused + z_audio + z_lyrics + z_metadata + gate + conflict
     FUSED_RESIDUAL = "fused_residual" # z_fused + residuals + gate + conflict
     FUSED_ONLY = "fused_only"         # z_fused + gate + conflict
+    ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
+
+
+def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
+    original_va = embeddings.get("original_va")
+    if original_va is None:
+        raise ValueError("cluster_feature_strategy='original_va' requires original_va embeddings.")
+    features = np.asarray(original_va, dtype=np.float32)
+    if features.ndim != 2 or features.shape[1] != 2:
+        raise ValueError(f"original_va must have shape [N, 2], got {features.shape}.")
+    return features
 
 
 def build_cluster_features(
@@ -173,7 +187,9 @@ def build_cluster_features(
     base_strategy = strategy.lower().replace("pca_reduced_", "")
     use_pca = strategy.lower().startswith("pca_reduced") or strategy.lower() == "pca_reduced"
 
-    if base_strategy == "fused_residual":
+    if base_strategy == "original_va":
+        features = _original_va_features(embeddings)
+    elif base_strategy == "fused_residual":
         residual_audio = z_audio - z_fused
         residual_lyrics = z_lyrics - z_fused
         features = np.concatenate(
@@ -641,16 +657,32 @@ def _dataset_mean_va(dataset) -> np.ndarray:
     return mean_va.astype(np.float32)
 
 
+def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
+    source_name = str(source or "mean").strip().lower()
+    if source_name == "original":
+        original_va = getattr(dataset, "original_va", None)
+        if original_va is None:
+            raise ValueError("plot_va_source='original' requires original_va.npy in the processed dataset.")
+        original_va = np.asarray(original_va, dtype=np.float32)
+        if original_va.ndim != 2 or original_va.shape[1] != 2:
+            raise ValueError(f"original_va must have shape [N, 2], got {original_va.shape}.")
+        return original_va
+    if source_name != "mean":
+        raise ValueError("plot_va_source must be 'mean' or 'original'.")
+    return _dataset_mean_va(dataset)
+
+
 def _cluster_summary(
     assignments: np.ndarray,
     dataset,
     metadata_feature_names: Sequence[str],
+    plot_va_source: str = "mean",
 ) -> List[Dict[str, Any]]:
     raw_audio = dataset.raw_audio
     raw_lyrics = dataset.raw_lyrics
     raw_metadata = dataset.raw_metadata
     view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32)).astype(np.float32)
-    mean_va = _dataset_mean_va(dataset)
+    mean_va = _dataset_plot_va(dataset, plot_va_source)
     numeric_indices = [idx for idx, name in enumerate(metadata_feature_names) if str(name).startswith("numeric::")]
     token_indices = [idx for idx, name in enumerate(metadata_feature_names) if not str(name).startswith("numeric::")]
 
@@ -725,8 +757,13 @@ def _cluster_summary(
     return summaries
 
 
-def _build_assignment_frame(assignments: np.ndarray, dataset, embeddings: Dict[str, Any]) -> pd.DataFrame:
-    mean_va = _dataset_mean_va(dataset)
+def _build_assignment_frame(
+    assignments: np.ndarray,
+    dataset,
+    embeddings: Dict[str, Any],
+    plot_va_source: str = "mean",
+) -> pd.DataFrame:
+    mean_va = _dataset_plot_va(dataset, plot_va_source)
     frame = pd.DataFrame(
         {
             "identifier": dataset.identifiers,
@@ -766,16 +803,23 @@ def _write_split_outputs(
     selected_k: int,
     feature_dim: int,
     search_metrics: Optional[pd.DataFrame] = None,
+    plot_va_source: str = "mean",
 ) -> Dict[str, Any]:
     _ensure_dir(out_dir)
-    mean_va = _dataset_mean_va(dataset)
+    mean_va = _dataset_plot_va(dataset, plot_va_source)
     palette = _cluster_palette(int(selected_k))
     summary = _cluster_summary(
         assignments=assignments,
         dataset=dataset,
         metadata_feature_names=metadata_feature_names,
+        plot_va_source=plot_va_source,
     )
-    assignment_frame = _build_assignment_frame(assignments=assignments, dataset=dataset, embeddings=embeddings)
+    assignment_frame = _build_assignment_frame(
+        assignments=assignments,
+        dataset=dataset,
+        embeddings=embeddings,
+        plot_va_source=plot_va_source,
+    )
     catalog_frame = pd.DataFrame(
         [
             {
@@ -830,6 +874,7 @@ def _write_split_outputs(
         "selected_k": int(selected_k),
         "feature_dim": int(feature_dim),
         "num_samples": int(len(assignments)),
+        "plot_va_source": str(plot_va_source),
         "cluster_summary": summary,
         "output_files": {
             "cluster_assignments": assignment_path,
@@ -871,6 +916,10 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
     lines.append(f"- Training epochs: `{summary['epochs']}`")
     lines.append(f"- Latent dim: `{summary['latent_dim']}`")
     lines.append(f"- DEC/CVCL head K: `{summary.get('cluster_head_k', 0)}`")
+    if "cluster_feature_strategy" in summary:
+        lines.append(f"- Cluster feature strategy: `{summary['cluster_feature_strategy']}`")
+    if "plot_va_source" in summary:
+        lines.append(f"- Plot VA source: `{summary['plot_va_source']}`")
     lines.append(f"- Metadata feature dim: `{summary['metadata_feature_dim']}`")
     lines.append("")
     lines.append("## Outputs")
@@ -1135,6 +1184,7 @@ def main() -> None:
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
+                    "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "selection_info": selection_info,
                 },
@@ -1195,6 +1245,7 @@ def main() -> None:
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
             search_metrics=search_metrics if split == search_split else None,
+            plot_va_source=str(args.plot_va_source),
         )
         split_outputs[split] = payload
 
@@ -1225,6 +1276,7 @@ def main() -> None:
         "history_path": history_path,
         "metadata_summary_path": metadata_summary_path,
         "cluster_feature_strategy": feature_strategy,
+        "plot_va_source": str(args.plot_va_source),
         "pca_target_dim": int(args.pca_target_dim),
         "cluster_backend": str(args.cluster_backend),
         "eval_backend": str(args.eval_backend),
