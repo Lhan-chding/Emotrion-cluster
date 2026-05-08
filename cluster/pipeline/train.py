@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "full",
                             "fused_residual",
                             "fused_only",
+                            "fused_va_geometry",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
@@ -143,6 +144,7 @@ class ClusterFeatureStrategy(Enum):
     FULL = "full"                     # z_fused + z_audio + z_lyrics + z_metadata + gate + conflict
     FUSED_RESIDUAL = "fused_residual" # z_fused + residuals + gate + conflict
     FUSED_ONLY = "fused_only"         # z_fused + gate + conflict
+    FUSED_VA_GEOMETRY = "fused_va_geometry" # z_fused + VA geometry, with VA as primary axes
     MEAN_VA = "mean_va"               # raw audio/lyrics mean VA; unsupervised legacy baseline
     VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
@@ -250,6 +252,8 @@ def build_cluster_features(
             )
         elif base_strategy == "fused_only":
             features = np.concatenate([z_fused, gate, conflict], axis=1)
+        elif base_strategy == "fused_va_geometry":
+            features = np.concatenate([z_fused, _va_geometry_features(embeddings)], axis=1)
         else:  # "full", "pca_reduced", or default
             features = np.concatenate(
                 [z_fused, z_audio, z_lyrics, z_metadata, gate, conflict],
@@ -282,6 +286,12 @@ def cluster_feature_weights(
         weights[0:2] = 2.0
         weights[2:14] = float(conflict_cluster_weight)
         weights[14:17] = float(gate_cluster_weight)
+    elif base_strategy == "fused_va_geometry" and int(feature_dim) > len(VA_GEOMETRY_FEATURE_NAMES):
+        latent_dim = int(feature_dim) - len(VA_GEOMETRY_FEATURE_NAMES)
+        weights[:latent_dim] = 0.5
+        weights[latent_dim : latent_dim + 2] = 2.0
+        weights[latent_dim + 2 : latent_dim + 14] = float(conflict_cluster_weight)
+        weights[latent_dim + 14 : latent_dim + 17] = float(gate_cluster_weight)
     return weights.astype(np.float32)
 
 

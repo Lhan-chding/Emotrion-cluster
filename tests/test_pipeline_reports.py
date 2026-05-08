@@ -209,6 +209,42 @@ def test_full_cluster_feature_strategy_uses_va_geometry_as_conflict_block():
     assert pca is None
 
 
+def test_fused_va_geometry_uses_trained_fused_embedding_and_weighted_va_geometry():
+    embeddings = {
+        "z_fused": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        "z_audio": np.ones((2, 2), dtype=np.float32) * 9.0,
+        "z_lyrics": np.ones((2, 2), dtype=np.float32) * 8.0,
+        "z_metadata": np.ones((2, 2), dtype=np.float32) * 7.0,
+        "gate_weights": np.ones((2, 3), dtype=np.float32) / 3.0,
+        "consistency": np.zeros((2, 1), dtype=np.float32),
+        "va_diff": np.zeros((2, 2), dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+        "va_geometry": np.ones((2, 17), dtype=np.float32) * 5.0,
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="fused_va_geometry",
+    )
+    weights = cluster_feature_weights(
+        "fused_va_geometry",
+        int(features.shape[1]),
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+    )
+
+    np.testing.assert_allclose(features[:, :2], embeddings["z_fused"])
+    np.testing.assert_allclose(features[:, 2:], embeddings["va_geometry"])
+    np.testing.assert_allclose(weights[:2], np.full(2, 0.5, dtype=np.float32))
+    np.testing.assert_allclose(weights[2:4], np.full(2, 2.0, dtype=np.float32))
+    np.testing.assert_allclose(weights[4:16], np.full(12, 0.4, dtype=np.float32))
+    np.testing.assert_allclose(weights[16:19], np.full(3, 0.2, dtype=np.float32))
+    assert pca is None
+
+
 def test_dataset_plot_va_can_use_original_va():
     class Dataset:
         raw_audio = np.asarray([[0.1, 0.1], [0.9, 0.9]], dtype=np.float32)

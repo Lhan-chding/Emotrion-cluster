@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "full",
                             "fused_residual",
                             "fused_only",
+                            "fused_va_geometry",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
