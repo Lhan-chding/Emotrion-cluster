@@ -137,6 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conflict_cluster_weight", type=float, default=0.40)
     parser.add_argument("--gate_cluster_weight", type=float, default=0.20)
     parser.add_argument("--random_state", type=int, default=42)
+    parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
+                        choices=["joint", "complete_first"],
+                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples, then predict all")
     return parser
 
 
@@ -1563,6 +1566,28 @@ def main() -> None:
     else:
         gmm_model = k_result
         selected_k = int(gmm_model.n_components)
+
+    # Complete-pair-first: re-fit GMM on both-pair samples only
+    assignment_mode = str(getattr(args, "cluster_assignment_mode", "joint")).strip().lower()
+    if assignment_mode == "complete_first":
+        search_view_mask = embeddings_by_split[search_split].get("view_mask")
+        if search_view_mask is not None:
+            both_mask = (search_view_mask[:, 0] > 0) & (search_view_mask[:, 1] > 0)
+            if both_mask.any() and not both_mask.all():
+                from sklearn.mixture import GaussianMixture
+                _old_n_components = selected_k
+                refitted = GaussianMixture(
+                    n_components=_old_n_components,
+                    covariance_type=str(args.covariance_type),
+                    reg_covar=1e-5,
+                    n_init=10,
+                    random_state=int(args.random_state),
+                )
+                refitted.fit(search_features[both_mask])
+                gmm_model = refitted
+                selection_info["complete_first_refit"] = True
+                selection_info["complete_pair_samples"] = int(both_mask.sum())
+                selection_info["total_samples"] = int(len(both_mask))
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
     with open(gmm_bundle_path, "wb") as f:
