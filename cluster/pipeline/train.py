@@ -267,11 +267,26 @@ def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.
         [embeddings["consistency"], np.abs(embeddings["va_diff"])],
         axis=1,
     ).astype(np.float32)
-    # Impute unobserved rows (all-zero) with observed mean to avoid leakage
+    # Per-row conditional imputation via z_fused (or mean_va) to avoid zero-variance columns
     has_both = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
     if has_both.any() and not has_both.all():
-        fill = raw[has_both].mean(axis=0)
-        raw[~has_both] = fill
+        consensus = embeddings.get("z_fused", embeddings.get("mean_va"))
+        if consensus is None or consensus.shape[1] < 1:
+            # No consensus anchor — add tiny per-row noise to break zero-variance
+            rng = np.random.default_rng(42)
+            for i in np.where(~has_both)[0]:
+                fill = raw[has_both].mean(axis=0) + rng.normal(0, 1e-6, raw.shape[1])
+                raw[i] = fill
+        else:
+            obs_idx = np.where(has_both)[0]
+            unobs_idx = np.where(~has_both)[0]
+            obs_consensus = np.asarray(consensus[obs_idx], dtype=np.float64)
+            obs_values = raw[obs_idx].astype(np.float64)
+            k = min(5, len(obs_idx))
+            for i in unobs_idx:
+                diff = obs_consensus - np.asarray(consensus[i], dtype=np.float64)
+                nn = np.argpartition(np.sum(diff ** 2, axis=1), k - 1)[:k]
+                raw[i] = obs_values[nn].mean(axis=0).astype(np.float32)
     return raw
 
 
@@ -430,7 +445,7 @@ def run_k_selection(
     random_state: int,
     min_cluster_size_abs: int,
     min_cluster_size_ratio: float,
-    covariance_type: str = "full",
+    covariance_type: str = "diag",
     stability_runs: int = 5,
     cluster_backend: str = "auto",
     eval_backend: str = "auto",
@@ -819,6 +834,12 @@ def _plot_diff_scatter(
     indices = np.where(both_mask)[0]
     n_plot = min(len(indices), max_arrows)
     if n_plot == 0:
+        fig, ax = plt.subplots(figsize=(4, 2))
+        ax.text(0.5, 0.5, "No tracks with both audio+lyrics", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Audio -> Lyrics VA Delta")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=180)
+        plt.close(fig)
         return
     plot_idx = np.random.RandomState(42).choice(indices, size=n_plot, replace=False) if n_plot < len(indices) else indices
 
@@ -858,29 +879,37 @@ def _plot_mask_distribution(
     out_path: str,
     palette: Dict[int, str],
 ) -> None:
-    """Stacked bar chart: mask-pattern composition per cluster."""
-    mask_labels = ["has_both", "audio_only", "lyrics_only"]
-    n_clusters = len(np.unique(assignments))
-    fig, ax = plt.subplots(figsize=(7, 4))
-    x = np.arange(n_clusters)
-    bar_width = 0.6
-    bottoms = np.zeros(n_clusters, dtype=np.float32)
+    """Stacked bar chart: mutually-exclusive mask-pattern composition per cluster."""
+    cluster_ids = sorted(np.unique(assignments).tolist())
+    n_bars = len(cluster_ids)
+    has_audio = view_mask[:, 0] > 0
+    has_lyrics = view_mask[:, 1] > 0
+    pattern_groups = [
+        ("both", has_audio & has_lyrics),
+        ("audio_only", has_audio & ~has_lyrics),
+        ("lyrics_only", ~has_audio & has_lyrics),
+        ("neither", ~has_audio & ~has_lyrics),
+    ]
 
-    for label_idx in range(3):
-        values = np.zeros(n_clusters)
-        for cid in range(n_clusters):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    x = np.arange(n_bars)
+    bar_width = 0.6
+    bottoms = np.zeros(n_bars, dtype=np.float32)
+
+    for label, pat_mask in pattern_groups:
+        values = np.zeros(n_bars)
+        for ci, cid in enumerate(cluster_ids):
             cluster_mask = assignments == cid
             if cluster_mask.any():
-                values[cid] = ((view_mask[cluster_mask, label_idx] if label_idx < 2 else
-                                (view_mask[cluster_mask, 0] <= 0) & (view_mask[cluster_mask, 1] <= 0))).mean()
-        ax.bar(x, values, bar_width, bottom=bottoms, label=mask_labels[label_idx] if label_idx < 2 else "neither")
+                values[ci] = float(pat_mask[cluster_mask].mean())
+        ax.bar(x, values, bar_width, bottom=bottoms, label=label)
         bottoms += values
 
     ax.set_xlabel("Cluster")
     ax.set_ylabel("Proportion")
-    ax.set_title("Mask Availability per Cluster")
+    ax.set_title("Mask Pattern per Cluster")
     ax.set_xticks(x)
-    ax.set_xticklabels([str(cid) for cid in range(n_clusters)])
+    ax.set_xticklabels([str(cid) for cid in cluster_ids])
     ax.legend(loc="upper right")
     ax.set_ylim(0, 1.1)
     fig.tight_layout()
@@ -1005,10 +1034,10 @@ def _cluster_summary(
         if pair_mask.any():
             va_delta = raw_audio[pair_mask] - raw_lyrics[pair_mask]
             diff_magnitude = float(np.mean(np.linalg.norm(va_delta, axis=1)))
-            angular_gap = float(np.mean(np.abs(np.arctan2(va_delta[:, 1], va_delta[:, 0]))))
+            delta_direction = float(np.mean(np.abs(np.arctan2(va_delta[:, 1], va_delta[:, 0]))))
         else:
             diff_magnitude = float("nan")
-            angular_gap = float("nan")
+            delta_direction = float("nan")
 
         summaries.append(
             {
@@ -1024,7 +1053,7 @@ def _cluster_summary(
                 "mean_valence": float(mean_va[mask, 0].mean()),
                 "mean_arousal": float(mean_va[mask, 1].mean()),
                 "mean_diff_magnitude": diff_magnitude,
-                "mean_angular_gap": angular_gap,
+                "delta_direction_angle": delta_direction,
                 "has_audio_ratio": round(float((view_mask[mask, 0] > 0).mean()), 4),
                 "has_lyrics_ratio": round(float((view_mask[mask, 1] > 0).mean()), 4),
                 "diff_observed_ratio": round(float((both_mask[mask]).mean()), 4),

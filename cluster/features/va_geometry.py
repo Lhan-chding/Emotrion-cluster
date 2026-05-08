@@ -164,9 +164,9 @@ def impute_unobserved_pairwise(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Impute pairwise geometry dims (2:14) for rows missing both views.
 
-    When audio+lyrics are not both present, pairwise features are deterministic
-    zeros. This makes unobserved rows separable from observed rows by GMM.
-    Imputing with the observed-row mean makes them neutral.
+    Unobserved rows are filled with the mean of their k-nearest observed
+    neighbours in consensus (dims 0:1) space. This avoids zero-variance
+    columns that GMMs can exploit.
 
     Parameters
     ----------
@@ -177,29 +177,50 @@ def impute_unobserved_pairwise(
     fitted_fill : ndarray [12] or None
         Pre-computed fill values for dims 2:14. If None, computed from
         observed rows in this batch (fit mode).
+        In fit mode fitted_fill is a dummy — actual filling is per-row.
 
     Returns
     -------
     (imputed_features, fill_values) where fill_values has shape [12].
     """
-    features = np.array(features, dtype=np.float32)
+    features = np.asarray(features, dtype=np.float32)
     mask = np.asarray(view_mask, dtype=np.float32)
     has_both = ((mask[:, 0] > 0.0) & (mask[:, 1] > 0.0))
-
-    if fitted_fill is not None:
-        fill = np.asarray(fitted_fill, dtype=np.float32)
-    else:
-        observed = features[has_both, 2:14]
-        if observed.shape[0] > 0:
-            fill = observed.mean(axis=0).astype(np.float32)
-        else:
-            fill = np.zeros(12, dtype=np.float32)
-
     unobserved = ~has_both
-    if unobserved.any():
-        features[unobserved, 2:14] = fill
 
-    return features, fill
+    if not unobserved.any():
+        return features, np.zeros(12, dtype=np.float32)
+
+    # Transform mode: reuse pre-computed fill for backward compat
+    if fitted_fill is not None and not np.allclose(fitted_fill, 0):
+        fill = np.asarray(fitted_fill, dtype=np.float32)
+        features[unobserved, 2:14] = fill
+        return features, fill
+
+    observed_indices = np.where(has_both)[0]
+    unobserved_indices = np.where(unobserved)[0]
+    consensus_all = features[:, :2].astype(np.float64)
+
+    if len(observed_indices) == 0:
+        rng = np.random.default_rng(42)
+        for i in unobserved_indices:
+            features[i, 2:14] = rng.normal(0, 1e-6, 12).astype(np.float32)
+        return features, np.zeros(12, dtype=np.float32)
+
+    # Fit mode: per-row kNN fill in consensus space
+    k = min(5, len(observed_indices))
+    obs_consensus = consensus_all[observed_indices]
+    obs_pairwise = features[observed_indices, 2:14].astype(np.float64)
+    fill_values = np.zeros(12, dtype=np.float32)
+    for uidx in unobserved_indices:
+        diff = obs_consensus - consensus_all[uidx]
+        dists = np.sum(diff ** 2, axis=1)
+        nn = np.argpartition(dists, k - 1)[:k]
+        features[uidx, 2:14] = obs_pairwise[nn].mean(axis=0).astype(np.float32)
+        fill_values += features[uidx, 2:14]
+
+    fill_values /= max(len(unobserved_indices), 1.0)
+    return features, fill_values.astype(np.float32)
 
 
 def build_va_geometry_features(
