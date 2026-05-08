@@ -262,11 +262,17 @@ def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.
             return features[:, :VA_GEOMETRY_OBSERVED_DIM]
         elif features.ndim == 2 and features.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
             return features
-    # Legacy fallback: consistency + |va_diff| (no view_mask to avoid leakage)
-    return np.concatenate(
+    # Legacy fallback: consistency + |va_diff|
+    raw = np.concatenate(
         [embeddings["consistency"], np.abs(embeddings["va_diff"])],
         axis=1,
     ).astype(np.float32)
+    # Impute unobserved rows (all-zero) with observed mean to avoid leakage
+    has_both = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+    if has_both.any() and not has_both.all():
+        fill = raw[has_both].mean(axis=0)
+        raw[~has_both] = fill
+    return raw
 
 
 def build_cluster_features(
