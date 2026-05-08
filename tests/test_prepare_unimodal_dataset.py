@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from cluster.preprocessing.prepare_unimodal_dataset import prepare_unimodal_dataset
+from cluster.data.metadata import build_canonical_metadata, build_metadata_features
 
 
 def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
@@ -100,3 +101,48 @@ def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
     assert schema["view_mask_columns"] == ["has_audio", "has_lyrics", "has_metadata"]
     assert schema["schema_hash"]
 
+
+def test_placeholder_aligned_metadata_supports_no_meta_baseline(tmp_path):
+    combined_csv = tmp_path / "multimodal_va.csv"
+    pd.DataFrame(
+        [
+            {
+                "Song": "A001",
+                "Audio_Arousal": 0.35,
+                "Audio_Valence": 0.77,
+                "Lyrics_Arousal": 0.37,
+                "Lyrics_Valence": 0.57,
+                "Original_Arousal": 0.22,
+                "Original_Valence": 0.87,
+                "Lyrics": "hello world",
+            },
+            {
+                "Song": "A002",
+                "Audio_Arousal": 0.40,
+                "Audio_Valence": 0.58,
+                "Lyrics_Arousal": 0.32,
+                "Lyrics_Valence": 0.48,
+                "Original_Arousal": 0.37,
+                "Original_Valence": 0.71,
+                "Lyrics": "another song",
+            },
+        ]
+    ).to_csv(combined_csv, index=False)
+
+    out_dir = tmp_path / "processed"
+    aligned_root = tmp_path / "aligned"
+    prepare_unimodal_dataset(
+        combined_csv=str(combined_csv),
+        out_processed_dir=str(out_dir),
+        out_aligned_root=str(aligned_root),
+        seed=42,
+    )
+
+    canonical = build_canonical_metadata(str(aligned_root), str(out_dir))
+    bundle = build_metadata_features(canonical, min_token_freq=3, max_tokens_per_field=128)
+
+    assert canonical["Artist"].tolist() == ["", ""]
+    assert canonical["Title"].tolist() == ["", ""]
+    assert canonical["Genres"].tolist() == ["", ""]
+    assert canonical["MoodsAll"].tolist() == ["", ""]
+    assert bundle.features.shape[0] == 2

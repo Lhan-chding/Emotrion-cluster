@@ -148,6 +148,10 @@ def _coalesce_prefer_audio(audio_value: object, lyrics_value: object, *, list_li
     return audio_norm if audio_norm else lyrics_norm
 
 
+def _empty_text_series(length: int) -> pd.Series:
+    return pd.Series([""] * int(length), dtype="object")
+
+
 def build_canonical_metadata(aligned_root: str, processed_dir: str) -> pd.DataFrame:
     root = Path(aligned_root)
     audio_meta = _read_aligned_metadata(root / "aligned_audio_metadata.csv", "aligned audio metadata CSV")
@@ -184,8 +188,8 @@ def build_canonical_metadata(aligned_root: str, processed_dir: str) -> pd.DataFr
     for field in all_field_names:
         audio_col = f"audio__{field}"
         lyrics_col = f"lyrics__{field}"
-        audio_series = merged[audio_col] if audio_col in merged.columns else pd.Series([""] * len(merged))
-        lyrics_series = merged[lyrics_col] if lyrics_col in merged.columns else pd.Series([""] * len(merged))
+        audio_series = merged[audio_col] if audio_col in merged.columns else _empty_text_series(len(merged))
+        lyrics_series = merged[lyrics_col] if lyrics_col in merged.columns else _empty_text_series(len(merged))
         if field in list_fields:
             a_norm = audio_series.fillna("").astype(str).str.strip().str.replace(r"\s*,\s*", ",", regex=True).str.replace(r"\s+", " ", regex=True)
             l_norm = lyrics_series.fillna("").astype(str).str.strip().str.replace(r"\s*,\s*", ",", regex=True).str.replace(r"\s+", " ", regex=True)
@@ -194,8 +198,17 @@ def build_canonical_metadata(aligned_root: str, processed_dir: str) -> pd.DataFr
             l_norm = lyrics_series.fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
         canonical[field] = np.where(a_norm != "", a_norm, l_norm)
 
-    canonical["Artist"] = canonical.get("Artist", "").map(_normalize_free_text)
-    canonical["Title"] = canonical.get("Title", "").map(_normalize_free_text)
+    for field in ["Artist", "Title"]:
+        if field not in canonical.columns:
+            canonical[field] = _empty_text_series(len(canonical))
+        canonical[field] = canonical[field].map(_normalize_free_text)
+
+    for text_col, weight_col in LIST_FIELDS:
+        if text_col not in canonical.columns:
+            canonical[text_col] = _empty_text_series(len(canonical))
+        if weight_col not in canonical.columns:
+            canonical[weight_col] = _empty_text_series(len(canonical))
+
     canonical["Quadrant"] = canonical["Quadrant"].astype(str).str.upper()
 
     for field in ["Duration", "ActualYear", "Relevance", "num_Genres", "num_MoodsAll"]:
