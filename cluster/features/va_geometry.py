@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -155,6 +155,51 @@ def build_va_geometry_mask(
     has_lyrics = (mask[:, 1:2] > 0.0).astype(np.float32)
     has_both = has_audio * has_lyrics
     return np.concatenate([has_both, has_audio, has_lyrics], axis=1).astype(np.float32)
+
+
+def impute_unobserved_pairwise(
+    features: np.ndarray,
+    view_mask: np.ndarray,
+    fitted_fill: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Impute pairwise geometry dims (2:14) for rows missing both views.
+
+    When audio+lyrics are not both present, pairwise features are deterministic
+    zeros. This makes unobserved rows separable from observed rows by GMM.
+    Imputing with the observed-row mean makes them neutral.
+
+    Parameters
+    ----------
+    features : ndarray [N, 14]
+        The 14-dim observed geometry features.
+    view_mask : ndarray [N, >=2]
+        View availability mask (col 0=audio, col 1=lyrics).
+    fitted_fill : ndarray [12] or None
+        Pre-computed fill values for dims 2:14. If None, computed from
+        observed rows in this batch (fit mode).
+
+    Returns
+    -------
+    (imputed_features, fill_values) where fill_values has shape [12].
+    """
+    features = np.array(features, dtype=np.float32)
+    mask = np.asarray(view_mask, dtype=np.float32)
+    has_both = ((mask[:, 0] > 0.0) & (mask[:, 1] > 0.0))
+
+    if fitted_fill is not None:
+        fill = np.asarray(fitted_fill, dtype=np.float32)
+    else:
+        observed = features[has_both, 2:14]
+        if observed.shape[0] > 0:
+            fill = observed.mean(axis=0).astype(np.float32)
+        else:
+            fill = np.zeros(12, dtype=np.float32)
+
+    unobserved = ~has_both
+    if unobserved.any():
+        features[unobserved, 2:14] = fill
+
+    return features, fill
 
 
 def build_va_geometry_features(

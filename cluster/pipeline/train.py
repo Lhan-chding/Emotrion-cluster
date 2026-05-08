@@ -17,7 +17,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
-from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM
+from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM, impute_unobserved_pairwise
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
@@ -147,20 +147,28 @@ def build_parser() -> argparse.ArgumentParser:
 def compute_mask_purity(
     assignments: np.ndarray,
     view_mask: np.ndarray,
-) -> List[Dict[str, Any]]:
-    """Compute mask-pattern purity per cluster.
+) -> Dict[str, Any]:
+    """Compute mask-pattern diagnostics for cluster assignments.
 
-    Returns a list of dicts with cluster_id, mask_purity, dominant_mask_combo,
-    and mask_combo_distribution. A cluster with mask_purity > 0.85 is likely
-    a missingness cluster rather than an affective cluster.
+    Returns a dict with:
+    - nmi: normalized mutual information between assignments and mask patterns
+    - global_mask_distribution: baseline pattern frequencies
+    - clusters: per-cluster enrichment data
     """
-    mask_patterns = []
-    for row in view_mask:
-        pattern = "".join(["1" if v > 0 else "0" for v in row[:2]])
-        mask_patterns.append(pattern)
-    mask_patterns = np.array(mask_patterns)
+    from sklearn.metrics import normalized_mutual_info_score
 
-    results = []
+    mask_patterns = np.array([
+        "".join(["1" if v > 0 else "0" for v in row[:2]])
+        for row in view_mask
+    ])
+
+    nmi = float(normalized_mutual_info_score(assignments, mask_patterns))
+
+    global_unique, global_counts = np.unique(mask_patterns, return_counts=True)
+    global_dist = {str(p): int(c) for p, c in zip(global_unique.tolist(), global_counts.tolist())}
+    global_fracs = {str(p): float(c) / len(mask_patterns) for p, c in zip(global_unique.tolist(), global_counts.tolist())}
+
+    clusters = []
     for cluster_id in sorted(np.unique(assignments).tolist()):
         cluster_mask = assignments == cluster_id
         cluster_size = int(cluster_mask.sum())
@@ -172,16 +180,23 @@ def compute_mask_purity(
         dominant_idx = int(counts.argmax())
         dominant_combo = str(unique_patterns[dominant_idx])
         purity = float(counts[dominant_idx]) / cluster_size
-        results.append({
+        baseline_frac = global_fracs.get(dominant_combo, 0.0)
+        enrichment = purity / baseline_frac if baseline_frac > 0 else 0.0
+        clusters.append({
             "cluster_id": int(cluster_id),
             "size": cluster_size,
             "mask_purity": round(purity, 4),
             "dominant_mask_combo": dominant_combo,
+            "enrichment_vs_baseline": round(enrichment, 4),
             "mask_combo_distribution": distribution,
             "has_audio_ratio": round(float((view_mask[cluster_mask, 0] > 0).mean()), 4),
             "has_lyrics_ratio": round(float((view_mask[cluster_mask, 1] > 0).mean()), 4),
         })
-    return results
+    return {
+        "nmi": round(nmi, 4),
+        "global_mask_distribution": global_dist,
+        "clusters": clusters,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +277,8 @@ def build_cluster_features(
     strategy: str = "full",
     pca_target_dim: int = 32,
     fitted_pca: Optional[PCA] = None,
-) -> Tuple[np.ndarray, Optional[PCA]]:
+    fitted_imputation: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, Optional[PCA], Optional[np.ndarray]]:
     """Build clustering features from embeddings using the specified strategy.
 
     When *strategy* is ``pca_reduced``:
@@ -270,16 +286,31 @@ def build_cluster_features(
     - If *fitted_pca* is provided it is reused via ``transform`` so that all
       splits share the same feature space.
 
-    Returns ``(features, pca_model)`` where *pca_model* is the fitted PCA
-    (or ``None`` when PCA is not used).
+    Pairwise geometry imputation:
+    - If *fitted_imputation* is ``None``, fill values are computed from observed
+      rows (fit mode, use on search split).
+    - If provided, those values are reused (transform mode, use on eval splits).
+
+    Returns ``(features, pca_model, imputation_fill)`` where *pca_model* is the
+    fitted PCA (or ``None``) and *imputation_fill* is the [12] fill vector
+    (or ``None`` when no geometry features are used).
     """
     base_strategy = strategy.lower().replace("pca_reduced_", "")
     use_pca = strategy.lower().startswith("pca_reduced") or strategy.lower() == "pca_reduced"
 
+    view_mask = embeddings.get("view_mask")
+    if view_mask is None:
+        n = next(iter(embeddings.values())).shape[0]
+        view_mask = np.ones((n, 3), dtype=np.float32)
+    view_mask = np.asarray(view_mask, dtype=np.float32)
+
+    imputation_fill: Optional[np.ndarray] = None
+
     if base_strategy == "mean_va":
         features = _mean_va_features(embeddings)
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
-        features = _va_geometry_features(embeddings)
+        raw_geom = _va_geometry_features(embeddings)
+        features, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
     elif base_strategy == "original_va":
         features = _original_va_features(embeddings)
     else:
@@ -287,10 +318,6 @@ def build_cluster_features(
 
     if features is None:
         z_fused = embeddings["z_fused"].astype(np.float32)
-        view_mask = embeddings.get("view_mask")
-        if view_mask is None:
-            view_mask = np.ones((z_fused.shape[0], 3), dtype=np.float32)
-        view_mask = view_mask.astype(np.float32)
         z_audio = embeddings["z_audio"].astype(np.float32) * view_mask[:, 0:1]
         z_lyrics = embeddings["z_lyrics"].astype(np.float32) * view_mask[:, 1:2]
         z_metadata = (
@@ -299,7 +326,10 @@ def build_cluster_features(
             * view_mask[:, 2:3]
         )
         gate = float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32)
-        conflict = float(conflict_cluster_weight) * _conflict_features(embeddings, view_mask)
+        raw_conflict = _conflict_features(embeddings, view_mask)
+        if raw_conflict.shape[1] == VA_GEOMETRY_OBSERVED_DIM:
+            raw_conflict, imputation_fill = impute_unobserved_pairwise(raw_conflict, view_mask, fitted_imputation)
+        conflict = float(conflict_cluster_weight) * raw_conflict
 
         if base_strategy == "fused_residual":
             residual_audio = z_audio - z_fused
@@ -311,7 +341,9 @@ def build_cluster_features(
         elif base_strategy == "fused_only":
             features = np.concatenate([z_fused, gate, conflict], axis=1)
         elif base_strategy == "fused_va_geometry":
-            features = np.concatenate([z_fused, _va_geometry_features(embeddings)], axis=1)
+            raw_geom = _va_geometry_features(embeddings)
+            imputed_geom, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
+            features = np.concatenate([z_fused, imputed_geom], axis=1)
         else:  # "full", "pca_reduced", or default
             features = np.concatenate(
                 [z_fused, z_audio, z_lyrics, z_metadata, gate, conflict],
@@ -328,7 +360,7 @@ def build_cluster_features(
             else:
                 features = pca_model.transform(features).astype(np.float32)
 
-    return features.astype(np.float32), pca_model
+    return features.astype(np.float32), pca_model, imputation_fill
 
 
 def cluster_feature_weights(
@@ -1095,21 +1127,32 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
         lines.append("")
     mask_purity_data = summary.get("mask_purity_diagnostics")
     if mask_purity_data:
+        nmi = mask_purity_data.get("nmi", 0.0)
         lines.append("## Mask-Purity Diagnostics")
         lines.append("")
-        has_warning = False
-        for entry in mask_purity_data:
-            purity = entry["mask_purity"]
-            warning = " **[FAIL: missingness cluster]**" if purity > 0.85 else ""
-            if purity > 0.85:
-                has_warning = True
+        lines.append(f"- NMI(assignments, mask_pattern): **{nmi:.4f}**")
+        global_dist = mask_purity_data.get("global_mask_distribution", {})
+        if global_dist:
+            dist_str = ", ".join(f"{k}={v}" for k, v in sorted(global_dist.items()))
+            lines.append(f"- Global mask distribution: {dist_str}")
+        lines.append("")
+        for entry in mask_purity_data.get("clusters", []):
+            enrichment = entry.get("enrichment_vs_baseline", 0.0)
+            warning = ""
+            if enrichment > 2.0 and entry["mask_purity"] > 0.7:
+                warning = " **[enriched]**"
             lines.append(
-                f"- Cluster {entry['cluster_id']}: mask_purity={purity:.4f}, "
-                f"dominant={entry['dominant_mask_combo']}, size={entry['size']}{warning}"
+                f"- Cluster {entry['cluster_id']}: purity={entry['mask_purity']:.4f}, "
+                f"dominant={entry['dominant_mask_combo']}, enrichment={enrichment:.2f}x, "
+                f"size={entry['size']}{warning}"
             )
-        if has_warning:
+        if nmi > 0.15:
             lines.append("")
-            lines.append("> **WARNING**: One or more clusters have mask_purity > 0.85, indicating the GMM is clustering by missingness pattern rather than emotion.")
+            lines.append(
+                f"> **WARNING**: NMI={nmi:.4f} > 0.15 indicates moderate correlation "
+                f"between cluster assignments and mask patterns. Clustering may be "
+                f"partially driven by data availability rather than emotion."
+            )
         lines.append("")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).strip() + "\n")
@@ -1319,7 +1362,7 @@ def main() -> None:
 
     search_split = str(args.search_split).strip().lower()
     feature_strategy = str(args.cluster_feature_strategy).strip().lower()
-    search_features_raw, search_pca = build_cluster_features(
+    search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=float(args.metadata_cluster_weight),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -1375,6 +1418,7 @@ def main() -> None:
                 "k_strategy": k_strategy,
                 "hierarchical_result": k_result if is_hierarchical else None,
                 "search_pca": search_pca,
+                "search_imputation": search_imputation,
                 "feature_weights": feature_weights,
                 "config": {
                     "search_split": search_split,
@@ -1406,7 +1450,7 @@ def main() -> None:
     split_outputs: Dict[str, Dict[str, Any]] = {}
     split_assignments: Dict[str, np.ndarray] = {}
     for split in eval_splits:
-        features_raw, _ = build_cluster_features(
+        features_raw, _, _ = build_cluster_features(
             embeddings=embeddings_by_split[split],
             metadata_cluster_weight=float(args.metadata_cluster_weight),
             conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -1414,6 +1458,7 @@ def main() -> None:
             strategy=feature_strategy,
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
+            fitted_imputation=search_imputation,
         )
         features = apply_cluster_feature_weights(
             cluster_scaler.transform(features_raw).astype(np.float32),

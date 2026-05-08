@@ -109,3 +109,56 @@ def test_va_geometry_mask_returns_correct_patterns():
     assert mask.shape == (3, 3)
     expected = np.asarray([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
     np.testing.assert_allclose(mask, expected)
+
+
+def test_impute_unobserved_pairwise_makes_missing_rows_neutral():
+    """Regression: unobserved rows should be indistinguishable from observed
+    rows in pairwise dims (2:14) after imputation."""
+    from cluster.features.va_geometry import impute_unobserved_pairwise
+
+    audio = np.asarray([[0.7, 0.5], [0.7, 0.5], [0.3, 0.8]], dtype=np.float32)
+    lyrics = np.asarray([[0.3, 0.6], [0.0, 0.0], [0.4, 0.2]], dtype=np.float32)
+    view_mask = np.asarray([
+        [1.0, 1.0, 1.0],  # both present
+        [1.0, 0.0, 1.0],  # lyrics missing
+        [1.0, 1.0, 1.0],  # both present
+    ], dtype=np.float32)
+
+    observed_features = build_va_geometry_observed_features(audio, lyrics, view_mask)
+    assert observed_features.shape == (3, 14)
+
+    # Before imputation: row 1 has zeros in dims 2:14
+    np.testing.assert_allclose(observed_features[1, 2:14], np.zeros(12))
+
+    imputed, fill = impute_unobserved_pairwise(observed_features, view_mask)
+
+    # Fill should be mean of observed rows (0 and 2) in dims 2:14
+    expected_fill = observed_features[[0, 2], 2:14].mean(axis=0)
+    np.testing.assert_allclose(fill, expected_fill, atol=1e-6)
+
+    # After imputation: row 1 dims 2:14 should equal the fill
+    np.testing.assert_allclose(imputed[1, 2:14], expected_fill, atol=1e-6)
+
+    # Observed rows should be unchanged
+    np.testing.assert_allclose(imputed[0], observed_features[0], atol=1e-6)
+    np.testing.assert_allclose(imputed[2], observed_features[2], atol=1e-6)
+
+
+def test_impute_unobserved_pairwise_reuses_fitted_fill():
+    """Transform mode: fitted_fill from search split is reused on eval split."""
+    from cluster.features.va_geometry import impute_unobserved_pairwise
+
+    features = np.zeros((2, 14), dtype=np.float32)
+    features[0, :2] = [0.5, 0.5]
+    features[1, :2] = [0.6, 0.4]
+    view_mask = np.asarray([[1.0, 0.0, 1.0], [1.0, 0.0, 1.0]], dtype=np.float32)
+
+    preset_fill = np.ones(12, dtype=np.float32) * 0.42
+    imputed, fill = impute_unobserved_pairwise(features, view_mask, fitted_fill=preset_fill)
+
+    np.testing.assert_allclose(fill, preset_fill)
+    np.testing.assert_allclose(imputed[0, 2:14], preset_fill, atol=1e-6)
+    np.testing.assert_allclose(imputed[1, 2:14], preset_fill, atol=1e-6)
+    # Consensus dims unchanged
+    np.testing.assert_allclose(imputed[0, :2], [0.5, 0.5])
+    np.testing.assert_allclose(imputed[1, :2], [0.6, 0.4])

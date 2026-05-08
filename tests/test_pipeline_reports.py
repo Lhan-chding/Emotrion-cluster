@@ -53,7 +53,7 @@ def test_original_va_cluster_feature_strategy_uses_original_va_only():
         "original_va": np.asarray([[0.8, 0.7], [0.2, 0.3]], dtype=np.float32),
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -79,7 +79,7 @@ def test_mean_va_cluster_feature_strategy_uses_raw_mean_va_only():
         "original_va": np.asarray([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -96,7 +96,7 @@ def test_mean_va_cluster_feature_strategy_accepts_minimal_raw_embeddings():
         "mean_va": np.asarray([[0.6, 0.7], [0.2, 0.4]], dtype=np.float32),
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -129,7 +129,7 @@ def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
         "original_va": np.asarray([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -146,7 +146,7 @@ def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():
         "va_geometry": np.zeros((2, 17), dtype=np.float32),
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -196,7 +196,7 @@ def test_full_cluster_feature_strategy_uses_va_geometry_as_conflict_block():
         "va_geometry": np.ones((2, 17), dtype=np.float32) * 5.0,
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,
@@ -221,7 +221,7 @@ def test_fused_va_geometry_uses_trained_fused_embedding_and_weighted_va_geometry
         "va_geometry": np.ones((2, 17), dtype=np.float32) * 5.0,
     }
 
-    features, pca = build_cluster_features(
+    features, pca, _ = build_cluster_features(
         embeddings,
         metadata_cluster_weight=0.75,
         conflict_cluster_weight=0.40,

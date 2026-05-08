@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import pickle
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 from sklearn.preprocessing import StandardScaler
@@ -29,6 +29,7 @@ from cluster.pipeline.train import (
     apply_cluster_feature_weights,
     build_cluster_features,
     cluster_feature_weights,
+    compute_mask_purity,
     run_k_selection,
 )
 
@@ -152,16 +153,35 @@ def main() -> None:
         checkpoint_path = os.path.join(str(args.run_dir), "models", "music_discovery_model_best.pth")
         model, sidecar = load_music_discovery_checkpoint(checkpoint_path=checkpoint_path, device=device)
         _allow_incompat = str(getattr(args, "allow_incompatible_checkpoint", "false")).strip().lower() in {"1", "true", "yes"}
-        checkpoint_metadata_dim = len(sidecar.get("scaler_state", {}).get("metadata", {}).get("mean", []))
-        current_metadata_path = os.path.join(str(args.processed_dir), "metadata.npy")
-        if os.path.exists(current_metadata_path) and checkpoint_metadata_dim > 0:
-            current_metadata_dim = int(np.load(current_metadata_path).shape[1])
-            if current_metadata_dim != checkpoint_metadata_dim and not _allow_incompat:
+
+        # Schema-level validation: compare feature names, not just dimension
+        checkpoint_schema = sidecar.get("metadata_schema") or {}
+        checkpoint_feature_names = checkpoint_schema.get("feature_names", [])
+        current_names_path = os.path.join(str(args.processed_dir), "metadata_feature_names.json")
+        if os.path.exists(current_names_path) and checkpoint_feature_names:
+            with open(current_names_path, "r", encoding="utf-8") as f:
+                current_feature_names = json.load(f)
+            if current_feature_names != checkpoint_feature_names and not _allow_incompat:
+                n_show = min(5, max(len(current_feature_names), len(checkpoint_feature_names)))
                 raise ValueError(
-                    f"Checkpoint metadata_dim={checkpoint_metadata_dim} != processed metadata_dim={current_metadata_dim}. "
-                    f"The checkpoint was trained with different metadata. Either retrain or pass "
-                    f"--allow_incompatible_checkpoint true to proceed anyway."
+                    f"Checkpoint metadata feature names differ from current processed dataset.\n"
+                    f"  Checkpoint (first {n_show}): {checkpoint_feature_names[:n_show]}\n"
+                    f"  Current   (first {n_show}): {current_feature_names[:n_show]}\n"
+                    f"Same dimension but different semantics will produce wrong cluster assignments. "
+                    f"Retrain or pass --allow_incompatible_checkpoint true."
                 )
+        else:
+            # Fallback: dimension-only check when schema is unavailable
+            checkpoint_metadata_dim = len(sidecar.get("scaler_state", {}).get("metadata", {}).get("mean", []))
+            current_metadata_path = os.path.join(str(args.processed_dir), "metadata.npy")
+            if os.path.exists(current_metadata_path) and checkpoint_metadata_dim > 0:
+                current_metadata_dim = int(np.load(current_metadata_path).shape[1])
+                if current_metadata_dim != checkpoint_metadata_dim and not _allow_incompat:
+                    raise ValueError(
+                        f"Checkpoint metadata_dim={checkpoint_metadata_dim} != processed metadata_dim={current_metadata_dim}. "
+                        f"The checkpoint was trained with different metadata. Either retrain or pass "
+                        f"--allow_incompatible_checkpoint true to proceed anyway."
+                    )
 
     split_protocol = parse_split_protocol(
         str(sidecar.get("config", {}).get("split_protocol", str(args.split_protocol)))
@@ -198,7 +218,7 @@ def main() -> None:
         }
 
     search_split = str(args.search_split).strip().lower()
-    search_features_raw, search_pca = build_cluster_features(
+    search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=float(args.metadata_cluster_weight),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -283,8 +303,9 @@ def main() -> None:
         )
 
     split_outputs: Dict[str, Dict[str, Any]] = {}
+    search_assignments: Optional[np.ndarray] = None
     for split in eval_splits:
-        features_raw, _ = build_cluster_features(
+        features_raw, _, _ = build_cluster_features(
             embeddings=embeddings_by_split[split],
             metadata_cluster_weight=float(args.metadata_cluster_weight),
             conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -292,6 +313,7 @@ def main() -> None:
             strategy=feature_strategy,
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
+            fitted_imputation=search_imputation,
         )
         features = apply_cluster_feature_weights(
             cluster_scaler.transform(features_raw).astype(np.float32),
@@ -337,6 +359,8 @@ def main() -> None:
             plot_va_source=str(args.plot_va_source),
         )
         split_outputs[split] = payload
+        if split == search_split:
+            search_assignments = assignments
 
     if is_hierarchical:
         label_names_path = os.path.join(out_dir, "hierarchical_label_names.json")
@@ -372,6 +396,14 @@ def main() -> None:
         summary["label_names"] = {str(k): v for k, v in k_result.label_names.items()}
     if "min_cluster_size_threshold" in selection_info:
         summary["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
+
+    mask_purity_diagnostics = None
+    if search_assignments is not None:
+        search_dataset = eval_datasets[search_split]
+        search_view_mask = getattr(search_dataset, "view_mask", np.ones((len(search_dataset), 3), dtype=np.float32))
+        mask_purity_diagnostics = compute_mask_purity(search_assignments, search_view_mask)
+        summary["mask_purity_diagnostics"] = mask_purity_diagnostics
+
     summary_path = os.path.join(out_dir, "rerun_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -394,6 +426,8 @@ def main() -> None:
         "history_path": os.path.join(str(args.run_dir), "training_history.csv") if args.run_dir else None,
         "split_outputs": split_outputs,
     }
+    if mask_purity_diagnostics is not None:
+        report_data["mask_purity_diagnostics"] = mask_purity_diagnostics
     if "min_cluster_size_threshold" in selection_info:
         report_data["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
     _write_pipeline_report(os.path.join(out_dir, "rerun_report.md"), report_data)
