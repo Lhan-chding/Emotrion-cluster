@@ -27,6 +27,7 @@ from cluster.utils import (
     safe_load_json,
     set_seed,
 )
+from cluster.features.va_geometry import build_va_geometry_features
 
 
 def _resolve_split_indices(data_dir: str, split_protocol: str, split: str, n_samples: int) -> np.ndarray:
@@ -128,9 +129,21 @@ class MusicDiscoveryDataset(Dataset):
         weights = self.view_mask[idx, :2].astype(np.float32)
         total_weight = float(weights.sum())
         if total_weight <= 0.0:
-            return self.original_va[idx].astype(np.float32)
+            return np.asarray([0.5, 0.5], dtype=np.float32)
         mean_va = (self.raw_audio[idx] * weights[0] + self.raw_lyrics[idx] * weights[1]) / total_weight
         return mean_va.astype(np.float32)
+
+    def _signed_va_diff(self, idx: int) -> np.ndarray:
+        if self.view_mask[idx, 0] <= 0.0 or self.view_mask[idx, 1] <= 0.0:
+            return np.zeros(2, dtype=np.float32)
+        return (self.raw_audio[idx] - self.raw_lyrics[idx]).astype(np.float32)
+
+    def _va_geometry(self, idx: int) -> np.ndarray:
+        return build_va_geometry_features(
+            self.raw_audio[idx : idx + 1],
+            self.raw_lyrics[idx : idx + 1],
+            self.view_mask[idx : idx + 1],
+        )[0]
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = {
@@ -141,6 +154,8 @@ class MusicDiscoveryDataset(Dataset):
             "consistency": torch.tensor(self.consistency[idx], dtype=torch.float32),
             "va_diff": torch.from_numpy(self.va_diff[idx]),
             "mean_va": torch.from_numpy(self._mean_va(idx)),
+            "signed_va_diff": torch.from_numpy(self._signed_va_diff(idx)),
+            "va_geometry": torch.from_numpy(self._va_geometry(idx)),
             "original_va": torch.from_numpy(self.original_va[idx]),
             "label_ref": int(self.labels[idx]),
             "label_emotion": int(self.labels[idx]),
@@ -849,6 +864,8 @@ def extract_split_embeddings(
         "raw_label_id": [],
         "view_mask": [],
         "mean_va": [],
+        "signed_va_diff": [],
+        "va_geometry": [],
         "original_va": [],
     }
     identifiers: List[str] = []
@@ -879,6 +896,8 @@ def extract_split_embeddings(
             blocks["raw_label_id"].append(batch["label_ref"].cpu().numpy().astype(np.int64).reshape(-1, 1))
             blocks["view_mask"].append(batch["view_mask"].cpu().numpy().astype(np.float32))
             blocks["mean_va"].append(batch["mean_va"].cpu().numpy().astype(np.float32))
+            blocks["signed_va_diff"].append(batch["signed_va_diff"].cpu().numpy().astype(np.float32))
+            blocks["va_geometry"].append(batch["va_geometry"].cpu().numpy().astype(np.float32))
             blocks["original_va"].append(batch["original_va"].cpu().numpy().astype(np.float32))
 
     out: Dict[str, Any] = {

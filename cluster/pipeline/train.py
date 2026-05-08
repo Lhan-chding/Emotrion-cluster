@@ -17,6 +17,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
+from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
@@ -111,7 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
-                        choices=["full", "fused_residual", "fused_only", "mean_va", "original_va", "pca_reduced"],
+                        choices=[
+                            "full",
+                            "fused_residual",
+                            "fused_only",
+                            "mean_va",
+                            "va_geometry",
+                            "mean_va_diff",
+                            "original_va",
+                            "pca_reduced",
+                        ],
                         help="Clustering feature strategy")
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction (pca_reduced strategy)")
@@ -134,6 +144,8 @@ class ClusterFeatureStrategy(Enum):
     FUSED_RESIDUAL = "fused_residual" # z_fused + residuals + gate + conflict
     FUSED_ONLY = "fused_only"         # z_fused + gate + conflict
     MEAN_VA = "mean_va"               # raw audio/lyrics mean VA; unsupervised legacy baseline
+    VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
+    MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
 
@@ -145,6 +157,18 @@ def _mean_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
     features = np.asarray(mean_va, dtype=np.float32)
     if features.ndim != 2 or features.shape[1] != 2:
         raise ValueError(f"mean_va must have shape [N, 2], got {features.shape}.")
+    return features
+
+
+def _va_geometry_features(embeddings: Dict[str, Any]) -> np.ndarray:
+    geometry = embeddings.get("va_geometry")
+    if geometry is None:
+        raise ValueError("cluster_feature_strategy='va_geometry' requires va_geometry embeddings.")
+    features = np.asarray(geometry, dtype=np.float32)
+    if features.ndim != 2 or features.shape[1] != len(VA_GEOMETRY_FEATURE_NAMES):
+        raise ValueError(
+            f"va_geometry must have shape [N, {len(VA_GEOMETRY_FEATURE_NAMES)}], got {features.shape}."
+        )
     return features
 
 
@@ -200,6 +224,8 @@ def build_cluster_features(
 
     if base_strategy == "mean_va":
         features = _mean_va_features(embeddings)
+    elif base_strategy in {"va_geometry", "mean_va_diff"}:
+        features = _va_geometry_features(embeddings)
     elif base_strategy == "original_va":
         features = _original_va_features(embeddings)
     elif base_strategy == "fused_residual":
@@ -662,11 +688,12 @@ def _dataset_mean_va(dataset) -> np.ndarray:
     view_mask = getattr(dataset, "view_mask", np.ones((audio.shape[0], 3), dtype=np.float32)).astype(np.float32)
     weights = view_mask[:, 0:1] + view_mask[:, 1:2]
     summed = audio * view_mask[:, 0:1] + lyrics * view_mask[:, 1:2]
-    mean_va = np.divide(summed, np.maximum(weights, 1.0), out=np.zeros_like(summed), where=weights > 0)
-    original_va = getattr(dataset, "original_va", None)
-    if original_va is not None:
-        missing = weights.reshape(-1) <= 0.0
-        mean_va[missing] = original_va[missing]
+    mean_va = np.divide(
+        summed,
+        np.maximum(weights, 1.0),
+        out=np.full_like(summed, 0.5, dtype=np.float32),
+        where=weights > 0,
+    )
     return mean_va.astype(np.float32)
 
 

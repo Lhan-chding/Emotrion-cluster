@@ -80,6 +80,11 @@ def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
         np.load(out_dir / "original_va.npy")[:2],
         np.asarray([[0.1, 0.9], [0.55, 0.5]], dtype=np.float32),
     )
+    np.testing.assert_allclose(
+        np.load(out_dir / "signed_va_diff.npy"),
+        np.asarray([[-0.1, 0.1], [0.0, 0.0], [0.0, 0.0]], dtype=np.float32),
+        atol=1e-6,
+    )
 
     manifest = pd.read_csv(out_dir / "dataset_manifest.csv")
     assert manifest[["track_id", "has_audio", "has_lyrics", "has_metadata"]].to_dict("records") == [
@@ -99,6 +104,7 @@ def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
     schema = json.loads((out_dir / "schema.json").read_text(encoding="utf-8"))
     assert schema["va_order"] == ["Valence", "Arousal"]
     assert schema["view_mask_columns"] == ["has_audio", "has_lyrics", "has_metadata"]
+    assert "signed_va_diff.npy" in schema["derived_feature_files"]
     assert schema["schema_hash"]
 
 

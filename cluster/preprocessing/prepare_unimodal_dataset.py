@@ -494,6 +494,8 @@ def prepare_unimodal_dataset(
 
     view_mask = np.stack([has_audio, has_lyrics, has_metadata], axis=1).astype(np.float32)
     both_audio_lyrics = has_audio & has_lyrics
+    signed_va_diff = (audio - lyrics).astype(np.float32)
+    signed_va_diff[~both_audio_lyrics] = 0.0
     va_diff = np.abs(audio - lyrics).astype(np.float32)
     va_diff[~both_audio_lyrics] = 0.0
     consistency = np.zeros(len(combined), dtype=np.float32)
@@ -521,6 +523,7 @@ def prepare_unimodal_dataset(
     np.save(os.path.join(out_processed_dir, "view_mask.npy"), view_mask.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "consistency.npy"), consistency.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "va_diff.npy"), va_diff.astype(np.float32))
+    np.save(os.path.join(out_processed_dir, "signed_va_diff.npy"), signed_va_diff.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "labels_emotion.npy"), labels.astype(np.int64))
     np.save(os.path.join(out_processed_dir, "original_va.npy"), original_va.astype(np.float32))
 
@@ -538,6 +541,11 @@ def prepare_unimodal_dataset(
     schema_payload = {
         "va_order": ["Valence", "Arousal"],
         "view_mask_columns": ["has_audio", "has_lyrics", "has_metadata"],
+        "derived_feature_files": [
+            "consistency.npy",
+            "va_diff.npy",
+            "signed_va_diff.npy",
+        ],
         "source_columns": list(combined.columns),
         "metadata_schema": metadata_schema,
         "label_source": label_source_info,

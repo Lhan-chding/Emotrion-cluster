@@ -65,6 +65,10 @@ def test_scaler_and_dataset_ignore_missing_view_values(tmp_path):
     assert torch.equal(missing_audio_item["metadata"], torch.tensor([0.0]))
     assert torch.equal(dataset[0]["mean_va"], torch.tensor([2.0, 3.0]))
     assert torch.equal(missing_audio_item["mean_va"], torch.tensor([7.0, 8.0]))
+    assert dataset[0]["va_geometry"].shape == (17,)
+    assert missing_audio_item["va_geometry"][14].item() == 0.0
+    assert missing_audio_item["va_geometry"][15].item() == 0.0
+    assert missing_audio_item["va_geometry"][16].item() == 1.0
     assert missing_audio_item["track_id"] == "b"
     assert missing_audio_item["split"] == "train"
 
