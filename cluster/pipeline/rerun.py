@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
-                        choices=["full", "fused_residual", "fused_only", "original_va", "pca_reduced"],
+                        choices=["full", "fused_residual", "fused_only", "mean_va", "original_va", "pca_reduced"],
                         help="Clustering feature strategy")
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction")

@@ -124,6 +124,14 @@ class MusicDiscoveryDataset(Dataset):
     def __len__(self) -> int:
         return int(self.audio.shape[0])
 
+    def _mean_va(self, idx: int) -> np.ndarray:
+        weights = self.view_mask[idx, :2].astype(np.float32)
+        total_weight = float(weights.sum())
+        if total_weight <= 0.0:
+            return self.original_va[idx].astype(np.float32)
+        mean_va = (self.raw_audio[idx] * weights[0] + self.raw_lyrics[idx] * weights[1]) / total_weight
+        return mean_va.astype(np.float32)
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = {
             "audio": torch.from_numpy(self.audio[idx]),
@@ -132,6 +140,7 @@ class MusicDiscoveryDataset(Dataset):
             "view_mask": torch.from_numpy(self.view_mask[idx]),
             "consistency": torch.tensor(self.consistency[idx], dtype=torch.float32),
             "va_diff": torch.from_numpy(self.va_diff[idx]),
+            "mean_va": torch.from_numpy(self._mean_va(idx)),
             "original_va": torch.from_numpy(self.original_va[idx]),
             "label_ref": int(self.labels[idx]),
             "label_emotion": int(self.labels[idx]),
@@ -839,6 +848,7 @@ def extract_split_embeddings(
         "va_diff": [],
         "raw_label_id": [],
         "view_mask": [],
+        "mean_va": [],
         "original_va": [],
     }
     identifiers: List[str] = []
@@ -868,6 +878,7 @@ def extract_split_embeddings(
             blocks["va_diff"].append(batch["va_diff"].cpu().numpy().astype(np.float32))
             blocks["raw_label_id"].append(batch["label_ref"].cpu().numpy().astype(np.int64).reshape(-1, 1))
             blocks["view_mask"].append(batch["view_mask"].cpu().numpy().astype(np.float32))
+            blocks["mean_va"].append(batch["mean_va"].cpu().numpy().astype(np.float32))
             blocks["original_va"].append(batch["original_va"].cpu().numpy().astype(np.float32))
 
     out: Dict[str, Any] = {

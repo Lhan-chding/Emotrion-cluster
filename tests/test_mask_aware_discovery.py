@@ -63,6 +63,8 @@ def test_scaler_and_dataset_ignore_missing_view_values(tmp_path):
     assert torch.equal(missing_audio_item["view_mask"], torch.tensor([0.0, 1.0, 0.0]))
     assert torch.equal(missing_audio_item["audio"], torch.tensor([0.0, 0.0]))
     assert torch.equal(missing_audio_item["metadata"], torch.tensor([0.0]))
+    assert torch.equal(dataset[0]["mean_va"], torch.tensor([2.0, 3.0]))
+    assert torch.equal(missing_audio_item["mean_va"], torch.tensor([7.0, 8.0]))
     assert missing_audio_item["track_id"] == "b"
     assert missing_audio_item["split"] == "train"
 
@@ -111,4 +113,3 @@ def test_model_gate_and_loss_are_mask_aware():
     )
     assert torch.isfinite(losses["loss"])
     assert torch.isfinite(losses["recon_metadata"])
-

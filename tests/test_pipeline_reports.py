@@ -59,6 +59,32 @@ def test_original_va_cluster_feature_strategy_uses_original_va_only():
     assert pca is None
 
 
+def test_mean_va_cluster_feature_strategy_uses_raw_mean_va_only():
+    embeddings = {
+        "z_fused": np.ones((2, 3), dtype=np.float32),
+        "z_audio": np.ones((2, 3), dtype=np.float32) * 2.0,
+        "z_lyrics": np.ones((2, 3), dtype=np.float32) * 3.0,
+        "z_metadata": np.ones((2, 3), dtype=np.float32) * 4.0,
+        "gate_weights": np.ones((2, 3), dtype=np.float32) / 3.0,
+        "consistency": np.ones((2, 1), dtype=np.float32),
+        "va_diff": np.zeros((2, 2), dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+        "mean_va": np.asarray([[0.6, 0.7], [0.2, 0.4]], dtype=np.float32),
+        "original_va": np.asarray([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="mean_va",
+    )
+
+    np.testing.assert_allclose(features, embeddings["mean_va"])
+    assert pca is None
+
+
 def test_dataset_plot_va_can_use_original_va():
     class Dataset:
         raw_audio = np.asarray([[0.1, 0.1], [0.9, 0.9]], dtype=np.float32)

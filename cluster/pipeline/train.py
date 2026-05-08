@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
-                        choices=["full", "fused_residual", "fused_only", "original_va", "pca_reduced"],
+                        choices=["full", "fused_residual", "fused_only", "mean_va", "original_va", "pca_reduced"],
                         help="Clustering feature strategy")
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction (pca_reduced strategy)")
@@ -133,8 +133,19 @@ class ClusterFeatureStrategy(Enum):
     FULL = "full"                     # z_fused + z_audio + z_lyrics + z_metadata + gate + conflict
     FUSED_RESIDUAL = "fused_residual" # z_fused + residuals + gate + conflict
     FUSED_ONLY = "fused_only"         # z_fused + gate + conflict
+    MEAN_VA = "mean_va"               # raw audio/lyrics mean VA; unsupervised legacy baseline
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
+
+
+def _mean_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
+    mean_va = embeddings.get("mean_va")
+    if mean_va is None:
+        raise ValueError("cluster_feature_strategy='mean_va' requires mean_va embeddings.")
+    features = np.asarray(mean_va, dtype=np.float32)
+    if features.ndim != 2 or features.shape[1] != 2:
+        raise ValueError(f"mean_va must have shape [N, 2], got {features.shape}.")
+    return features
 
 
 def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
@@ -187,7 +198,9 @@ def build_cluster_features(
     base_strategy = strategy.lower().replace("pca_reduced_", "")
     use_pca = strategy.lower().startswith("pca_reduced") or strategy.lower() == "pca_reduced"
 
-    if base_strategy == "original_va":
+    if base_strategy == "mean_va":
+        features = _mean_va_features(embeddings)
+    elif base_strategy == "original_va":
         features = _original_va_features(embeddings)
     elif base_strategy == "fused_residual":
         residual_audio = z_audio - z_fused
