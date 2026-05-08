@@ -801,6 +801,93 @@ def _plot_quadrant_heatmap(assignments: np.ndarray, labels: np.ndarray, out_path
     plt.close(fig)
 
 
+def _plot_diff_scatter(
+    audio_va: np.ndarray,
+    lyrics_va: np.ndarray,
+    view_mask: np.ndarray,
+    assignments: np.ndarray,
+    out_path: str,
+    palette: Dict[int, str],
+    max_arrows: int = 300,
+) -> None:
+    """Scatter plot with arrows from audio VA → lyrics VA per track.
+
+    Only plots tracks where both audio and lyrics are available.
+    Arrow direction and length encode cross-modal affective tension.
+    """
+    both_mask = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+    indices = np.where(both_mask)[0]
+    n_plot = min(len(indices), max_arrows)
+    if n_plot == 0:
+        return
+    plot_idx = np.random.RandomState(42).choice(indices, size=n_plot, replace=False) if n_plot < len(indices) else indices
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    for idx in plot_idx:
+        cid = int(assignments[idx])
+        color = palette.get(cid, "#888888")
+        ax.annotate(
+            "",
+            xy=(float(lyrics_va[idx, 0]), float(lyrics_va[idx, 1])),
+            xytext=(float(audio_va[idx, 0]), float(audio_va[idx, 1])),
+            arrowprops=dict(arrowstyle="->", color=color, lw=0.8, alpha=0.6),
+        )
+    ax.axvline(0.5, color="gray", linestyle="--", alpha=0.4)
+    ax.axhline(0.5, color="gray", linestyle="--", alpha=0.4)
+    ax.set_xlabel("Valence")
+    ax.set_ylabel("Arousal")
+    ax.set_title("Audio → Lyrics VA Delta per Track")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    cluster_ids = sorted(np.unique(assignments).tolist())
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=palette[cid], markersize=6, label=f"Cluster {cid}")
+        for cid in cluster_ids if cid in palette
+    ]
+    ax.legend(handles=legend_elements, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_mask_distribution(
+    assignments: np.ndarray,
+    view_mask: np.ndarray,
+    out_path: str,
+    palette: Dict[int, str],
+) -> None:
+    """Stacked bar chart: mask-pattern composition per cluster."""
+    mask_labels = ["has_both", "audio_only", "lyrics_only"]
+    n_clusters = len(np.unique(assignments))
+    fig, ax = plt.subplots(figsize=(7, 4))
+    x = np.arange(n_clusters)
+    bar_width = 0.6
+    bottoms = np.zeros(n_clusters, dtype=np.float32)
+
+    for label_idx in range(3):
+        values = np.zeros(n_clusters)
+        for cid in range(n_clusters):
+            cluster_mask = assignments == cid
+            if cluster_mask.any():
+                values[cid] = ((view_mask[cluster_mask, label_idx] if label_idx < 2 else
+                                (view_mask[cluster_mask, 0] <= 0) & (view_mask[cluster_mask, 1] <= 0))).mean()
+        ax.bar(x, values, bar_width, bottom=bottoms, label=mask_labels[label_idx] if label_idx < 2 else "neither")
+        bottoms += values
+
+    ax.set_xlabel("Cluster")
+    ax.set_ylabel("Proportion")
+    ax.set_title("Mask Availability per Cluster")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(cid) for cid in range(n_clusters)])
+    ax.legend(loc="upper right")
+    ax.set_ylim(0, 1.1)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
 def _plot_gate_profiles(assignments: np.ndarray, gate_weights: np.ndarray, out_path: str) -> None:
     cluster_ids = sorted(np.unique(assignments).tolist())
     means = []
@@ -913,6 +1000,16 @@ def _cluster_summary(
                         item[field.lower()] = str(dataset.canonical_metadata.iloc[idx][field])
             example_tracks.append(item)
 
+        both_mask = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+        pair_mask = mask & both_mask
+        if pair_mask.any():
+            va_delta = raw_audio[pair_mask] - raw_lyrics[pair_mask]
+            diff_magnitude = float(np.mean(np.linalg.norm(va_delta, axis=1)))
+            angular_gap = float(np.mean(np.abs(np.arctan2(va_delta[:, 1], va_delta[:, 0]))))
+        else:
+            diff_magnitude = float("nan")
+            angular_gap = float("nan")
+
         summaries.append(
             {
                 "cluster_id": int(cluster_id),
@@ -926,9 +1023,11 @@ def _cluster_summary(
                 "mean_lyrics_arousal": float(raw_lyrics[mask & (view_mask[:, 1] > 0), 1].mean()) if np.any(mask & (view_mask[:, 1] > 0)) else float("nan"),
                 "mean_valence": float(mean_va[mask, 0].mean()),
                 "mean_arousal": float(mean_va[mask, 1].mean()),
+                "mean_diff_magnitude": diff_magnitude,
+                "mean_angular_gap": angular_gap,
                 "has_audio_ratio": round(float((view_mask[mask, 0] > 0).mean()), 4),
                 "has_lyrics_ratio": round(float((view_mask[mask, 1] > 0).mean()), 4),
-                "diff_observed_ratio": round(float(((view_mask[mask, 0] > 0) & (view_mask[mask, 1] > 0)).mean()), 4),
+                "diff_observed_ratio": round(float((both_mask[mask]).mean()), 4),
                 "quadrant_distribution": {
                     MUSIC_LABEL_NAMES[idx]: {
                         "count": int(label_counts[idx]),
@@ -1033,6 +1132,8 @@ def _write_split_outputs(
     size_bar_path = os.path.join(out_dir, "cluster_size_bar.png")
     quadrant_heatmap_path = os.path.join(out_dir, "cluster_quadrant_heatmap.png")
     gate_profile_path = os.path.join(out_dir, "cluster_gate_profile.png")
+    diff_scatter_path = os.path.join(out_dir, "cluster_diff_arrow.png")
+    mask_dist_path = os.path.join(out_dir, "cluster_mask_distribution.png")
     palette_path = os.path.join(out_dir, "cluster_palette.json")
     summary_path = os.path.join(out_dir, "cluster_summary.json")
 
@@ -1043,6 +1144,11 @@ def _write_split_outputs(
     _plot_cluster_size_bar(assignments, size_bar_path, palette)
     _plot_quadrant_heatmap(assignments, dataset.labels, quadrant_heatmap_path)
     _plot_gate_profiles(assignments, embeddings["gate_weights"], gate_profile_path)
+    _dataset_view_mask = dataset.view_mask if hasattr(dataset, "view_mask") else np.ones((len(assignments), 3), dtype=np.float32)
+    _plot_diff_scatter(dataset.raw_audio if hasattr(dataset, "raw_audio") else np.zeros((len(assignments), 2)),
+                       dataset.raw_lyrics if hasattr(dataset, "raw_lyrics") else np.zeros((len(assignments), 2)),
+                       _dataset_view_mask, assignments, diff_scatter_path, palette)
+    _plot_mask_distribution(assignments, _dataset_view_mask, mask_dist_path, palette)
     with open(palette_path, "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in palette.items()}, f, ensure_ascii=False, indent=2)
 
@@ -1072,6 +1178,8 @@ def _write_split_outputs(
             "cluster_size_bar": size_bar_path,
             "cluster_quadrant_heatmap": quadrant_heatmap_path,
             "cluster_gate_profile": gate_profile_path,
+            "cluster_diff_arrow": diff_scatter_path,
+            "cluster_mask_distribution": mask_dist_path,
             "cluster_palette": palette_path,
             "search_metrics": search_metrics_path,
             "bic_curve": bic_curve_path,
