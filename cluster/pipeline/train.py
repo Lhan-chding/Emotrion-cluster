@@ -201,24 +201,6 @@ def build_cluster_features(
     Returns ``(features, pca_model)`` where *pca_model* is the fitted PCA
     (or ``None`` when PCA is not used).
     """
-    z_fused = embeddings["z_fused"].astype(np.float32)
-    view_mask = embeddings.get("view_mask")
-    if view_mask is None:
-        view_mask = np.ones((z_fused.shape[0], 3), dtype=np.float32)
-    view_mask = view_mask.astype(np.float32)
-    z_audio = embeddings["z_audio"].astype(np.float32) * view_mask[:, 0:1]
-    z_lyrics = embeddings["z_lyrics"].astype(np.float32) * view_mask[:, 1:2]
-    z_metadata = (
-        float(metadata_cluster_weight)
-        * embeddings["z_metadata"].astype(np.float32)
-        * view_mask[:, 2:3]
-    )
-    gate = float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32)
-    conflict = float(conflict_cluster_weight) * np.concatenate(
-        [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
-        axis=1,
-    ).astype(np.float32)
-
     base_strategy = strategy.lower().replace("pca_reduced_", "")
     use_pca = strategy.lower().startswith("pca_reduced") or strategy.lower() == "pca_reduced"
 
@@ -228,20 +210,42 @@ def build_cluster_features(
         features = _va_geometry_features(embeddings)
     elif base_strategy == "original_va":
         features = _original_va_features(embeddings)
-    elif base_strategy == "fused_residual":
-        residual_audio = z_audio - z_fused
-        residual_lyrics = z_lyrics - z_fused
-        features = np.concatenate(
-            [z_fused, residual_audio, residual_lyrics, z_metadata, gate, conflict],
-            axis=1,
+    else:
+        features = None
+
+    if features is None:
+        z_fused = embeddings["z_fused"].astype(np.float32)
+        view_mask = embeddings.get("view_mask")
+        if view_mask is None:
+            view_mask = np.ones((z_fused.shape[0], 3), dtype=np.float32)
+        view_mask = view_mask.astype(np.float32)
+        z_audio = embeddings["z_audio"].astype(np.float32) * view_mask[:, 0:1]
+        z_lyrics = embeddings["z_lyrics"].astype(np.float32) * view_mask[:, 1:2]
+        z_metadata = (
+            float(metadata_cluster_weight)
+            * embeddings["z_metadata"].astype(np.float32)
+            * view_mask[:, 2:3]
         )
-    elif base_strategy == "fused_only":
-        features = np.concatenate([z_fused, gate, conflict], axis=1)
-    else:  # "full" or default
-        features = np.concatenate(
-            [z_fused, z_audio, z_lyrics, z_metadata, gate, conflict],
+        gate = float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32)
+        conflict = float(conflict_cluster_weight) * np.concatenate(
+            [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
             axis=1,
-        )
+        ).astype(np.float32)
+
+        if base_strategy == "fused_residual":
+            residual_audio = z_audio - z_fused
+            residual_lyrics = z_lyrics - z_fused
+            features = np.concatenate(
+                [z_fused, residual_audio, residual_lyrics, z_metadata, gate, conflict],
+                axis=1,
+            )
+        elif base_strategy == "fused_only":
+            features = np.concatenate([z_fused, gate, conflict], axis=1)
+        else:  # "full", "pca_reduced", or default
+            features = np.concatenate(
+                [z_fused, z_audio, z_lyrics, z_metadata, gate, conflict],
+                axis=1,
+            )
 
     pca_model: Optional[PCA] = fitted_pca
     if use_pca:

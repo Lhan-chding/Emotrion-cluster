@@ -8,6 +8,7 @@ from cluster.models.discovery_net import (
     MusicMetadataDiscoveryNet,
     _discovery_loss,
 )
+from cluster.pipeline.rerun import _raw_feature_embeddings, _strategy_requires_checkpoint
 from cluster.utils import fit_scaler_state
 
 
@@ -71,6 +72,21 @@ def test_scaler_and_dataset_ignore_missing_view_values(tmp_path):
     assert missing_audio_item["va_geometry"][16].item() == 1.0
     assert missing_audio_item["track_id"] == "b"
     assert missing_audio_item["split"] == "train"
+
+    raw_embeddings = _raw_feature_embeddings(dataset)
+    assert set(["mean_va", "va_geometry", "z_fused", "gate_weights"]).issubset(raw_embeddings)
+    np.testing.assert_allclose(raw_embeddings["mean_va"][0], np.asarray([2.0, 3.0], dtype=np.float32))
+    assert raw_embeddings["va_geometry"].shape == (2, 17)
+    assert raw_embeddings["z_fused"].shape == (2, 2)
+
+
+def test_rerun_checkpoint_requirement_matches_feature_strategy():
+    assert _strategy_requires_checkpoint("full")
+    assert _strategy_requires_checkpoint("fused_only")
+    assert not _strategy_requires_checkpoint("mean_va")
+    assert not _strategy_requires_checkpoint("va_geometry")
+    assert not _strategy_requires_checkpoint("mean_va_diff")
+    assert not _strategy_requires_checkpoint("original_va")
 
 
 def test_model_gate_and_loss_are_mask_aware():

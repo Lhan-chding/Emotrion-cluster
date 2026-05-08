@@ -10,6 +10,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import parse_split_protocol
+from cluster.features.va_geometry import build_va_geometry_features
 from cluster.models.discovery_net import (
     create_music_discovery_datasets,
     create_music_discovery_loader,
@@ -20,6 +21,7 @@ from cluster.models.discovery_net import (
 from cluster.pipeline.k_selection import HierarchicalClusterResult
 from cluster.pipeline.train import (
     _build_cluster_features,
+    _dataset_mean_va,
     _ensure_dir,
     _parse_eval_splits,
     _write_pipeline_report,
@@ -28,13 +30,53 @@ from cluster.pipeline.train import (
     run_k_selection,
 )
 
+RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset({"mean_va", "va_geometry", "mean_va_diff", "original_va"})
+
+
+def _base_feature_strategy(strategy: str) -> str:
+    return str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+
+
+def _strategy_requires_checkpoint(strategy: str) -> bool:
+    return _base_feature_strategy(strategy) not in RAW_ONLY_CLUSTER_FEATURE_STRATEGIES
+
+
+def _availability_gate(view_mask: np.ndarray) -> np.ndarray:
+    mask = np.asarray(view_mask, dtype=np.float32)
+    weights = mask / np.maximum(mask.sum(axis=1, keepdims=True), 1.0)
+    return weights.astype(np.float32)
+
+
+def _raw_feature_embeddings(dataset) -> Dict[str, Any]:
+    view_mask = getattr(dataset, "view_mask", np.ones((len(dataset), 3), dtype=np.float32)).astype(np.float32)
+    both_audio_lyrics = ((view_mask[:, 0] > 0.0) & (view_mask[:, 1] > 0.0)).reshape(-1, 1)
+    signed_va_diff = (dataset.raw_audio.astype(np.float32) - dataset.raw_lyrics.astype(np.float32))
+    signed_va_diff = np.where(both_audio_lyrics, signed_va_diff, 0.0).astype(np.float32)
+    mean_va = _dataset_mean_va(dataset)
+    return {
+        "mean_va": mean_va,
+        "va_geometry": build_va_geometry_features(dataset.raw_audio, dataset.raw_lyrics, view_mask),
+        "original_va": dataset.original_va.astype(np.float32),
+        "view_mask": view_mask,
+        "consistency": dataset.consistency.astype(np.float32).reshape(-1, 1),
+        "va_diff": dataset.va_diff.astype(np.float32),
+        "signed_va_diff": signed_va_diff,
+        "z_fused": mean_va.astype(np.float32),
+        "gate_weights": _availability_gate(view_mask),
+    }
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Reuse an existing music discovery checkpoint and rerun larger variable-K cluster search with richer visualizations."
     )
     parser.add_argument("--processed_dir", type=str, required=True)
-    parser.add_argument("--run_dir", type=str, required=True, help="Existing discovery run directory containing models/music_discovery_model_best.pth")
+    parser.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help="Existing discovery run directory containing models/music_discovery_model_best.pth. Required for learned feature strategies, not for raw VA strategies.",
+    )
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--split_protocol", type=str, default="70_15_15")
     parser.add_argument("--search_split", type=str, default="train", choices=["train", "val", "test", "all"])
@@ -91,9 +133,19 @@ def main() -> None:
     out_dir = str(args.out_dir)
     _ensure_dir(out_dir)
 
-    checkpoint_path = os.path.join(str(args.run_dir), "models", "music_discovery_model_best.pth")
+    feature_strategy = str(args.cluster_feature_strategy).strip().lower()
+    requires_checkpoint = _strategy_requires_checkpoint(feature_strategy)
     device = initialize_discovery_runtime(seed=int(args.seed), gpu=str(args.gpu))
-    model, sidecar = load_music_discovery_checkpoint(checkpoint_path=checkpoint_path, device=device)
+    checkpoint_path = None
+    sidecar: Dict[str, Any] = {"config": {}}
+    model = None
+    if requires_checkpoint:
+        if not args.run_dir:
+            parser.error(
+                f"--run_dir is required when --cluster_feature_strategy={feature_strategy!r} uses learned embeddings."
+            )
+        checkpoint_path = os.path.join(str(args.run_dir), "models", "music_discovery_model_best.pth")
+        model, sidecar = load_music_discovery_checkpoint(checkpoint_path=checkpoint_path, device=device)
 
     split_protocol = parse_split_protocol(
         str(sidecar.get("config", {}).get("split_protocol", str(args.split_protocol)))
@@ -118,13 +170,18 @@ def main() -> None:
         "all": datasets.all_dataset,
     }
 
-    embeddings_by_split = {
-        split: extract_split_embeddings(model=model, loader=eval_loaders[split], device=device)
-        for split in eval_splits
-    }
+    if requires_checkpoint:
+        embeddings_by_split = {
+            split: extract_split_embeddings(model=model, loader=eval_loaders[split], device=device)
+            for split in eval_splits
+        }
+    else:
+        embeddings_by_split = {
+            split: _raw_feature_embeddings(eval_datasets[split])
+            for split in eval_splits
+        }
 
     search_split = str(args.search_split).strip().lower()
-    feature_strategy = str(args.cluster_feature_strategy).strip().lower()
     search_features_raw, search_pca = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=float(args.metadata_cluster_weight),
@@ -258,7 +315,7 @@ def main() -> None:
 
     summary = {
         "processed_dir": str(args.processed_dir),
-        "source_run_dir": str(args.run_dir),
+        "source_run_dir": str(args.run_dir) if args.run_dir else None,
         "search_split": search_split,
         "eval_splits": eval_splits,
         "selected_k": selected_k,
@@ -298,12 +355,12 @@ def main() -> None:
         "eval_backend": str(args.eval_backend),
         "actual_cluster_backend": str(selection_info.get("actual_cluster_backend", args.cluster_backend)),
         "actual_eval_backend": str(selection_info.get("actual_eval_backend", args.eval_backend)),
-        "epochs": sidecar.get("config", {}).get("epochs", "reused"),
-        "latent_dim": sidecar.get("config", {}).get("latent_dim", "reused"),
+        "epochs": sidecar.get("config", {}).get("epochs", "raw_feature_only" if not requires_checkpoint else "reused"),
+        "latent_dim": sidecar.get("config", {}).get("latent_dim", "raw_feature_only" if not requires_checkpoint else "reused"),
         "metadata_feature_dim": len(datasets.metadata_feature_names),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
-        "history_path": os.path.join(str(args.run_dir), "training_history.csv"),
+        "history_path": os.path.join(str(args.run_dir), "training_history.csv") if args.run_dir else None,
         "split_outputs": split_outputs,
     }
     if "min_cluster_size_threshold" in selection_info:
@@ -313,7 +370,10 @@ def main() -> None:
     print(f"[Rerun] Wrote expanded K-search outputs to {out_dir}")
     print(f"  - k_strategy: {k_strategy}")
     print(f"  - selected_k: {selected_k}")
-    print(f"  - checkpoint reused: {checkpoint_path}")
+    if checkpoint_path is None:
+        print("  - checkpoint reused: none (raw feature strategy)")
+    else:
+        print(f"  - checkpoint reused: {checkpoint_path}")
     print("  - rerun_summary.json")
     print("  - rerun_report.md")
 

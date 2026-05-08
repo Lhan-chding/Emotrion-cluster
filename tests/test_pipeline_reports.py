@@ -85,6 +85,23 @@ def test_mean_va_cluster_feature_strategy_uses_raw_mean_va_only():
     assert pca is None
 
 
+def test_mean_va_cluster_feature_strategy_accepts_minimal_raw_embeddings():
+    embeddings = {
+        "mean_va": np.asarray([[0.6, 0.7], [0.2, 0.4]], dtype=np.float32),
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="mean_va",
+    )
+
+    np.testing.assert_allclose(features, embeddings["mean_va"])
+    assert pca is None
+
+
 def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
     embeddings = {
         "z_fused": np.ones((2, 3), dtype=np.float32),
@@ -104,6 +121,23 @@ def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
             dtype=np.float32,
         ),
         "original_va": np.asarray([[0.9, 0.1], [0.1, 0.9]], dtype=np.float32),
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="va_geometry",
+    )
+
+    np.testing.assert_allclose(features, embeddings["va_geometry"])
+    assert pca is None
+
+
+def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():
+    embeddings = {
+        "va_geometry": np.zeros((2, 17), dtype=np.float32),
     }
 
     features, pca = build_cluster_features(
