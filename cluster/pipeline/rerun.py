@@ -26,7 +26,9 @@ from cluster.pipeline.train import (
     _parse_eval_splits,
     _write_pipeline_report,
     _write_split_outputs,
+    apply_cluster_feature_weights,
     build_cluster_features,
+    cluster_feature_weights,
     run_k_selection,
 )
 
@@ -191,7 +193,16 @@ def main() -> None:
         pca_target_dim=int(args.pca_target_dim),
     )
     cluster_scaler = StandardScaler().fit(search_features_raw)
-    search_features = cluster_scaler.transform(search_features_raw).astype(np.float32)
+    feature_weights = cluster_feature_weights(
+        feature_strategy,
+        int(search_features_raw.shape[1]),
+        conflict_cluster_weight=float(args.conflict_cluster_weight),
+        gate_cluster_weight=float(args.gate_cluster_weight),
+    )
+    search_features = apply_cluster_feature_weights(
+        cluster_scaler.transform(search_features_raw).astype(np.float32),
+        feature_weights,
+    )
     k_strategy = str(args.k_strategy).strip().lower()
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
@@ -228,6 +239,7 @@ def main() -> None:
                 "k_strategy": k_strategy,
                 "hierarchical_result": k_result if is_hierarchical else None,
                 "search_pca": search_pca,
+                "feature_weights": feature_weights,
                 "config": {
                     "search_split": search_split,
                     "k_strategy": k_strategy,
@@ -246,6 +258,7 @@ def main() -> None:
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
+                    "cluster_feature_weights": feature_weights.tolist(),
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "checkpoint_path": checkpoint_path,
@@ -266,7 +279,10 @@ def main() -> None:
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
         )
-        features = cluster_scaler.transform(features_raw).astype(np.float32)
+        features = apply_cluster_feature_weights(
+            cluster_scaler.transform(features_raw).astype(np.float32),
+            feature_weights,
+        )
 
         if is_hierarchical:
             macro_labels = k_result.macro_model.predict(features).astype(np.int64)
@@ -331,6 +347,7 @@ def main() -> None:
         "silhouette_chunk_size": int(args.silhouette_chunk_size),
         "selection_info": selection_info,
         "cluster_feature_strategy": feature_strategy,
+        "cluster_feature_weights": feature_weights.tolist(),
         "plot_va_source": str(args.plot_va_source),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,

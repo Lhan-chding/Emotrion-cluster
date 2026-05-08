@@ -44,6 +44,7 @@ def test_model_cluster_head_emits_per_view_assignments():
         "view_mask": torch.tensor([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32),
         "consistency": torch.tensor([1.0, 0.0], dtype=torch.float32),
         "va_diff": torch.tensor([[0.5, 0.5], [0.0, 0.0]], dtype=torch.float32),
+        "va_geometry": torch.zeros((2, 17), dtype=torch.float32),
     }
 
     outputs = model(
@@ -52,6 +53,7 @@ def test_model_cluster_head_emits_per_view_assignments():
         metadata=batch["metadata"],
         consistency=batch["consistency"],
         va_diff=batch["va_diff"],
+        va_geometry=batch["va_geometry"],
         view_mask=batch["view_mask"],
     )
 
@@ -81,6 +83,7 @@ def test_discovery_loss_includes_mask_aware_dec_and_cvcl_terms():
         ),
         "consistency": torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32),
         "va_diff": torch.tensor([[0.5, 0.5], [0.0, 0.0], [0.0, 0.0]], dtype=torch.float32),
+        "va_geometry": torch.zeros((3, 17), dtype=torch.float32),
     }
     outputs = model(
         audio=batch["audio"],
@@ -88,6 +91,7 @@ def test_discovery_loss_includes_mask_aware_dec_and_cvcl_terms():
         metadata=batch["metadata"],
         consistency=batch["consistency"],
         va_diff=batch["va_diff"],
+        va_geometry=batch["va_geometry"],
         view_mask=batch["view_mask"],
     )
 
@@ -108,4 +112,3 @@ def test_discovery_loss_includes_mask_aware_dec_and_cvcl_terms():
     assert losses["cluster_loss"].item() >= 0.0
     assert losses["cvcl_loss"].item() >= 0.0
     assert losses["assignment_balance"].item() >= 0.0
-

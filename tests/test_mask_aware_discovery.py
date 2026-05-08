@@ -107,7 +107,15 @@ def test_model_gate_and_loss_are_mask_aware():
         "view_mask": torch.tensor([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32),
         "consistency": torch.tensor([1.0, 0.0], dtype=torch.float32),
         "va_diff": torch.tensor([[0.5, 0.5], [0.0, 0.0]], dtype=torch.float32),
+        "va_geometry": torch.tensor(
+            [
+                [1.25, 2.25, -0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.9, 0.1, 1.8, 2.4, -0.6, 0.6, 1.0, 1.0, 1.0],
+                [3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        ),
     }
+    assert model.gate_mlp[0].in_features == 4 * 3 + 20
 
     outputs = model(
         audio=batch["audio"],
@@ -115,6 +123,7 @@ def test_model_gate_and_loss_are_mask_aware():
         metadata=batch["metadata"],
         consistency=batch["consistency"],
         va_diff=batch["va_diff"],
+        va_geometry=batch["va_geometry"],
         view_mask=batch["view_mask"],
     )
 

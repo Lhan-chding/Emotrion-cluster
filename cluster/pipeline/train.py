@@ -182,6 +182,18 @@ def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
     return features
 
 
+def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
+    geometry = embeddings.get("va_geometry")
+    if geometry is not None:
+        features = np.asarray(geometry, dtype=np.float32)
+        if features.ndim == 2 and features.shape[1] == len(VA_GEOMETRY_FEATURE_NAMES):
+            return features
+    return np.concatenate(
+        [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
+        axis=1,
+    ).astype(np.float32)
+
+
 def build_cluster_features(
     embeddings: Dict[str, Any],
     metadata_cluster_weight: float,
@@ -227,10 +239,7 @@ def build_cluster_features(
             * view_mask[:, 2:3]
         )
         gate = float(gate_cluster_weight) * embeddings["gate_weights"].astype(np.float32)
-        conflict = float(conflict_cluster_weight) * np.concatenate(
-            [embeddings["consistency"], np.abs(embeddings["va_diff"]), view_mask],
-            axis=1,
-        ).astype(np.float32)
+        conflict = float(conflict_cluster_weight) * _conflict_features(embeddings, view_mask)
 
         if base_strategy == "fused_residual":
             residual_audio = z_audio - z_fused
@@ -258,6 +267,30 @@ def build_cluster_features(
                 features = pca_model.transform(features).astype(np.float32)
 
     return features.astype(np.float32), pca_model
+
+
+def cluster_feature_weights(
+    strategy: str,
+    feature_dim: int,
+    *,
+    conflict_cluster_weight: float,
+    gate_cluster_weight: float,
+) -> np.ndarray:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    weights = np.ones(int(feature_dim), dtype=np.float32)
+    if base_strategy in {"va_geometry", "mean_va_diff"} and int(feature_dim) == len(VA_GEOMETRY_FEATURE_NAMES):
+        weights[0:2] = 2.0
+        weights[2:14] = float(conflict_cluster_weight)
+        weights[14:17] = float(gate_cluster_weight)
+    return weights.astype(np.float32)
+
+
+def apply_cluster_feature_weights(features: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    matrix = np.asarray(features, dtype=np.float32)
+    vector = np.asarray(weights, dtype=np.float32).reshape(1, -1)
+    if matrix.ndim != 2 or matrix.shape[1] != vector.shape[1]:
+        raise ValueError(f"Feature weights shape {vector.shape} does not match features shape {matrix.shape}.")
+    return (matrix * vector).astype(np.float32)
 
 
 def _ensure_dir(path: str) -> None:
@@ -444,14 +477,7 @@ def _build_cluster_features(
     if view_mask is None:
         view_mask = np.ones((embeddings["z_fused"].shape[0], 3), dtype=np.float32)
     view_mask = view_mask.astype(np.float32)
-    conflict = np.concatenate(
-        [
-            embeddings["consistency"],
-            np.abs(embeddings["va_diff"]),
-            view_mask,
-        ],
-        axis=1,
-    ).astype(np.float32)
+    conflict = _conflict_features(embeddings, view_mask)
     return np.concatenate(
         [
             embeddings["z_fused"].astype(np.float32),
@@ -1115,6 +1141,7 @@ def main() -> None:
             "hidden_dim": int(args.hidden_dim),
             "metadata_hidden_dim": int(args.metadata_hidden_dim),
             "gate_hidden_dim": int(args.gate_hidden_dim),
+            "gate_context_dim": int(model.gate_context_dim),
             "metadata_aux_scale": float(args.metadata_aux_scale),
             "metadata_recon_weight": float(args.metadata_recon_weight),
             "fused_recon_weight": float(args.fused_recon_weight),
@@ -1172,7 +1199,16 @@ def main() -> None:
         pca_target_dim=int(args.pca_target_dim),
     )
     cluster_scaler = StandardScaler().fit(search_features_raw)
-    search_features = cluster_scaler.transform(search_features_raw).astype(np.float32)
+    feature_weights = cluster_feature_weights(
+        feature_strategy,
+        int(search_features_raw.shape[1]),
+        conflict_cluster_weight=float(args.conflict_cluster_weight),
+        gate_cluster_weight=float(args.gate_cluster_weight),
+    )
+    search_features = apply_cluster_feature_weights(
+        cluster_scaler.transform(search_features_raw).astype(np.float32),
+        feature_weights,
+    )
     k_strategy = str(args.k_strategy).strip().lower()
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
@@ -1210,6 +1246,7 @@ def main() -> None:
                 "k_strategy": k_strategy,
                 "hierarchical_result": k_result if is_hierarchical else None,
                 "search_pca": search_pca,
+                "feature_weights": feature_weights,
                 "config": {
                     "search_split": search_split,
                     "k_strategy": k_strategy,
@@ -1228,6 +1265,7 @@ def main() -> None:
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
+                    "cluster_feature_weights": feature_weights.tolist(),
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "selection_info": selection_info,
@@ -1247,7 +1285,10 @@ def main() -> None:
             pca_target_dim=int(args.pca_target_dim),
             fitted_pca=search_pca,
         )
-        features = cluster_scaler.transform(features_raw).astype(np.float32)
+        features = apply_cluster_feature_weights(
+            cluster_scaler.transform(features_raw).astype(np.float32),
+            feature_weights,
+        )
         if is_hierarchical:
             # For hierarchical: predict macro, then apply micro sub-labels
             macro_labels = k_result.macro_model.predict(features).astype(np.int64)
@@ -1320,6 +1361,7 @@ def main() -> None:
         "history_path": history_path,
         "metadata_summary_path": metadata_summary_path,
         "cluster_feature_strategy": feature_strategy,
+        "cluster_feature_weights": feature_weights.tolist(),
         "plot_va_source": str(args.plot_va_source),
         "pca_target_dim": int(args.pca_target_dim),
         "cluster_backend": str(args.cluster_backend),

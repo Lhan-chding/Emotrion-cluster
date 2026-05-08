@@ -27,7 +27,7 @@ from cluster.utils import (
     safe_load_json,
     set_seed,
 )
-from cluster.features.va_geometry import build_va_geometry_features
+from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, build_va_geometry_features
 
 
 def _resolve_split_indices(data_dir: str, split_protocol: str, split: str, n_samples: int) -> np.ndarray:
@@ -287,9 +287,11 @@ class MusicMetadataDiscoveryNet(nn.Module):
         metadata_logit_offset: float = 0.0,
         cluster_head_k: int = 0,
         cluster_temperature: float = 1.0,
+        gate_context_dim: int = len(VA_GEOMETRY_FEATURE_NAMES) + 3,
     ) -> None:
         super().__init__()
         cluster_head_k = int(cluster_head_k)
+        self.gate_context_dim = int(gate_context_dim)
         self.audio_view = _ViewAutoencoder(audio_dim, hidden_dim, latent_dim, dropout=dropout)
         self.lyrics_view = _ViewAutoencoder(lyrics_dim, hidden_dim, latent_dim, dropout=dropout)
         self.metadata_view = _ViewAutoencoder(metadata_dim, metadata_hidden_dim, latent_dim, dropout=dropout)
@@ -324,7 +326,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
             nn.ReLU(),
             nn.Linear(latent_dim, latent_dim),
         )
-        gate_input_dim = latent_dim * 3 + 6
+        gate_input_dim = latent_dim * 3 + self.gate_context_dim
         self.gate_mlp = nn.Sequential(
             nn.Linear(gate_input_dim, gate_hidden_dim),
             nn.ReLU(),
@@ -360,6 +362,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
         metadata: torch.Tensor,
         consistency: torch.Tensor,
         va_diff: torch.Tensor,
+        va_geometry: Optional[torch.Tensor] = None,
         view_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         if view_mask is None:
@@ -384,15 +387,31 @@ class MusicMetadataDiscoveryNet(nn.Module):
             consistency = consistency.unsqueeze(1)
         if va_diff.ndim != 2 or va_diff.shape[1] != 2:
             raise ValueError(f"Expected va_diff shape [B, 2], got {tuple(va_diff.shape)}.")
+        if va_geometry is None:
+            va_geometry = torch.zeros(
+                (audio.shape[0], len(VA_GEOMETRY_FEATURE_NAMES)),
+                dtype=audio.dtype,
+                device=audio.device,
+            )
+        va_geometry = va_geometry.to(device=audio.device, dtype=audio.dtype)
+        if va_geometry.ndim != 2 or va_geometry.shape[1] != len(VA_GEOMETRY_FEATURE_NAMES):
+            raise ValueError(
+                f"Expected va_geometry shape [B, {len(VA_GEOMETRY_FEATURE_NAMES)}], got {tuple(va_geometry.shape)}."
+            )
+
+        if self.gate_context_dim == 6:
+            gate_context = torch.cat([view_mask, consistency, torch.abs(va_diff)], dim=1)
+        elif self.gate_context_dim == len(VA_GEOMETRY_FEATURE_NAMES) + 3:
+            gate_context = torch.cat([view_mask, va_geometry], dim=1)
+        else:
+            raise ValueError(f"Unsupported gate_context_dim={self.gate_context_dim}.")
 
         gate_input = torch.cat(
             [
                 z_audio,
                 z_lyrics,
                 z_metadata,
-                view_mask,
-                consistency,
-                torch.abs(va_diff),
+                gate_context,
             ],
             dim=1,
         )
@@ -683,6 +702,7 @@ def _run_epoch(
                 metadata=batch["metadata"],
                 consistency=batch["consistency"],
                 va_diff=batch["va_diff"],
+                va_geometry=batch.get("va_geometry"),
                 view_mask=batch.get("view_mask"),
             )
             losses = _discovery_loss(
@@ -881,6 +901,7 @@ def extract_split_embeddings(
                 metadata=batch["metadata"],
                 consistency=batch["consistency"],
                 va_diff=batch["va_diff"],
+                va_geometry=batch.get("va_geometry"),
                 view_mask=batch.get("view_mask"),
             )
             blocks["z_audio"].append(outputs["z_audio"].cpu().numpy().astype(np.float32))
@@ -1010,6 +1031,13 @@ def load_music_discovery_checkpoint(
         raise FileNotFoundError(f"Missing discovery checkpoint sidecar '{sidecar_path}'.")
     with open(sidecar_path, "r", encoding="utf-8") as f:
         sidecar = json.load(f)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = (
+        checkpoint["model_state"]
+        if isinstance(checkpoint, dict) and "model_state" in checkpoint
+        else checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint
+        else checkpoint
+    )
 
     scaler_state = sidecar.get("scaler_state", {})
     config = sidecar.get("config", {})
@@ -1018,12 +1046,17 @@ def load_music_discovery_checkpoint(
     metadata_dim = len(scaler_state.get("metadata", {}).get("mean", []))
     if min(audio_dim, lyrics_dim, metadata_dim) <= 0:
         raise ValueError("Checkpoint sidecar does not contain valid scaler_state dimensions.")
+    latent_dim = int(config.get("latent_dim", 16))
+    gate_weight = state_dict.get("gate_mlp.0.weight")
+    inferred_gate_context_dim = None
+    if torch.is_tensor(gate_weight):
+        inferred_gate_context_dim = int(gate_weight.shape[1]) - latent_dim * 3
 
     model = MusicMetadataDiscoveryNet(
         audio_dim=int(audio_dim),
         lyrics_dim=int(lyrics_dim),
         metadata_dim=int(metadata_dim),
-        latent_dim=int(config.get("latent_dim", 16)),
+        latent_dim=latent_dim,
         hidden_dim=int(config.get("hidden_dim", 32)),
         metadata_hidden_dim=int(config.get("metadata_hidden_dim", 128)),
         gate_hidden_dim=int(config.get("gate_hidden_dim", 32)),
@@ -1032,15 +1065,9 @@ def load_music_discovery_checkpoint(
         metadata_logit_offset=float(config.get("metadata_logit_offset", 0.0)),
         cluster_head_k=int(config.get("cluster_head_k", 0)),
         cluster_temperature=float(config.get("cluster_temperature", 1.0)),
+        gate_context_dim=int(config.get("gate_context_dim", inferred_gate_context_dim or len(VA_GEOMETRY_FEATURE_NAMES) + 3)),
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = (
-        checkpoint["model_state"]
-        if isinstance(checkpoint, dict) and "model_state" in checkpoint
-        else checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint
-        else checkpoint
-    )
     model.load_state_dict(state_dict, strict=True)
     model.eval()
     return model, sidecar

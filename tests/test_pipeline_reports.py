@@ -1,6 +1,12 @@
 import numpy as np
 
-from cluster.pipeline.train import _dataset_plot_va, _quadrant_heatmap_matrix, build_cluster_features
+from cluster.pipeline.train import (
+    _dataset_plot_va,
+    _quadrant_heatmap_matrix,
+    apply_cluster_feature_weights,
+    build_cluster_features,
+    cluster_feature_weights,
+)
 
 
 def test_quadrant_heatmap_matrix_reports_missing_labels():
@@ -149,6 +155,57 @@ def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():
     )
 
     np.testing.assert_allclose(features, embeddings["va_geometry"])
+    assert pca is None
+
+
+def test_va_geometry_feature_weights_keep_mean_va_primary_after_scaling():
+    weights = cluster_feature_weights(
+        "va_geometry",
+        17,
+        conflict_cluster_weight=0.4,
+        gate_cluster_weight=0.2,
+    )
+
+    np.testing.assert_allclose(weights[:2], np.asarray([2.0, 2.0], dtype=np.float32))
+    np.testing.assert_allclose(weights[2:14], np.full(12, 0.4, dtype=np.float32))
+    np.testing.assert_allclose(weights[14:17], np.full(3, 0.2, dtype=np.float32))
+    weighted = apply_cluster_feature_weights(np.ones((1, 17), dtype=np.float32), weights)
+    np.testing.assert_allclose(weighted[0], weights)
+
+
+def test_non_geometry_feature_weights_are_neutral():
+    weights = cluster_feature_weights(
+        "mean_va",
+        2,
+        conflict_cluster_weight=0.4,
+        gate_cluster_weight=0.2,
+    )
+
+    np.testing.assert_allclose(weights, np.ones(2, dtype=np.float32))
+
+
+def test_full_cluster_feature_strategy_uses_va_geometry_as_conflict_block():
+    embeddings = {
+        "z_fused": np.ones((2, 2), dtype=np.float32),
+        "z_audio": np.ones((2, 2), dtype=np.float32) * 2.0,
+        "z_lyrics": np.ones((2, 2), dtype=np.float32) * 3.0,
+        "z_metadata": np.ones((2, 2), dtype=np.float32) * 4.0,
+        "gate_weights": np.ones((2, 3), dtype=np.float32) / 3.0,
+        "consistency": np.zeros((2, 1), dtype=np.float32),
+        "va_diff": np.zeros((2, 2), dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+        "va_geometry": np.ones((2, 17), dtype=np.float32) * 5.0,
+    }
+
+    features, pca = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="full",
+    )
+
+    np.testing.assert_allclose(features[:, -17:], np.ones((2, 17), dtype=np.float32) * 2.0)
     assert pca is None
 
 
