@@ -273,6 +273,7 @@ def main() -> None:
                 "k_strategy": k_strategy,
                 "hierarchical_result": k_result if is_hierarchical else None,
                 "search_pca": search_pca,
+                "search_imputation": search_imputation,
                 "feature_weights": feature_weights,
                 "config": {
                     "search_split": search_split,
