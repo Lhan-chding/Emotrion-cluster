@@ -1,0 +1,93 @@
+import importlib.util
+import json
+from pathlib import Path
+
+import pandas as pd
+
+
+def _load_ablation_suite_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_ablation_suite.py"
+    spec = importlib.util.spec_from_file_location("run_ablation_suite", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_ablation_suite_builds_report_only_proposed_command(tmp_path):
+    module = _load_ablation_suite_module()
+    args = module.SuiteArgs(
+        processed_dir="processed",
+        base_run_dir="base",
+        out_dir=str(tmp_path),
+        gpu="0",
+        batch_size=512,
+        stability_runs=80,
+        k_min=8,
+        k_max=16,
+        macro_k_min=3,
+        macro_k_max=6,
+        micro_k_min=1,
+        micro_k_max=5,
+        min_cluster_size_abs=40,
+        metadata_policy="report_only",
+    )
+
+    command = module.build_rerun_command(args, "proposed_no_metadata", tmp_path / "proposed_no_metadata")
+
+    assert "--run_dir" in command
+    assert "base" in command
+    assert command[command.index("--cluster_feature_strategy") + 1] == "macro_micro_diffaware"
+    assert command[command.index("--metadata_policy") + 1] == "report_only"
+    assert command[command.index("--k_strategy") + 1] == "macro_micro"
+    assert command[command.index("--total_k_min") + 1] == "8"
+    assert command[command.index("--total_k_max") + 1] == "16"
+
+
+def test_ablation_suite_writes_required_comparison_reports(tmp_path):
+    module = _load_ablation_suite_module()
+    for name, score in [("mean_va", 0.1), ("proposed_full", 0.3)]:
+        run_dir = tmp_path / name
+        all_dir = run_dir / "all"
+        all_dir.mkdir(parents=True)
+        (run_dir / "rerun_summary.json").write_text(
+            json.dumps(
+                {
+                    "selected_k": 9,
+                    "k_strategy": "macro_micro" if name == "proposed_full" else "composite",
+                    "cluster_feature_strategy": "macro_micro_diffaware" if name == "proposed_full" else "mean_va",
+                    "selection_info": {"seed_ari_mean": 0.8, "cluster_jaccard_min": 0.5},
+                    "mask_purity_diagnostics": {"nmi": 0.02, "clusters": [{"enrichment_vs_baseline": 1.1}]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        pd.DataFrame([{"k": 9, "composite_score": score, "silhouette": score / 10.0}]).to_csv(
+            all_dir / "cluster_search_metrics.csv",
+            index=False,
+        )
+
+    baseline_path, ablation_path = module.write_suite_reports(tmp_path, ["mean_va", "proposed_full"])
+
+    baseline = pd.read_csv(baseline_path)
+    ablation = pd.read_csv(ablation_path)
+    assert set(baseline["config"]) == {"mean_va", "proposed_full"}
+    assert "score" in baseline.columns
+    assert "delta_score_vs_proposed_full" in ablation.columns
+    assert float(ablation.loc[ablation["config"] == "mean_va", "delta_score_vs_proposed_full"].iloc[0]) < 0.0
+
+
+def test_ablation_suite_can_copy_reports_back_to_base_run(tmp_path):
+    module = _load_ablation_suite_module()
+    suite_dir = tmp_path / "suite"
+    base_dir = tmp_path / "base"
+    suite_dir.mkdir()
+    base_dir.mkdir()
+    (suite_dir / "baseline_comparison.csv").write_text("config,score\nproposed_full,1.0\n", encoding="utf-8")
+    (suite_dir / "ablation_report.csv").write_text("config,score\nproposed_full,1.0\n", encoding="utf-8")
+
+    copied = module.copy_reports_to_base_run(suite_dir, base_dir)
+
+    assert (base_dir / "baseline_comparison.csv").read_text(encoding="utf-8").startswith("config")
+    assert (base_dir / "ablation_report.csv").exists()
+    assert set(copied) == {"baseline_comparison.csv", "ablation_report.csv"}

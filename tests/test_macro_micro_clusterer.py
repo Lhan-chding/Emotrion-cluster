@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from cluster.pipeline.train import run_k_selection
 
@@ -67,3 +68,70 @@ def test_macro_micro_k_strategy_fits_predictable_two_level_model():
     for cluster_id in np.unique(labels):
         macro_ids = np.unique(model.macro_labels_[labels == cluster_id])
         assert macro_ids.size == 1
+
+
+def test_macro_micro_honors_total_k_constraints():
+    features, block_mask, block_slices = _macro_micro_fixture()
+
+    with pytest.raises(ValueError, match="total K"):
+        run_k_selection(
+            features=features,
+            k_strategy="macro_micro",
+            k_min=5,
+            k_max=6,
+            random_state=7,
+            min_cluster_size_abs=4,
+            min_cluster_size_ratio=0.0,
+            covariance_type="diag",
+            stability_runs=1,
+            cluster_backend="sklearn",
+            eval_backend="sklearn",
+            silhouette_mode="sampled",
+            silhouette_sample_size=0,
+            assignment_mode="partial_likelihood",
+            block_mask=block_mask,
+            block_slices=block_slices,
+            macro_k_min=2,
+            macro_k_max=2,
+            micro_k_min=1,
+            micro_k_max=2,
+        )
+
+
+def test_macro_micro_reports_bootstrap_stability_when_requested():
+    features, block_mask, block_slices = _macro_micro_fixture()
+
+    _model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="macro_micro",
+        k_min=4,
+        k_max=4,
+        random_state=7,
+        min_cluster_size_abs=4,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=3,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+        assignment_mode="partial_likelihood",
+        block_mask=block_mask,
+        block_slices=block_slices,
+        macro_k_min=2,
+        macro_k_max=2,
+        micro_k_min=1,
+        micro_k_max=2,
+    )
+
+    for column in (
+        "seed_ari_mean",
+        "seed_ari_std",
+        "cluster_jaccard_mean",
+        "cluster_jaccard_min",
+        "bootstrap_valid_rate",
+    ):
+        assert column in metrics.columns
+        assert column in info
+    assert 0.0 <= info["seed_ari_mean"] <= 1.0
+    assert info["bootstrap_valid_rate"] > 0.0

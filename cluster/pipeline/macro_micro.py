@@ -8,6 +8,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
 
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
+from cluster.evaluation.metrics import masked_silhouette_score
 
 
 BlockSlice = Tuple[int, int]
@@ -242,7 +243,12 @@ class MacroMicroClusterer:
             sizes = np.bincount(labels, minlength=int(k))
             if sizes.min() < min_size:
                 continue
-            score = _safe_silhouette(micro_features, labels)
+            score = masked_silhouette_score(
+                micro_features,
+                labels,
+                block_mask=micro_mask,
+                block_slices=self._micro_block_slices(),
+            )
             if score > best_score:
                 best_k = int(k)
                 best_model = model

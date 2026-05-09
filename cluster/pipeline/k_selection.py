@@ -17,6 +17,7 @@ from sklearn.mixture import GaussianMixture
 
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
+from cluster.evaluation.metrics import masked_silhouette_score
 from cluster.pipeline.macro_micro import MacroMicroClusterer
 
 
@@ -197,7 +198,7 @@ def _resolve_eval_backend_name(config: KSelectionConfig) -> str:
     mode = str(config.silhouette_mode).strip().lower()
     if mode == "sampled":
         return "sklearn"
-    backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
+    backend_name = "torch" if mode in {"torch_chunked", "masked_torch_chunked"} else config.eval_backend
     return resolve_cluster_backend(backend_name, device=config.device).name
 
 
@@ -351,13 +352,112 @@ def _score_silhouette(features: np.ndarray, labels: np.ndarray, config: KSelecti
             sample_size=int(config.silhouette_sample_size),
             random_state=int(config.random_state),
         )
-    eval_backend_name = "torch" if mode == "torch_chunked" else config.eval_backend
+    eval_backend_name = "torch" if mode in {"torch_chunked", "masked_torch_chunked"} else config.eval_backend
     backend = resolve_cluster_backend(eval_backend_name, device=config.device)
     return backend.score_silhouette(
         features,
         labels,
         chunk_size=int(config.silhouette_chunk_size),
     )
+
+
+def _score_masked_silhouette(
+    features: np.ndarray,
+    labels: np.ndarray,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+) -> float:
+    if len(np.unique(labels)) < 2:
+        return float("nan")
+    return masked_silhouette_score(features, labels, block_mask=block_mask, block_slices=block_slices)
+
+
+def _cluster_jaccard_summary(reference_labels: np.ndarray, candidate_labels: np.ndarray) -> Tuple[float, float]:
+    ref = np.asarray(reference_labels, dtype=np.int64)
+    cand = np.asarray(candidate_labels, dtype=np.int64)
+    scores: List[float] = []
+    for ref_label in np.unique(ref):
+        ref_mask = ref == int(ref_label)
+        best = 0.0
+        for cand_label in np.unique(cand):
+            cand_mask = cand == int(cand_label)
+            union = np.logical_or(ref_mask, cand_mask).sum()
+            if union == 0:
+                continue
+            best = max(best, float(np.logical_and(ref_mask, cand_mask).sum() / union))
+        scores.append(best)
+    if not scores:
+        return 0.0, 0.0
+    return float(np.mean(scores)), float(np.min(scores))
+
+
+def compute_macro_micro_bootstrap_stability(
+    features: np.ndarray,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    base_labels: np.ndarray,
+    macro_k: int,
+    config: KSelectionConfig,
+    n_runs: int,
+) -> Dict[str, float]:
+    if int(n_runs) < 2:
+        return {
+            "seed_ari_mean": 1.0,
+            "seed_ari_std": 0.0,
+            "cluster_jaccard_mean": 1.0,
+            "cluster_jaccard_min": 1.0,
+            "bootstrap_valid_rate": 1.0,
+        }
+
+    matrix = np.asarray(features, dtype=np.float32)
+    mask = np.asarray(block_mask, dtype=bool)
+    base = np.asarray(base_labels, dtype=np.int64)
+    rng = np.random.default_rng(int(config.random_state) + int(macro_k) * 10007)
+    sample_size = max(
+        int(min(matrix.shape[0], max(int(config.min_cluster_size) * int(macro_k), round(matrix.shape[0] * 0.8)))),
+        min(matrix.shape[0], int(macro_k)),
+    )
+    ari_scores: List[float] = []
+    jaccard_means: List[float] = []
+    jaccard_mins: List[float] = []
+    attempts = int(n_runs)
+    for run in range(attempts):
+        sample_idx = rng.choice(matrix.shape[0], size=sample_size, replace=True)
+        try:
+            model = MacroMicroClusterer(
+                macro_k=int(macro_k),
+                block_slices=block_slices,
+                covariance_type=str(config.covariance_type),
+                random_state=int(config.random_state) + 7919 * (run + 1),
+                n_init=1,
+                max_iter=80,
+                micro_k_min=int(config.micro_k_min),
+                micro_k_max=int(config.micro_k_max),
+                min_cluster_size=max(1, int(config.min_cluster_size)),
+            ).fit(matrix[sample_idx], block_mask=mask[sample_idx])
+            predicted = model.predict(matrix, block_mask=mask)
+        except Exception:
+            continue
+        ari_scores.append(float(adjusted_rand_score(base, predicted)))
+        j_mean, j_min = _cluster_jaccard_summary(base, predicted)
+        jaccard_means.append(j_mean)
+        jaccard_mins.append(j_min)
+
+    if not ari_scores:
+        return {
+            "seed_ari_mean": 0.0,
+            "seed_ari_std": 0.0,
+            "cluster_jaccard_mean": 0.0,
+            "cluster_jaccard_min": 0.0,
+            "bootstrap_valid_rate": 0.0,
+        }
+    return {
+        "seed_ari_mean": float(np.mean(ari_scores)),
+        "seed_ari_std": float(np.std(ari_scores)),
+        "cluster_jaccard_mean": float(np.mean(jaccard_means)),
+        "cluster_jaccard_min": float(np.min(jaccard_mins)),
+        "bootstrap_valid_rate": float(len(ari_scores) / max(attempts, 1)),
+    }
 
 
 def search_gmm_composite(
@@ -560,7 +660,7 @@ def _fit_single_masked_k(
     sizes = np.bincount(labels, minlength=int(k))
     n_unique = len(np.unique(labels))
     if n_unique > 1:
-        sil = _score_silhouette(features, labels, config)
+        sil = _score_masked_silhouette(features, labels, block_mask, block_slices)
         db = _safe_metric(davies_bouldin_score, features, labels)
     else:
         sil = float("nan")
@@ -793,11 +893,21 @@ def search_macro_micro_diffaware(
         labels = model.labels_.astype(np.int64)
         macro_labels = model.macro_labels_.astype(np.int64)
         sizes = np.bincount(labels, minlength=int(model.n_components))
+        total_k_ok = int(config.k_min) <= int(model.n_components) <= int(config.k_max)
         macro_sil = _score_silhouette(consensus, macro_labels, config) if len(np.unique(macro_labels)) > 1 else 0.0
-        final_sil = _score_silhouette(matrix, labels, config) if len(np.unique(labels)) > 1 else 0.0
+        final_sil = _score_masked_silhouette(matrix, labels, mask, block_slices) if len(np.unique(labels)) > 1 else 0.0
+        stability = compute_macro_micro_bootstrap_stability(
+            matrix,
+            mask,
+            block_slices,
+            labels,
+            int(macro_k),
+            config,
+            int(config.stability_runs),
+        )
         mask_nmi = _mask_nmi(labels, view_mask) if view_mask is not None else float("nan")
         max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
-        score = 0.5 * float(macro_sil) + 0.5 * float(final_sil)
+        score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
         if np.isfinite(mask_nmi):
             score -= 0.25 * float(mask_nmi)
         candidates[int(macro_k)] = model
@@ -805,8 +915,10 @@ def search_macro_micro_diffaware(
             {
                 "macro_k": int(macro_k),
                 "total_clusters": int(model.n_components),
+                "total_k_ok": bool(total_k_ok),
                 "macro_silhouette": float(macro_sil),
                 "final_silhouette": float(final_sil),
+                **stability,
                 "macro_micro_score": float(score),
                 "min_cluster_size": int(sizes.min()),
                 "min_size_ok": bool(sizes.min() >= min_size_threshold),
@@ -817,15 +929,16 @@ def search_macro_micro_diffaware(
         )
 
     metrics = pd.DataFrame(rows).sort_values("macro_k", kind="stable").reset_index(drop=True)
-    eligible = metrics["min_size_ok"].to_numpy(dtype=bool)
+    eligible = metrics["min_size_ok"].to_numpy(dtype=bool) & metrics["total_k_ok"].to_numpy(dtype=bool)
     if not eligible.any():
-        min_sizes = ", ".join(
-            f"macro_k={int(row.macro_k)}:{int(row.min_cluster_size)}"
-            for row in metrics[["macro_k", "min_cluster_size"]].itertuples(index=False)
+        candidates_text = ", ".join(
+            f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},min_size={int(row.min_cluster_size)}"
+            for row in metrics[["macro_k", "total_clusters", "min_cluster_size"]].itertuples(index=False)
         )
         raise ValueError(
-            f"No macro_micro candidate satisfied min_cluster_size_threshold={min_size_threshold}. "
-            f"Candidate minimum sizes: {min_sizes}."
+            "No macro_micro candidate satisfied total K and min-size hard gates "
+            f"(k_min={int(config.k_min)}, k_max={int(config.k_max)}, "
+            f"min_cluster_size_threshold={min_size_threshold}). Candidates: {candidates_text}."
         )
     eligible_metrics = metrics[eligible]
     selected_idx = int(eligible_metrics["macro_micro_score"].idxmax())
@@ -839,9 +952,16 @@ def search_macro_micro_diffaware(
         "micro_details": best_model.info.get("micro_details", {}),
         "label_names": best_model.label_names,
         "macro_micro_score": float(selected_row["macro_micro_score"]),
+        "total_k_ok": bool(selected_row["total_k_ok"]),
         "min_cluster_size_threshold": int(min_size_threshold),
         "min_cluster_size": int(selected_row["min_cluster_size"]),
         "min_size_ok": bool(selected_row["min_size_ok"]),
+        "seed_ari_mean": float(selected_row["seed_ari_mean"]),
+        "seed_ari_std": float(selected_row["seed_ari_std"]),
+        "cluster_jaccard_mean": float(selected_row["cluster_jaccard_mean"]),
+        "cluster_jaccard_min": float(selected_row["cluster_jaccard_min"]),
+        "bootstrap_valid_rate": float(selected_row["bootstrap_valid_rate"]),
+        "stability_runs": int(config.stability_runs),
         "partial_likelihood": True,
         "feature_block_slices": [(int(start), int(stop)) for start, stop in block_slices],
         "cluster_backend": "macro_micro_masked_diag_gmm",

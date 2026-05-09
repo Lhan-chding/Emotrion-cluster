@@ -7,7 +7,6 @@ import pickle
 from typing import Any, Dict, Optional
 
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 from cluster.config import parse_split_protocol
 from cluster.features.va_geometry import build_va_geometry_features
@@ -28,15 +27,22 @@ from cluster.pipeline.train import (
     _write_pipeline_report,
     _write_split_outputs,
     apply_cluster_feature_weights,
+    apply_metadata_policy_to_block_mask,
     build_cluster_features,
     cluster_feature_block_mask,
     cluster_feature_block_slices,
     cluster_feature_weights,
     compute_mask_purity,
+    fit_cluster_scaler,
+    parse_bool_text,
+    resolve_metadata_policy,
     run_k_selection,
+    transform_cluster_features,
 )
 
-RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset({"mean_va", "va_geometry", "mean_va_diff", "original_va"})
+RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset(
+    {"mean_va", "audio_va", "lyrics_va", "va_geometry", "mean_va_diff", "original_va", "metadata_only"}
+)
 
 
 def _base_feature_strategy(strategy: str) -> str:
@@ -65,6 +71,8 @@ def _raw_feature_embeddings(dataset) -> Dict[str, Any]:
     signed_va_diff = np.where(both_audio_lyrics, signed_va_diff, 0.0).astype(np.float32)
     mean_va = _dataset_mean_va(dataset)
     return {
+        "audio_va": dataset.raw_audio.astype(np.float32),
+        "lyrics_va": dataset.raw_lyrics.astype(np.float32),
         "mean_va": mean_va,
         "va_geometry": build_va_geometry_features(dataset.raw_audio, dataset.raw_lyrics, view_mask),
         "original_va": dataset.original_va.astype(np.float32),
@@ -73,6 +81,7 @@ def _raw_feature_embeddings(dataset) -> Dict[str, Any]:
         "va_diff": dataset.va_diff.astype(np.float32),
         "signed_va_diff": signed_va_diff,
         "z_fused": mean_va.astype(np.float32),
+        "z_metadata": dataset.metadata.astype(np.float32),
         "gate_weights": _availability_gate(view_mask),
     }
 
@@ -95,8 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--k_min", type=int, default=4)
-    parser.add_argument("--k_max", type=int, default=20)
+    parser.add_argument("--k_min", "--total_k_min", dest="k_min", type=int, default=4)
+    parser.add_argument("--k_max", "--total_k_max", dest="k_max", type=int, default=20)
     parser.add_argument("--min_cluster_size_abs", type=int, default=20)
     parser.add_argument("--min_cluster_size_ratio", type=float, default=0.01)
     parser.add_argument("--metadata_cluster_weight", type=float, default=0.75)
@@ -115,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"])
     parser.add_argument("--silhouette_mode", type=str, default="full",
-                        choices=["full", "sampled", "torch_chunked"])
+                        choices=["full", "sampled", "torch_chunked", "masked_torch_chunked"])
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
     parser.add_argument("--cluster_feature_strategy", type=str, default="full",
@@ -128,9 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "macro_micro_diffaware",
                             "partial_gmm_diffaware",
                             "mean_va",
+                            "audio_va",
+                            "lyrics_va",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
+                            "metadata_only",
                             "pca_reduced",
                         ],
                         help="Clustering feature strategy")
@@ -139,6 +151,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot_va_source", type=str, default="mean",
                         choices=["mean", "original"],
                         help="VA coordinates used in cluster scatter and summaries.")
+    parser.add_argument(
+        "--metadata_policy",
+        type=str,
+        default="all_metadata_upper_bound",
+        choices=["all_metadata_upper_bound", "non_affective_metadata", "affective_va_only", "report_only"],
+        help="Controls whether metadata embeddings may enter clustering.",
+    )
+    parser.add_argument("--block_scaler", type=str, default="auto", choices=["auto", "standard", "observed"])
+    parser.add_argument("--run_topconf_audit", type=str, default="false")
     parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
                         help="Allow checkpoint with mismatched metadata_dim (true/false)")
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
@@ -234,6 +255,12 @@ def main() -> None:
         "test": datasets.test_dataset,
         "all": datasets.all_dataset,
     }
+    metadata_policy_info = resolve_metadata_policy(
+        str(args.metadata_policy),
+        metadata_feature_names=datasets.metadata_feature_names,
+        requested_metadata_cluster_weight=float(args.metadata_cluster_weight),
+    )
+    effective_metadata_cluster_weight = float(metadata_policy_info["effective_metadata_cluster_weight"])
 
     if requires_checkpoint:
         embeddings_by_split = {
@@ -266,7 +293,7 @@ def main() -> None:
 
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
-        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        metadata_cluster_weight=effective_metadata_cluster_weight,
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
         strategy=feature_strategy,
@@ -274,24 +301,33 @@ def main() -> None:
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
     )
-    # Fit scaler on complete-pair rows when complete_first, else all rows
-    if both_mask is not None:
-        cluster_scaler = StandardScaler().fit(search_features_raw[both_mask])
-    else:
-        cluster_scaler = StandardScaler().fit(search_features_raw)
+    search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
+    search_block_mask = apply_metadata_policy_to_block_mask(
+        search_block_mask,
+        metadata_cluster_weight=effective_metadata_cluster_weight,
+        diff_cluster_weight=float(args.diff_cluster_weight),
+    )
+    raw_block_slices = cluster_feature_block_slices(feature_strategy, int(search_features_raw.shape[1]))
+    cluster_scaler = fit_cluster_scaler(
+        feature_strategy,
+        search_features_raw,
+        block_mask=search_block_mask,
+        block_slices=raw_block_slices,
+        fit_mask=both_mask,
+        block_scaler=str(args.block_scaler),
+    )
     feature_weights = cluster_feature_weights(
         feature_strategy,
         int(search_features_raw.shape[1]),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
-        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        metadata_cluster_weight=effective_metadata_cluster_weight,
         diff_cluster_weight=float(args.diff_cluster_weight),
     )
     search_features = apply_cluster_feature_weights(
-        cluster_scaler.transform(search_features_raw).astype(np.float32),
+        transform_cluster_features(cluster_scaler, search_features_raw, block_mask=search_block_mask),
         feature_weights,
     )
-    search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
     k_result, search_metrics, selection_info = run_k_selection(
@@ -319,6 +355,7 @@ def main() -> None:
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
     )
+    selection_info["metadata_policy"] = dict(metadata_policy_info)
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
     cluster_output_label_names = _cluster_label_names_for_outputs(k_result, selection_info)
@@ -398,11 +435,14 @@ def main() -> None:
                     "silhouette_mode": str(args.silhouette_mode),
                     "silhouette_sample_size": int(args.silhouette_sample_size),
                     "silhouette_chunk_size": int(args.silhouette_chunk_size),
-                    "metadata_cluster_weight": float(args.metadata_cluster_weight),
+                    "metadata_policy": metadata_policy_info,
+                    "metadata_cluster_weight": effective_metadata_cluster_weight,
+                    "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
                     "cluster_feature_weights": feature_weights.tolist(),
+                    "block_scaler": str(args.block_scaler),
                     "cluster_assignment_mode": assignment_mode,
                     "feature_block_slices": cluster_feature_block_slices(feature_strategy, int(search_features.shape[1])),
                     "plot_va_source": str(args.plot_va_source),
@@ -419,7 +459,7 @@ def main() -> None:
     for split in eval_splits:
         features_raw, _, _ = build_cluster_features(
             embeddings=embeddings_by_split[split],
-            metadata_cluster_weight=float(args.metadata_cluster_weight),
+            metadata_cluster_weight=effective_metadata_cluster_weight,
             conflict_cluster_weight=float(args.conflict_cluster_weight),
             gate_cluster_weight=float(args.gate_cluster_weight),
             strategy=feature_strategy,
@@ -428,14 +468,19 @@ def main() -> None:
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
         )
-        features = apply_cluster_feature_weights(
-            cluster_scaler.transform(features_raw).astype(np.float32),
-            feature_weights,
-        )
         split_block_mask = cluster_feature_block_mask(
             feature_strategy,
             embeddings_by_split[split].get("view_mask"),
-            int(features.shape[0]),
+            int(features_raw.shape[0]),
+        )
+        split_block_mask = apply_metadata_policy_to_block_mask(
+            split_block_mask,
+            metadata_cluster_weight=effective_metadata_cluster_weight,
+            diff_cluster_weight=float(args.diff_cluster_weight),
+        )
+        features = apply_cluster_feature_weights(
+            transform_cluster_features(cluster_scaler, features_raw, block_mask=split_block_mask),
+            feature_weights,
         )
 
         if is_hierarchical:
@@ -509,6 +554,10 @@ def main() -> None:
         "selection_info": selection_info,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
+        "block_scaler": str(args.block_scaler),
+        "metadata_policy": metadata_policy_info,
+        "metadata_cluster_weight": effective_metadata_cluster_weight,
+        "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
         "cluster_assignment_mode": assignment_mode,
         "plot_va_source": str(args.plot_va_source),
         "checkpoint_path": checkpoint_path,
@@ -548,6 +597,7 @@ def main() -> None:
         "epochs": sidecar.get("config", {}).get("epochs", "raw_feature_only" if not requires_checkpoint else "reused"),
         "latent_dim": sidecar.get("config", {}).get("latent_dim", "raw_feature_only" if not requires_checkpoint else "reused"),
         "metadata_feature_dim": int(datasets.train_dataset.metadata.shape[1]),
+        "metadata_policy": metadata_policy_info,
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": os.path.join(str(args.run_dir), "training_history.csv") if args.run_dir else None,
@@ -558,6 +608,12 @@ def main() -> None:
     if "min_cluster_size_threshold" in selection_info:
         report_data["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
     _write_pipeline_report(os.path.join(out_dir, "rerun_report.md"), report_data)
+    audit_result = None
+    if parse_bool_text(args.run_topconf_audit):
+        from cluster.evaluation.topconf_audit import audit_run, write_audit_outputs
+
+        audit_result = audit_run(out_dir)
+        write_audit_outputs(audit_result, out_dir)
 
     print(f"[Rerun] Wrote expanded K-search outputs to {out_dir}")
     print(f"  - k_strategy: {k_strategy}")
@@ -568,6 +624,10 @@ def main() -> None:
         print(f"  - checkpoint reused: {checkpoint_path}")
     print("  - rerun_summary.json")
     print("  - rerun_report.md")
+    if audit_result is not None:
+        print(f"  - topconf_audit_report.md: ready={bool(audit_result.get('overall_ready'))}")
+        if not bool(audit_result.get("overall_ready")):
+            raise SystemExit(2)
 
 
 if __name__ == "__main__":

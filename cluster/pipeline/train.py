@@ -21,6 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
+from cluster.features.block_scaler import BlockwiseObservedScaler
 from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM, impute_unobserved_pairwise
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
@@ -46,6 +47,31 @@ from cluster.data.metadata import (
     build_canonical_metadata,
     build_metadata_features,
     save_metadata_feature_bundle,
+)
+
+METADATA_POLICY_CHOICES: Tuple[str, ...] = (
+    "all_metadata_upper_bound",
+    "non_affective_metadata",
+    "affective_va_only",
+    "report_only",
+)
+_AFFECTIVE_METADATA_PREFIXES: Tuple[str, ...] = (
+    "Moods::",
+    "MoodsAll::",
+    "Themes::",
+    "tempo_bin::",
+)
+_AFFECTIVE_METADATA_EXACT: Tuple[str, ...] = (
+    "numeric::num_MoodsAll",
+    "cross::energy_valence",
+)
+_AFFECTIVE_METADATA_TERMS: Tuple[str, ...] = (
+    "mood",
+    "theme",
+    "valence",
+    "arousal",
+    "energy",
+    "tempo",
 )
 
 
@@ -91,8 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="processed: use existing metadata.npy; rebuild_from_aligned: rebuild from aligned_root; none: zero metadata (ablation)")
     parser.add_argument("--min_token_freq", type=int, default=3)
     parser.add_argument("--max_tokens_per_field", type=int, default=128)
-    parser.add_argument("--k_min", type=int, default=4)
-    parser.add_argument("--k_max", type=int, default=12)
+    parser.add_argument("--k_min", "--total_k_min", dest="k_min", type=int, default=4)
+    parser.add_argument("--k_max", "--total_k_max", dest="k_max", type=int, default=12)
     parser.add_argument("--min_cluster_size_abs", type=int, default=20)
     parser.add_argument("--min_cluster_size_ratio", type=float, default=0.01)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -138,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "sklearn", "torch", "cuml"],
                         help="Backend used for clustering metrics such as silhouette.")
     parser.add_argument("--silhouette_mode", type=str, default="full",
-                        choices=["full", "sampled", "torch_chunked"],
+                        choices=["full", "sampled", "torch_chunked", "masked_torch_chunked"],
                         help="Silhouette evaluation mode. torch_chunked avoids a full pairwise matrix.")
     parser.add_argument("--silhouette_sample_size", type=int, default=0)
     parser.add_argument("--silhouette_chunk_size", type=int, default=4096)
@@ -152,9 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "macro_micro_diffaware",
                             "partial_gmm_diffaware",
                             "mean_va",
+                            "audio_va",
+                            "lyrics_va",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
+                            "metadata_only",
                             "pca_reduced",
                         ],
                         help="Clustering feature strategy")
@@ -163,10 +192,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot_va_source", type=str, default="mean",
                         choices=["mean", "original"],
                         help="VA coordinates used in cluster scatter and summaries.")
+    parser.add_argument(
+        "--metadata_policy",
+        type=str,
+        default="all_metadata_upper_bound",
+        choices=list(METADATA_POLICY_CHOICES),
+        help=(
+            "Controls whether metadata embeddings may enter clustering. "
+            "all_metadata_upper_bound preserves legacy behavior; "
+            "affective_va_only removes the metadata block from clustering; "
+            "non_affective_metadata requires processed metadata without affective fields."
+        ),
+    )
     parser.add_argument("--metadata_cluster_weight", type=float, default=0.75)
     parser.add_argument("--conflict_cluster_weight", type=float, default=0.40)
     parser.add_argument("--gate_cluster_weight", type=float, default=0.20)
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
+    parser.add_argument("--block_scaler", type=str, default="auto", choices=["auto", "standard", "observed"])
+    parser.add_argument("--run_topconf_audit", type=str, default="false")
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
                         choices=["joint", "complete_first", "partial_likelihood"],
@@ -251,9 +294,12 @@ class ClusterFeatureStrategy(Enum):
     FUSED_ONLY = "fused_only"         # z_fused + gate + conflict
     FUSED_VA_GEOMETRY = "fused_va_geometry" # z_fused + VA geometry, with VA as primary axes
     MEAN_VA = "mean_va"               # raw audio/lyrics mean VA; unsupervised legacy baseline
+    AUDIO_VA = "audio_va"             # raw audio VA baseline
+    LYRICS_VA = "lyrics_va"           # raw lyrics VA baseline
     VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
+    METADATA_ONLY = "metadata_only"   # metadata-only leakage/upper-bound baseline
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
     MACRO_MICRO_DIFFAWARE = "macro_micro_diffaware"
     PARTIAL_GMM_DIFFAWARE = "partial_gmm_diffaware"
@@ -267,6 +313,23 @@ def _mean_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
     if features.ndim != 2 or features.shape[1] != 2:
         raise ValueError(f"mean_va must have shape [N, 2], got {features.shape}.")
     return features
+
+
+def _view_va_features(embeddings: Dict[str, Any], key: str, view_index: int) -> np.ndarray:
+    values = embeddings.get(key)
+    if values is None:
+        raise ValueError(f"cluster_feature_strategy='{key}' requires {key} embeddings.")
+    features = np.asarray(values, dtype=np.float32)
+    if features.ndim != 2 or features.shape[1] != 2:
+        raise ValueError(f"{key} must have shape [N, 2], got {features.shape}.")
+    view_mask = embeddings.get("view_mask")
+    if view_mask is not None and "mean_va" in embeddings:
+        mask = np.asarray(view_mask, dtype=np.float32)
+        missing = mask[:, int(view_index)] <= 0.0
+        if missing.any():
+            features = np.array(features, copy=True)
+            features[missing] = _mean_va_features(embeddings)[missing]
+    return features.astype(np.float32)
 
 
 def _va_geometry_features(embeddings: Dict[str, Any]) -> np.ndarray:
@@ -296,6 +359,17 @@ def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
     if features.ndim != 2 or features.shape[1] != 2:
         raise ValueError(f"original_va must have shape [N, 2], got {features.shape}.")
     return features
+
+
+def _metadata_only_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
+    z_metadata = embeddings.get("z_metadata")
+    if z_metadata is None:
+        raise ValueError("cluster_feature_strategy='metadata_only' requires z_metadata embeddings.")
+    features = np.asarray(z_metadata, dtype=np.float32)
+    if features.ndim != 2:
+        raise ValueError(f"z_metadata must be 2D, got shape {features.shape}.")
+    metadata_missing = np.asarray(view_mask, dtype=np.float32)[:, 2:3] <= 0.0
+    return np.where(metadata_missing, 0.0, features).astype(np.float32)
 
 
 def _conflict_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
@@ -457,11 +531,17 @@ def build_cluster_features(
         )
     elif base_strategy == "mean_va":
         features = _mean_va_features(embeddings)
+    elif base_strategy == "audio_va":
+        features = _view_va_features(embeddings, "audio_va", 0)
+    elif base_strategy == "lyrics_va":
+        features = _view_va_features(embeddings, "lyrics_va", 1)
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
         raw_geom = _va_geometry_features(embeddings)
         features, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
     elif base_strategy == "original_va":
         features = _original_va_features(embeddings)
+    elif base_strategy == "metadata_only":
+        features = _metadata_only_features(embeddings, view_mask)
     else:
         features = None
 
@@ -579,12 +659,125 @@ def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n
     return np.ones((mask.shape[0], 1), dtype=bool)
 
 
+def _affective_metadata_features(metadata_feature_names: Sequence[str]) -> List[str]:
+    matches: List[str] = []
+    for name in metadata_feature_names:
+        text = str(name)
+        lowered = text.lower()
+        if text in _AFFECTIVE_METADATA_EXACT:
+            matches.append(text)
+            continue
+        if any(text.startswith(prefix) for prefix in _AFFECTIVE_METADATA_PREFIXES):
+            matches.append(text)
+            continue
+        if any(term in lowered for term in _AFFECTIVE_METADATA_TERMS):
+            matches.append(text)
+    return matches
+
+
+def resolve_metadata_policy(
+    metadata_policy: str,
+    *,
+    metadata_feature_names: Sequence[str],
+    requested_metadata_cluster_weight: float,
+) -> Dict[str, Any]:
+    requested_policy = str(metadata_policy or "all_metadata_upper_bound").strip().lower()
+    if requested_policy not in METADATA_POLICY_CHOICES:
+        raise ValueError(f"Unsupported metadata_policy={metadata_policy!r}; expected one of {METADATA_POLICY_CHOICES}.")
+    policy = "affective_va_only" if requested_policy == "report_only" else requested_policy
+    requested_weight = float(requested_metadata_cluster_weight)
+    affective_features = _affective_metadata_features(metadata_feature_names)
+    if policy == "non_affective_metadata" and affective_features:
+        examples = ", ".join(affective_features[:8])
+        raise ValueError(
+            "metadata_policy='non_affective_metadata' requires a processed metadata schema with affective fields removed. "
+            f"Found {len(affective_features)} affective/leaky metadata features, examples: {examples}"
+        )
+    effective_weight = 0.0 if policy == "affective_va_only" else requested_weight
+    return {
+        "metadata_policy": requested_policy,
+        "effective_metadata_policy": policy,
+        "requested_metadata_cluster_weight": requested_weight,
+        "effective_metadata_cluster_weight": float(effective_weight),
+        "metadata_block_used_for_clustering": bool(effective_weight > 0.0),
+        "affective_metadata_feature_count": int(len(affective_features)),
+        "affective_metadata_examples": affective_features[:12],
+    }
+
+
+def apply_metadata_policy_to_block_mask(
+    block_mask: np.ndarray,
+    *,
+    metadata_cluster_weight: float,
+    diff_cluster_weight: float = 1.0,
+) -> np.ndarray:
+    mask = np.asarray(block_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"block_mask must be 2-D, got shape {mask.shape}.")
+    if (
+        (mask.shape[1] < 2 or float(diff_cluster_weight) > 0.0)
+        and (mask.shape[1] < 3 or float(metadata_cluster_weight) > 0.0)
+    ):
+        return np.array(mask, copy=True)
+    updated = np.array(mask, copy=True)
+    if mask.shape[1] >= 2 and float(diff_cluster_weight) <= 0.0:
+        updated[:, 1] = False
+    if mask.shape[1] >= 3 and float(metadata_cluster_weight) <= 0.0:
+        updated[:, 2] = False
+    empty_rows = ~updated.any(axis=1)
+    if empty_rows.any():
+        updated[empty_rows, 0] = True
+    return updated
+
+
 def apply_cluster_feature_weights(features: np.ndarray, weights: np.ndarray) -> np.ndarray:
     matrix = np.asarray(features, dtype=np.float32)
     vector = np.asarray(weights, dtype=np.float32).reshape(1, -1)
     if matrix.ndim != 2 or matrix.shape[1] != vector.shape[1]:
         raise ValueError(f"Feature weights shape {vector.shape} does not match features shape {matrix.shape}.")
     return (matrix * vector).astype(np.float32)
+
+
+def _uses_blockwise_observed_scaler(strategy: str, block_slices: Sequence[Sequence[int]]) -> bool:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    return base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and len(block_slices) > 1
+
+
+def fit_cluster_scaler(
+    strategy: str,
+    features_raw: np.ndarray,
+    *,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    fit_mask: Optional[np.ndarray] = None,
+    block_scaler: str = "auto",
+) -> Any:
+    scaler_mode = str(block_scaler or "auto").strip().lower()
+    if scaler_mode not in {"auto", "standard", "observed"}:
+        raise ValueError("block_scaler must be one of: auto, standard, observed.")
+    use_observed = (
+        len(block_slices) > 1
+        and scaler_mode == "observed"
+        or (scaler_mode == "auto" and _uses_blockwise_observed_scaler(strategy, block_slices))
+    )
+    if use_observed:
+        if fit_mask is not None:
+            return BlockwiseObservedScaler(block_slices=block_slices).fit(
+                np.asarray(features_raw)[fit_mask],
+                block_mask=np.asarray(block_mask, dtype=bool)[fit_mask],
+            )
+        return BlockwiseObservedScaler(block_slices=block_slices).fit(features_raw, block_mask=np.asarray(block_mask, dtype=bool))
+    if fit_mask is not None:
+        return StandardScaler().fit(np.asarray(features_raw)[fit_mask])
+    return StandardScaler().fit(features_raw)
+
+
+def transform_cluster_features(scaler: Any, features_raw: np.ndarray, *, block_mask: Optional[np.ndarray] = None) -> np.ndarray:
+    if isinstance(scaler, BlockwiseObservedScaler):
+        if block_mask is None:
+            raise ValueError("BlockwiseObservedScaler transform requires block_mask.")
+        return scaler.transform(features_raw, block_mask=np.asarray(block_mask, dtype=bool)).astype(np.float32)
+    return scaler.transform(features_raw).astype(np.float32)
 
 
 def _ensure_dir(path: str) -> None:
@@ -603,6 +796,10 @@ def _parse_eval_splits(text: str, search_split: str) -> List[str]:
     if search_split not in out:
         out.insert(0, search_split)
     return out
+
+
+def parse_bool_text(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -1799,6 +1996,15 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
     lines.append(f"- DEC/CVCL head K: `{summary.get('cluster_head_k', 0)}`")
     if "cluster_feature_strategy" in summary:
         lines.append(f"- Cluster feature strategy: `{summary['cluster_feature_strategy']}`")
+    if "metadata_policy" in summary:
+        policy = summary["metadata_policy"]
+        if isinstance(policy, dict):
+            lines.append(
+                f"- Metadata policy: `{policy.get('metadata_policy')}` "
+                f"(cluster weight={float(policy.get('effective_metadata_cluster_weight', 0.0)):.3g})"
+            )
+        else:
+            lines.append(f"- Metadata policy: `{policy}`")
     if "plot_va_source" in summary:
         lines.append(f"- Plot VA source: `{summary['plot_va_source']}`")
     lines.append(f"- Metadata feature dim: `{summary['metadata_feature_dim']}`")
@@ -1963,8 +2169,14 @@ def main() -> None:
         "test": datasets.test_dataset,
         "all": datasets.all_dataset,
     }
+    metadata_policy_info = resolve_metadata_policy(
+        str(args.metadata_policy),
+        metadata_feature_names=datasets.metadata_feature_names,
+        requested_metadata_cluster_weight=float(args.metadata_cluster_weight),
+    )
+    effective_metadata_cluster_weight = float(metadata_policy_info["effective_metadata_cluster_weight"])
 
-    _use_amp = str(args.use_amp).strip().lower() in {"1", "true", "yes", "y"}
+    _use_amp = parse_bool_text(args.use_amp)
     train_epochs = int(args.pretrain_epochs) if args.pretrain_epochs is not None else int(args.epochs)
 
     model = MusicMetadataDiscoveryNet(
@@ -2123,10 +2335,15 @@ def main() -> None:
         search_view_mask,
         int(embeddings_by_split[search_split]["z_fused"].shape[0]) if "z_fused" in embeddings_by_split[search_split] else 0,
     )
+    search_block_mask = apply_metadata_policy_to_block_mask(
+        search_block_mask,
+        metadata_cluster_weight=effective_metadata_cluster_weight,
+        diff_cluster_weight=float(args.diff_cluster_weight),
+    )
 
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
-        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        metadata_cluster_weight=effective_metadata_cluster_weight,
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
         strategy=feature_strategy,
@@ -2134,25 +2351,30 @@ def main() -> None:
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
     )
-    # Fit scaler on complete-pair rows when complete_first, else all rows
-    if both_mask is not None:
-        cluster_scaler = StandardScaler().fit(search_features_raw[both_mask])
-    else:
-        cluster_scaler = StandardScaler().fit(search_features_raw)
+    raw_block_slices = cluster_feature_block_slices(feature_strategy, int(search_features_raw.shape[1]))
+    cluster_scaler = fit_cluster_scaler(
+        feature_strategy,
+        search_features_raw,
+        block_mask=search_block_mask,
+        block_slices=raw_block_slices,
+        fit_mask=both_mask,
+        block_scaler=str(args.block_scaler),
+    )
     feature_weights = cluster_feature_weights(
         feature_strategy,
         int(search_features_raw.shape[1]),
         conflict_cluster_weight=float(args.conflict_cluster_weight),
         gate_cluster_weight=float(args.gate_cluster_weight),
-        metadata_cluster_weight=float(args.metadata_cluster_weight),
+        metadata_cluster_weight=effective_metadata_cluster_weight,
         diff_cluster_weight=float(args.diff_cluster_weight),
     )
     search_features = apply_cluster_feature_weights(
-        cluster_scaler.transform(search_features_raw).astype(np.float32),
+        transform_cluster_features(cluster_scaler, search_features_raw, block_mask=search_block_mask),
         feature_weights,
     )
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
+    selection_info_metadata_policy = dict(metadata_policy_info)
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -2178,6 +2400,7 @@ def main() -> None:
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
     )
+    selection_info["metadata_policy"] = selection_info_metadata_policy
 
     # Resolve GMM model and selected_k depending on strategy
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
@@ -2258,11 +2481,14 @@ def main() -> None:
                     "silhouette_mode": str(args.silhouette_mode),
                     "silhouette_sample_size": int(args.silhouette_sample_size),
                     "silhouette_chunk_size": int(args.silhouette_chunk_size),
-                    "metadata_cluster_weight": float(args.metadata_cluster_weight),
+                    "metadata_policy": metadata_policy_info,
+                    "metadata_cluster_weight": effective_metadata_cluster_weight,
+                    "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
                     "cluster_feature_weights": feature_weights.tolist(),
+                    "block_scaler": str(args.block_scaler),
                     "cluster_assignment_mode": assignment_mode,
                     "feature_block_slices": cluster_feature_block_slices(feature_strategy, int(search_features.shape[1])),
                     "plot_va_source": str(args.plot_va_source),
@@ -2278,7 +2504,7 @@ def main() -> None:
     for split in eval_splits:
         features_raw, _, _ = build_cluster_features(
             embeddings=embeddings_by_split[split],
-            metadata_cluster_weight=float(args.metadata_cluster_weight),
+            metadata_cluster_weight=effective_metadata_cluster_weight,
             conflict_cluster_weight=float(args.conflict_cluster_weight),
             gate_cluster_weight=float(args.gate_cluster_weight),
             strategy=feature_strategy,
@@ -2287,14 +2513,19 @@ def main() -> None:
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
         )
-        features = apply_cluster_feature_weights(
-            cluster_scaler.transform(features_raw).astype(np.float32),
-            feature_weights,
-        )
         split_block_mask = cluster_feature_block_mask(
             feature_strategy,
             embeddings_by_split[split].get("view_mask"),
-            int(features.shape[0]),
+            int(features_raw.shape[0]),
+        )
+        split_block_mask = apply_metadata_policy_to_block_mask(
+            split_block_mask,
+            metadata_cluster_weight=effective_metadata_cluster_weight,
+            diff_cluster_weight=float(args.diff_cluster_weight),
+        )
+        features = apply_cluster_feature_weights(
+            transform_cluster_features(cluster_scaler, features_raw, block_mask=split_block_mask),
+            feature_weights,
         )
         if is_hierarchical:
             # For hierarchical: predict macro, then apply micro sub-labels
@@ -2368,12 +2599,16 @@ def main() -> None:
         "cvcl_loss_weight": float(args.cvcl_loss_weight),
         "assignment_balance_weight": float(args.assignment_balance_weight),
         "metadata_feature_dim": int(metadata_summary["feature_dim"]),
+        "metadata_policy": metadata_policy_info,
+        "metadata_cluster_weight": effective_metadata_cluster_weight,
+        "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": history_path,
         "metadata_summary_path": metadata_summary_path,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
+        "block_scaler": str(args.block_scaler),
         "cluster_assignment_mode": assignment_mode,
         "plot_va_source": str(args.plot_va_source),
         "pca_target_dim": int(args.pca_target_dim),
@@ -2385,6 +2620,14 @@ def main() -> None:
         "silhouette_mode": str(args.silhouette_mode),
         "silhouette_sample_size": int(args.silhouette_sample_size),
         "silhouette_chunk_size": int(args.silhouette_chunk_size),
+        "cluster_aware_finetune": bool(
+            int(args.cluster_head_k) > 0
+            and (
+                float(args.cluster_loss_weight) > 0.0
+                or float(args.cvcl_loss_weight) > 0.0
+                or float(args.assignment_balance_weight) > 0.0
+            )
+        ),
         "selection_info": selection_info,
         "split_outputs": split_outputs,
     }
@@ -2407,6 +2650,12 @@ def main() -> None:
     with open(pipeline_summary_path, "w", encoding="utf-8") as f:
         json.dump(pipeline_summary, f, ensure_ascii=False, indent=2)
     _write_pipeline_report(os.path.join(out_dir, "pipeline_report.md"), pipeline_summary)
+    audit_result = None
+    if parse_bool_text(args.run_topconf_audit):
+        from cluster.evaluation.topconf_audit import audit_run, write_audit_outputs
+
+        audit_result = audit_run(out_dir)
+        write_audit_outputs(audit_result, out_dir)
 
     print(f"[Pipeline] Wrote full discovery-training outputs to {out_dir}")
     print(f"  - checkpoint: {checkpoint_path}")
@@ -2422,6 +2671,10 @@ def main() -> None:
     print("  - training_curves.png")
     print("  - pipeline_summary.json")
     print("  - pipeline_report.md")
+    if audit_result is not None:
+        print(f"  - topconf_audit_report.md: ready={bool(audit_result.get('overall_ready'))}")
+        if not bool(audit_result.get("overall_ready")):
+            raise SystemExit(2)
 
 
 if __name__ == "__main__":

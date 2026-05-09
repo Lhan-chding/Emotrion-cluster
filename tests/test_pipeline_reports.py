@@ -9,10 +9,12 @@ from cluster.pipeline.train import (
     _cluster_summary,
     _write_split_outputs,
     build_parser,
+    apply_metadata_policy_to_block_mask,
     apply_cluster_feature_weights,
     build_cluster_features,
     cluster_feature_block_mask,
     cluster_feature_weights,
+    resolve_metadata_policy,
     run_k_selection,
 )
 
@@ -384,6 +386,59 @@ def test_macro_micro_block_mask_keeps_consensus_available_for_empty_rows():
     assert block_mask.any(axis=1).all()
 
 
+def test_affective_va_policy_removes_metadata_from_cluster_mask_and_weight():
+    policy = resolve_metadata_policy(
+        "affective_va_only",
+        metadata_feature_names=["MoodsAll::happy", "Themes::party", "Genres::rock"],
+        requested_metadata_cluster_weight=0.75,
+    )
+    assert policy["effective_metadata_cluster_weight"] == 0.0
+    assert policy["metadata_block_used_for_clustering"] is False
+
+    view_mask = np.asarray(
+        [
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    block_mask = cluster_feature_block_mask("macro_micro_diffaware", view_mask, view_mask.shape[0])
+    block_mask = apply_metadata_policy_to_block_mask(
+        block_mask,
+        metadata_cluster_weight=policy["effective_metadata_cluster_weight"],
+    )
+
+    expected = np.asarray(
+        [
+            [True, False, False],
+            [True, True, False],
+        ],
+        dtype=bool,
+    )
+    np.testing.assert_array_equal(block_mask, expected)
+
+
+def test_zero_diff_weight_removes_diff_block_from_cluster_mask():
+    view_mask = np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32)
+    block_mask = cluster_feature_block_mask("macro_micro_diffaware", view_mask, view_mask.shape[0])
+    block_mask = apply_metadata_policy_to_block_mask(
+        block_mask,
+        metadata_cluster_weight=1.0,
+        diff_cluster_weight=0.0,
+    )
+
+    np.testing.assert_array_equal(block_mask, np.asarray([[True, False, True]], dtype=bool))
+
+
+def test_non_affective_metadata_policy_rejects_affective_fields():
+    with np.testing.assert_raises(ValueError):
+        resolve_metadata_policy(
+            "non_affective_metadata",
+            metadata_feature_names=["Genres::rock", "MoodsAll::happy"],
+            requested_metadata_cluster_weight=0.75,
+        )
+
+
 def test_semantic_composite_selection_is_not_plain_composite_alias():
     features = np.asarray(
         [
@@ -445,6 +500,60 @@ def test_run_pipeline_parser_accepts_macro_micro_k_strategy():
     )
 
     assert args.k_strategy == "macro_micro"
+
+
+def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
+    args = build_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--metadata_policy",
+            "report_only",
+            "--total_k_min",
+            "8",
+            "--total_k_max",
+            "16",
+            "--silhouette_mode",
+            "masked_torch_chunked",
+            "--block_scaler",
+            "observed",
+            "--run_topconf_audit",
+            "true",
+        ]
+    )
+
+    assert args.metadata_policy == "report_only"
+    assert args.k_min == 8
+    assert args.k_max == 16
+    assert args.silhouette_mode == "masked_torch_chunked"
+    assert args.block_scaler == "observed"
+    assert args.run_topconf_audit == "true"
+
+
+def test_metadata_only_strategy_uses_metadata_embedding_without_other_views():
+    embeddings = {
+        "z_fused": np.asarray([[9.0, 9.0], [8.0, 8.0]], dtype=np.float32),
+        "z_audio": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        "z_lyrics": np.asarray([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32),
+        "z_metadata": np.asarray([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32),
+        "gate_weights": np.ones((2, 3), dtype=np.float32) / 3.0,
+        "consistency": np.zeros((2, 1), dtype=np.float32),
+        "va_diff": np.zeros((2, 2), dtype=np.float32),
+        "view_mask": np.asarray([[1.0, 1.0, 1.0], [1.0, 1.0, 0.0]], dtype=np.float32),
+    }
+
+    features, _, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=1.0,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="metadata_only",
+    )
+
+    expected = np.asarray([[0.2, 0.4], [0.0, 0.0]], dtype=np.float32)
+    np.testing.assert_allclose(features, expected)
 
 
 def test_partial_likelihood_k_selection_uses_masked_model():
