@@ -420,6 +420,21 @@ def test_run_pipeline_parser_accepts_stage_alias_from_v5_plan():
     assert args.run_stage == "pretrain"
 
 
+def test_run_pipeline_parser_accepts_macro_micro_k_strategy():
+    args = build_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--k_strategy",
+            "macro_micro",
+        ]
+    )
+
+    assert args.k_strategy == "macro_micro"
+
+
 def test_partial_likelihood_k_selection_uses_masked_model():
     features = np.asarray(
         [

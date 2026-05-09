@@ -28,6 +28,7 @@ from cluster.pipeline.k_selection import (
     HierarchicalClusterResult,
     search_gmm_composite,
     search_gmm_semantic_composite,
+    search_macro_micro_diffaware,
     search_masked_diag_gmm_composite,
     search_gmm_bic_only,
     hierarchical_cluster,
@@ -123,8 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_input_dim", type=int, default=26,
                         help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "bic_only", "hierarchical"],
-                        help="K-selection strategy: composite (multi-metric), bic_only (legacy), hierarchical (two-level)")
+                        choices=["composite", "semantic_composite", "macro_micro", "bic_only", "hierarchical"],
+                        help="K-selection strategy: composite, semantic_composite, macro_micro, bic_only, or hierarchical")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
                         help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
@@ -172,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
     parser.add_argument("--macro_k_min", type=int, default=4)
     parser.add_argument("--macro_k_max", type=int, default=6)
-    parser.add_argument("--micro_k_min", type=int, default=2)
+    parser.add_argument("--micro_k_min", type=int, default=1)
     parser.add_argument("--micro_k_max", type=int, default=5)
     parser.add_argument("--min_final_clusters", type=int, default=0)
     parser.add_argument("--max_final_clusters", type=int, default=0)
@@ -628,6 +629,10 @@ def run_k_selection(
     assignment_mode: str = "joint",
     block_mask: Optional[np.ndarray] = None,
     block_slices: Optional[Sequence[Sequence[int]]] = None,
+    macro_k_min: int = 4,
+    macro_k_max: int = 8,
+    micro_k_min: int = 1,
+    micro_k_max: int = 5,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -649,8 +654,26 @@ def run_k_selection(
         silhouette_mode=silhouette_mode,
         silhouette_sample_size=silhouette_sample_size,
         silhouette_chunk_size=silhouette_chunk_size,
+        macro_k_min=int(macro_k_min),
+        macro_k_max=int(macro_k_max),
+        micro_k_min=int(micro_k_min),
+        micro_k_max=int(micro_k_max),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
+    if k_strategy == "macro_micro":
+        if assignment_mode == "complete_first":
+            raise ValueError("macro_micro K search is incompatible with complete_first; use partial_likelihood or joint.")
+        if block_mask is None or block_slices is None:
+            raise ValueError("macro_micro K search requires block_mask and block_slices.")
+        result = search_macro_micro_diffaware(
+            features,
+            config,
+            block_mask=np.asarray(block_mask, dtype=bool),
+            block_slices=block_slices,
+            view_mask=view_mask,
+        )
+        return result.best_model, result.metrics, result.selection_info
+
     if assignment_mode == "partial_likelihood":
         if block_mask is None or block_slices is None:
             raise ValueError("partial_likelihood K search requires block_mask and block_slices.")
@@ -1921,6 +1944,10 @@ def main() -> None:
         assignment_mode=assignment_mode,
         block_mask=search_block_mask,
         block_slices=block_slices,
+        macro_k_min=int(args.macro_k_min),
+        macro_k_max=int(args.macro_k_max),
+        micro_k_min=int(args.micro_k_min),
+        micro_k_max=int(args.micro_k_max),
     )
 
     # Resolve GMM model and selected_k depending on strategy
@@ -1988,6 +2015,10 @@ def main() -> None:
                     "k_strategy": k_strategy,
                     "k_min": int(args.k_min),
                     "k_max": int(args.k_max),
+                    "macro_k_min": int(args.macro_k_min),
+                    "macro_k_max": int(args.macro_k_max),
+                    "micro_k_min": int(args.micro_k_min),
+                    "micro_k_max": int(args.micro_k_max),
                     "min_cluster_size_abs": int(args.min_cluster_size_abs),
                     "min_cluster_size_ratio": float(args.min_cluster_size_ratio),
                     "covariance_type": str(args.covariance_type),

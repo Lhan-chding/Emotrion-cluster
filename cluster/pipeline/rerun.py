@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "bic_only", "hierarchical"],
+                        choices=["composite", "semantic_composite", "macro_micro", "bic_only", "hierarchical"],
                         help="K-selection strategy")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
@@ -143,6 +143,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
                         choices=["joint", "complete_first", "partial_likelihood"],
                         help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
+    parser.add_argument("--macro_k_min", type=int, default=4)
+    parser.add_argument("--macro_k_max", type=int, default=8)
+    parser.add_argument("--micro_k_min", type=int, default=1)
+    parser.add_argument("--micro_k_max", type=int, default=5)
     return parser
 
 
@@ -309,6 +313,10 @@ def main() -> None:
         assignment_mode=assignment_mode,
         block_mask=search_block_mask,
         block_slices=block_slices,
+        macro_k_min=int(args.macro_k_min),
+        macro_k_max=int(args.macro_k_max),
+        micro_k_min=int(args.micro_k_min),
+        micro_k_max=int(args.micro_k_max),
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
@@ -375,6 +383,10 @@ def main() -> None:
                     "k_strategy": k_strategy,
                     "k_min": int(args.k_min),
                     "k_max": int(args.k_max),
+                    "macro_k_min": int(args.macro_k_min),
+                    "macro_k_max": int(args.macro_k_max),
+                    "micro_k_min": int(args.micro_k_min),
+                    "micro_k_max": int(args.micro_k_max),
                     "min_cluster_size_abs": int(args.min_cluster_size_abs),
                     "min_cluster_size_ratio": float(args.min_cluster_size_ratio),
                     "covariance_type": str(args.covariance_type),

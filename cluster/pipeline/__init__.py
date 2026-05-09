@@ -8,8 +8,10 @@ from cluster.pipeline.k_selection import (
     search_gmm_bic_only,
     search_gmm_composite,
     search_gmm_semantic_composite,
+    search_macro_micro_diffaware,
     search_masked_diag_gmm_composite,
 )
+from cluster.pipeline.macro_micro import MacroMicroClusterer
 from cluster.pipeline.train import (
     ClusterFeatureStrategy,
     _build_cluster_features,
@@ -29,7 +31,9 @@ __all__ = [
     "HierarchicalClusterResult",
     "search_gmm_composite",
     "search_gmm_semantic_composite",
+    "search_macro_micro_diffaware",
     "search_masked_diag_gmm_composite",
+    "MacroMicroClusterer",
     "search_gmm_bic_only",
     "hierarchical_cluster",
     "compute_stability_score",

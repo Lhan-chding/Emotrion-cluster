@@ -17,6 +17,7 @@ from sklearn.mixture import GaussianMixture
 
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
+from cluster.pipeline.macro_micro import MacroMicroClusterer
 
 
 @dataclass(frozen=True)
@@ -750,6 +751,113 @@ def search_masked_diag_gmm_composite(
         best_model=best_result["gmm"],
         metrics=metrics,
         selection_info=info,
+    )
+
+
+def search_macro_micro_diffaware(
+    features: np.ndarray,
+    config: KSelectionConfig,
+    *,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    view_mask: Optional[np.ndarray] = None,
+) -> KSearchResult:
+    """True macro/micro search for three-block diff-aware feature matrices."""
+    if str(config.covariance_type).lower() != "diag":
+        raise ValueError("macro_micro K search requires covariance_type='diag'.")
+    matrix = np.asarray(features, dtype=np.float32)
+    mask = np.asarray(block_mask, dtype=bool)
+    if mask.ndim != 2 or mask.shape != (matrix.shape[0], 3):
+        raise ValueError(f"block_mask must have shape [N, 3], got {mask.shape} for features {matrix.shape}.")
+    if len(block_slices) != 3:
+        raise ValueError("macro_micro K search requires three block_slices: consensus, tension, metadata.")
+
+    min_size_threshold = _min_size_threshold(config, int(matrix.shape[0]))
+    rows: List[Dict[str, Any]] = []
+    candidates: Dict[int, MacroMicroClusterer] = {}
+    consensus_start, consensus_stop = int(block_slices[0][0]), int(block_slices[0][1])
+    consensus = matrix[:, consensus_start:consensus_stop]
+
+    for macro_k in range(int(config.macro_k_min), int(config.macro_k_max) + 1):
+        model = MacroMicroClusterer(
+            macro_k=int(macro_k),
+            block_slices=block_slices,
+            covariance_type=str(config.covariance_type),
+            random_state=int(config.random_state),
+            n_init=int(config.n_init),
+            max_iter=100,
+            micro_k_min=int(config.micro_k_min),
+            micro_k_max=int(config.micro_k_max),
+            min_cluster_size=int(min_size_threshold),
+        ).fit(matrix, block_mask=mask)
+        labels = model.labels_.astype(np.int64)
+        macro_labels = model.macro_labels_.astype(np.int64)
+        sizes = np.bincount(labels, minlength=int(model.n_components))
+        macro_sil = _score_silhouette(consensus, macro_labels, config) if len(np.unique(macro_labels)) > 1 else 0.0
+        final_sil = _score_silhouette(matrix, labels, config) if len(np.unique(labels)) > 1 else 0.0
+        mask_nmi = _mask_nmi(labels, view_mask) if view_mask is not None else float("nan")
+        max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
+        score = 0.5 * float(macro_sil) + 0.5 * float(final_sil)
+        if np.isfinite(mask_nmi):
+            score -= 0.25 * float(mask_nmi)
+        candidates[int(macro_k)] = model
+        rows.append(
+            {
+                "macro_k": int(macro_k),
+                "total_clusters": int(model.n_components),
+                "macro_silhouette": float(macro_sil),
+                "final_silhouette": float(final_sil),
+                "macro_micro_score": float(score),
+                "min_cluster_size": int(sizes.min()),
+                "min_size_ok": bool(sizes.min() >= min_size_threshold),
+                "min_size_threshold": int(min_size_threshold),
+                "mask_nmi": float(mask_nmi),
+                "max_mask_purity": float(max_mask_purity),
+            }
+        )
+
+    metrics = pd.DataFrame(rows).sort_values("macro_k", kind="stable").reset_index(drop=True)
+    eligible = metrics["min_size_ok"].to_numpy(dtype=bool)
+    if not eligible.any():
+        min_sizes = ", ".join(
+            f"macro_k={int(row.macro_k)}:{int(row.min_cluster_size)}"
+            for row in metrics[["macro_k", "min_cluster_size"]].itertuples(index=False)
+        )
+        raise ValueError(
+            f"No macro_micro candidate satisfied min_cluster_size_threshold={min_size_threshold}. "
+            f"Candidate minimum sizes: {min_sizes}."
+        )
+    eligible_metrics = metrics[eligible]
+    selected_idx = int(eligible_metrics["macro_micro_score"].idxmax())
+    selected_row = metrics.loc[selected_idx]
+    selected_macro_k = int(selected_row["macro_k"])
+    best_model = candidates[selected_macro_k]
+    selection_info = {
+        "selected_k": int(best_model.n_components),
+        "selection_mode": "macro_micro_diffaware",
+        "macro_k": int(best_model.macro_k),
+        "micro_details": best_model.info.get("micro_details", {}),
+        "label_names": best_model.label_names,
+        "macro_micro_score": float(selected_row["macro_micro_score"]),
+        "min_cluster_size_threshold": int(min_size_threshold),
+        "min_cluster_size": int(selected_row["min_cluster_size"]),
+        "min_size_ok": bool(selected_row["min_size_ok"]),
+        "partial_likelihood": True,
+        "feature_block_slices": [(int(start), int(stop)) for start, stop in block_slices],
+        "cluster_backend": "macro_micro_masked_diag_gmm",
+        "eval_backend": config.eval_backend,
+        "actual_cluster_backend": "macro_micro_masked_diag_gmm",
+        "actual_eval_backend": _resolve_eval_backend_name(config),
+        "device": str(config.device),
+        "silhouette_mode": str(config.silhouette_mode),
+        "silhouette_sample_size": int(config.silhouette_sample_size),
+        "silhouette_chunk_size": int(config.silhouette_chunk_size),
+    }
+    return KSearchResult(
+        best_k=int(best_model.n_components),
+        best_model=best_model,
+        metrics=metrics,
+        selection_info=selection_info,
     )
 
 
