@@ -1382,13 +1382,71 @@ def _cluster_summary(
     return summaries
 
 
+def _normalize_cluster_label_names(cluster_label_names: Optional[Dict[Any, Any]]) -> Dict[int, str]:
+    if not cluster_label_names:
+        return {}
+    normalized: Dict[int, str] = {}
+    for key, value in dict(cluster_label_names).items():
+        try:
+            normalized[int(key)] = str(value)
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _parse_macro_micro_label(label: str) -> Optional[Tuple[int, int, str]]:
+    text = str(label or "").strip()
+    if not text.startswith("M"):
+        return None
+    body = text[1:]
+    if "-" in body:
+        macro_text, micro_label = body.split("-", 1)
+    else:
+        macro_text, micro_label = body, ""
+    try:
+        macro_id = int(macro_text)
+    except ValueError:
+        return None
+    if micro_label == "":
+        micro_id = 0
+    elif len(micro_label) == 1 and micro_label.isalpha():
+        micro_id = ord(micro_label.lower()) - ord("a") + 1
+    else:
+        try:
+            micro_id = int(micro_label)
+        except ValueError:
+            micro_id = 0
+    return macro_id, micro_id, micro_label
+
+
+def _label_metadata(cluster_id: int, cluster_label_names: Dict[int, str]) -> Dict[str, Any]:
+    label_name = cluster_label_names.get(int(cluster_id), str(int(cluster_id)))
+    parsed = _parse_macro_micro_label(label_name)
+    if parsed is None:
+        return {
+            "label_name": label_name,
+            "macro_id": -1,
+            "micro_id": -1,
+            "micro_label": "",
+        }
+    macro_id, micro_id, micro_label = parsed
+    return {
+        "label_name": label_name,
+        "macro_id": int(macro_id),
+        "micro_id": int(micro_id),
+        "micro_label": micro_label,
+    }
+
+
 def _build_assignment_frame(
     assignments: np.ndarray,
     dataset,
     embeddings: Dict[str, Any],
     plot_va_source: str = "mean",
+    cluster_label_names: Optional[Dict[Any, Any]] = None,
 ) -> pd.DataFrame:
     mean_va = _dataset_plot_va(dataset, plot_va_source)
+    label_map = _normalize_cluster_label_names(cluster_label_names)
     frame = pd.DataFrame(
         {
             "identifier": dataset.identifiers,
@@ -1411,11 +1469,157 @@ def _build_assignment_frame(
             "gate_metadata": embeddings["gate_weights"][:, 2],
         }
     )
+    if label_map:
+        label_rows = [_label_metadata(int(cluster_id), label_map) for cluster_id in assignments.tolist()]
+        frame["label_name"] = [row["label_name"] for row in label_rows]
+        frame["macro_id"] = [row["macro_id"] for row in label_rows]
+        frame["micro_id"] = [row["micro_id"] for row in label_rows]
+        frame["micro_label"] = [row["micro_label"] for row in label_rows]
     if not dataset.canonical_metadata.empty:
         for field in ("Artist", "Title", "Quadrant"):
             if field in dataset.canonical_metadata.columns:
                 frame[field.lower()] = dataset.canonical_metadata[field].astype(str).tolist()
     return frame
+
+
+def _metadata_token_stats_text(tokens: Sequence[Dict[str, Any]], limit: int = 5) -> str:
+    return "; ".join(
+        (
+            f"{entry.get('field', 'metadata')}::{entry.get('token', str(entry['feature']).split('::', 1)[-1])}"
+            f"(n={int(entry.get('support', 0))},"
+            f"N={int(entry.get('global_support', 0))},"
+            f"q={float(entry.get('q_value', 1.0)):.3g})"
+        )
+        for entry in list(tokens)[:limit]
+    )
+
+
+MACRO_MICRO_ENRICHMENT_COLUMNS = [
+    "cluster_id",
+    "label_name",
+    "macro_id",
+    "micro_id",
+    "micro_label",
+    "feature",
+    "field",
+    "token",
+    "support",
+    "global_support",
+    "cluster_rate",
+    "population_rate",
+    "enrichment",
+    "p_value",
+    "q_value",
+]
+
+
+def _write_macro_micro_artifacts(
+    out_dir: str,
+    dataset,
+    assignments: np.ndarray,
+    summary: Sequence[Dict[str, Any]],
+    cluster_label_names: Dict[int, str],
+    palette: Dict[int, str],
+) -> Dict[str, Any]:
+    label_rows = {
+        int(item["cluster_id"]): _label_metadata(int(item["cluster_id"]), cluster_label_names)
+        for item in summary
+    }
+    macro_ids = sorted(
+        {
+            int(row["macro_id"])
+            for row in label_rows.values()
+            if int(row.get("macro_id", -1)) > 0
+        }
+    )
+    if not macro_ids:
+        return {}
+
+    macro_dir = os.path.join(out_dir, "macro_micro")
+    _ensure_dir(macro_dir)
+    summary_rows: List[Dict[str, Any]] = []
+    enrichment_rows: List[Dict[str, Any]] = []
+    for item in summary:
+        cluster_id = int(item["cluster_id"])
+        label_data = label_rows[cluster_id]
+        if int(label_data["macro_id"]) <= 0:
+            continue
+        token_stats = _metadata_token_stats_text(item.get("top_metadata_tokens", []))
+        summary_rows.append(
+            {
+                "cluster_id": cluster_id,
+                **label_data,
+                "num_samples": int(item["num_samples"]),
+                "sample_fraction": float(item["sample_fraction"]),
+                "dominant_quadrant": str(item["dominant_quadrant"]),
+                "dominant_quadrant_ratio": float(item["dominant_quadrant_ratio"]),
+                "mean_valence": float(item["mean_valence"]),
+                "mean_arousal": float(item["mean_arousal"]),
+                "mean_diff_magnitude": float(item.get("mean_diff_magnitude", float("nan"))),
+                "delta_direction_angle": float(item.get("delta_direction_angle", float("nan"))),
+                "diff_observed_ratio": float(item.get("diff_observed_ratio", 0.0)),
+                "has_audio_ratio": float(item.get("has_audio_ratio", 0.0)),
+                "has_lyrics_ratio": float(item.get("has_lyrics_ratio", 0.0)),
+                "top_metadata_token_stats": token_stats,
+            }
+        )
+        for token in item.get("top_metadata_tokens", []):
+            enrichment_rows.append(
+                {
+                    "cluster_id": cluster_id,
+                    **label_data,
+                    "feature": str(token["feature"]),
+                    "field": str(token.get("field", "")),
+                    "token": str(token.get("token", "")),
+                    "support": int(token.get("support", 0)),
+                    "global_support": int(token.get("global_support", 0)),
+                    "cluster_rate": float(token.get("cluster_rate", 0.0)),
+                    "population_rate": float(token.get("population_rate", 0.0)),
+                    "enrichment": float(token.get("enrichment", 0.0)),
+                    "p_value": float(token.get("p_value", 1.0)),
+                    "q_value": float(token.get("q_value", 1.0)),
+                }
+            )
+
+    macro_summary_path = os.path.join(out_dir, "macro_micro_summary.csv")
+    macro_enrichment_path = os.path.join(out_dir, "macro_micro_metadata_enrichment.csv")
+    pd.DataFrame(summary_rows).to_csv(macro_summary_path, index=False, encoding="utf-8")
+    enrichment_frame = pd.DataFrame(enrichment_rows, columns=MACRO_MICRO_ENRICHMENT_COLUMNS)
+    enrichment_frame.to_csv(macro_enrichment_path, index=False, encoding="utf-8")
+
+    macro_diff_paths: Dict[str, str] = {}
+    macro_metadata_paths: Dict[str, str] = {}
+    view_mask = dataset.view_mask if hasattr(dataset, "view_mask") else np.ones((len(assignments), 3), dtype=np.float32)
+    for macro_id in macro_ids:
+        cluster_ids = [
+            cluster_id
+            for cluster_id, label_data in label_rows.items()
+            if int(label_data["macro_id"]) == int(macro_id)
+        ]
+        macro_mask = np.isin(assignments, np.asarray(cluster_ids, dtype=np.int64))
+        if macro_mask.any():
+            diff_path = os.path.join(macro_dir, f"macro_{macro_id}_diff_arrow.png")
+            _plot_diff_scatter(
+                dataset.raw_audio[macro_mask],
+                dataset.raw_lyrics[macro_mask],
+                view_mask[macro_mask],
+                assignments[macro_mask],
+                diff_path,
+                {cluster_id: palette.get(cluster_id, "#888888") for cluster_id in cluster_ids},
+            )
+            macro_diff_paths[str(macro_id)] = diff_path
+        macro_metadata_path = os.path.join(macro_dir, f"macro_{macro_id}_metadata_enrichment.csv")
+        macro_enrichment = enrichment_frame[enrichment_frame["macro_id"] == int(macro_id)] if not enrichment_frame.empty else enrichment_frame
+        macro_enrichment.to_csv(macro_metadata_path, index=False, encoding="utf-8")
+        macro_metadata_paths[str(macro_id)] = macro_metadata_path
+
+    return {
+        "macro_micro_dir": macro_dir,
+        "macro_micro_summary": macro_summary_path,
+        "macro_micro_metadata_enrichment": macro_enrichment_path,
+        "macro_diff_arrows": macro_diff_paths,
+        "macro_metadata_tables": macro_metadata_paths,
+    }
 
 
 def _write_split_outputs(
@@ -1430,10 +1634,12 @@ def _write_split_outputs(
     cluster_features: Optional[np.ndarray] = None,
     search_metrics: Optional[pd.DataFrame] = None,
     plot_va_source: str = "mean",
+    cluster_label_names: Optional[Dict[Any, Any]] = None,
 ) -> Dict[str, Any]:
     _ensure_dir(out_dir)
     mean_va = _dataset_plot_va(dataset, plot_va_source)
     palette = _cluster_palette(int(selected_k))
+    label_map = _normalize_cluster_label_names(cluster_label_names)
     summary = _cluster_summary(
         assignments=assignments,
         dataset=dataset,
@@ -1445,6 +1651,7 @@ def _write_split_outputs(
         dataset=dataset,
         embeddings=embeddings,
         plot_va_source=plot_va_source,
+        cluster_label_names=label_map,
     )
     catalog_frame = pd.DataFrame(
         [
@@ -1460,19 +1667,19 @@ def _write_split_outputs(
                     str(entry["feature"]).split("::", 1)[-1]
                     for entry in item.get("top_metadata_tokens", [])[:5]
                 ),
-                "top_metadata_token_stats": "; ".join(
-                    (
-                        f"{entry.get('field', 'metadata')}::{entry.get('token', str(entry['feature']).split('::', 1)[-1])}"
-                        f"(n={int(entry.get('support', 0))},"
-                        f"N={int(entry.get('global_support', 0))},"
-                        f"q={float(entry.get('q_value', 1.0)):.3g})"
-                    )
-                    for entry in item.get("top_metadata_tokens", [])[:5]
-                ),
+                "top_metadata_token_stats": _metadata_token_stats_text(item.get("top_metadata_tokens", [])),
             }
             for item in summary
         ]
     )
+    if label_map and not catalog_frame.empty:
+        catalog_label_frame = pd.DataFrame(
+            [_label_metadata(int(cluster_id), label_map) for cluster_id in catalog_frame["cluster_id"].tolist()]
+        )
+        insert_at = 1
+        for column in ("label_name", "macro_id", "micro_id", "micro_label"):
+            catalog_frame.insert(insert_at, column, catalog_label_frame[column].tolist())
+            insert_at += 1
 
     assignment_path = os.path.join(out_dir, "cluster_assignments.csv")
     catalog_path = os.path.join(out_dir, "cluster_catalog.csv")
@@ -1502,6 +1709,18 @@ def _write_split_outputs(
                        dataset.raw_lyrics if hasattr(dataset, "raw_lyrics") else np.zeros((len(assignments), 2)),
                        _dataset_view_mask, assignments, diff_scatter_path, palette)
     _plot_mask_distribution(assignments, _dataset_view_mask, mask_dist_path, palette)
+    macro_micro_outputs = (
+        _write_macro_micro_artifacts(
+            out_dir=out_dir,
+            dataset=dataset,
+            assignments=assignments,
+            summary=summary,
+            cluster_label_names=label_map,
+            palette=palette,
+        )
+        if label_map
+        else {}
+    )
     with open(palette_path, "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in palette.items()}, f, ensure_ascii=False, indent=2)
 
@@ -1543,6 +1762,7 @@ def _write_split_outputs(
             "cluster_palette": palette_path,
             "search_metrics": search_metrics_path,
             "bic_curve": bic_curve_path,
+            **macro_micro_outputs,
         },
     }
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -1592,6 +1812,9 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
         feature_pca = payload.get("output_files", {}).get("cluster_pca_features")
         if feature_pca:
             lines.append(f"- Actual GMM feature PCA: `{feature_pca}`")
+        macro_summary = payload.get("output_files", {}).get("macro_micro_summary")
+        if macro_summary:
+            lines.append(f"- Macro/micro summary: `{macro_summary}`")
         cluster_preview = payload["cluster_summary"][:5]
         for cluster in cluster_preview:
             tokens = ", ".join(
@@ -2113,6 +2336,7 @@ def main() -> None:
             cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
+            cluster_label_names=k_result.label_names if is_hierarchical else None,
         )
         split_outputs[split] = payload
 

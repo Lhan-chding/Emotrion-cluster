@@ -6,6 +6,7 @@ from cluster.pipeline.train import (
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
     _cluster_summary,
+    _write_split_outputs,
     build_parser,
     apply_cluster_feature_weights,
     build_cluster_features,
@@ -556,6 +557,64 @@ def test_cluster_summary_filters_low_support_metadata_tokens_with_fdr():
     assert bright["global_support"] == 10
     assert 0.0 <= bright["p_value"] <= bright["q_value"] <= 1.0
     assert all(item["support"] >= 5 and item["global_support"] >= 10 for item in cluster_zero_tokens)
+
+
+def test_write_split_outputs_writes_macro_micro_artifacts(tmp_path):
+    class Dataset:
+        raw_audio = np.tile(np.asarray([[0.2, 0.3]], dtype=np.float32), (20, 1))
+        raw_lyrics = np.tile(np.asarray([[0.3, 0.4]], dtype=np.float32), (20, 1))
+        view_mask = np.ones((20, 3), dtype=np.float32)
+        labels = np.asarray([0] * 8 + [1] * 6 + [2] * 6, dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(20)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(20)])
+        consistency = np.ones(20, dtype=np.float32)
+        va_diff = np.zeros((20, 2), dtype=np.float32)
+        canonical_metadata = pd.DataFrame()
+
+    metadata = np.zeros((20, 2), dtype=np.float32)
+    metadata[:8, 0] = 1.0
+    metadata[8:10, 0] = 1.0
+    metadata[8:14, 1] = 1.0
+    metadata[14:18, 1] = 1.0
+    Dataset.raw_metadata = metadata
+    Dataset.raw_metadata_report = metadata
+
+    assignments = np.asarray([0] * 8 + [1] * 6 + [2] * 6, dtype=np.int64)
+    embeddings = {
+        "gate_weights": np.full((20, 3), 1.0 / 3.0, dtype=np.float32),
+        "z_fused": np.random.default_rng(9).standard_normal((20, 4)).astype(np.float32),
+    }
+
+    payload = _write_split_outputs(
+        out_dir=str(tmp_path),
+        split="all",
+        dataset=Dataset(),
+        embeddings=embeddings,
+        assignments=assignments,
+        metadata_feature_names=["MoodsAll::blue", "MoodsAll::bright"],
+        selected_k=3,
+        feature_dim=4,
+        cluster_features=np.random.default_rng(11).standard_normal((20, 4)).astype(np.float32),
+        cluster_label_names={0: "M1-a", 1: "M1-b", 2: "M2"},
+    )
+
+    catalog = pd.read_csv(tmp_path / "cluster_catalog.csv")
+    assignments_frame = pd.read_csv(tmp_path / "cluster_assignments.csv")
+    macro_summary = pd.read_csv(tmp_path / "macro_micro_summary.csv")
+    macro_summary["micro_label"] = macro_summary["micro_label"].fillna("")
+    metadata_enrichment = pd.read_csv(tmp_path / "macro_micro_metadata_enrichment.csv")
+
+    assert {"label_name", "macro_id", "micro_id", "micro_label"}.issubset(catalog.columns)
+    assert {"label_name", "macro_id", "micro_id", "micro_label"}.issubset(assignments_frame.columns)
+    assert macro_summary[["cluster_id", "label_name", "macro_id", "micro_label"]].to_dict("records") == [
+        {"cluster_id": 0, "label_name": "M1-a", "macro_id": 1, "micro_label": "a"},
+        {"cluster_id": 1, "label_name": "M1-b", "macro_id": 1, "micro_label": "b"},
+        {"cluster_id": 2, "label_name": "M2", "macro_id": 2, "micro_label": ""},
+    ]
+    assert set(metadata_enrichment["macro_id"].tolist()) == {1}
+    assert (tmp_path / "macro_micro" / "macro_1_diff_arrow.png").exists()
+    assert (tmp_path / "macro_micro" / "macro_1_metadata_enrichment.csv").exists()
+    assert payload["output_files"]["macro_micro_summary"].endswith("macro_micro_summary.csv")
 
 
 def test_full_strategy_no_missingness_leakage():

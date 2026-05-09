@@ -477,6 +477,7 @@ def main() -> None:
             cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
+            cluster_label_names=k_result.label_names if is_hierarchical else None,
         )
         split_outputs[split] = payload
         if split == search_split:
