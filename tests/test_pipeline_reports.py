@@ -7,6 +7,7 @@ from cluster.pipeline.train import (
     build_parser,
     apply_cluster_feature_weights,
     build_cluster_features,
+    cluster_feature_block_mask,
     cluster_feature_weights,
     run_k_selection,
 )
@@ -341,6 +342,32 @@ def test_macro_micro_diffaware_falls_back_to_trained_fused_when_affect_missing()
     )
 
     np.testing.assert_allclose(features[:, :2], embeddings["z_fused"])
+
+
+def test_macro_micro_block_mask_keeps_consensus_available_for_empty_rows():
+    view_mask = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    block_mask = cluster_feature_block_mask("macro_micro_diffaware", view_mask, view_mask.shape[0])
+
+    expected = np.asarray(
+        [
+            [True, False, False],
+            [True, False, True],
+            [True, False, False],
+            [True, True, True],
+        ],
+        dtype=bool,
+    )
+    np.testing.assert_array_equal(block_mask, expected)
+    assert block_mask.any(axis=1).all()
 
 
 def test_semantic_composite_selection_is_not_plain_composite_alias():

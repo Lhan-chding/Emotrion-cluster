@@ -560,14 +560,20 @@ def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n
         has_audio = mask[:, 0] > 0.0
         has_lyrics = mask[:, 1] > 0.0
         has_metadata = mask[:, 2] > 0.0 if mask.shape[1] > 2 else np.ones(mask.shape[0], dtype=bool)
-        return np.stack(
+        has_consensus = has_audio | has_lyrics | has_metadata
+        block_mask = np.stack(
             [
-                has_audio | has_lyrics,
+                has_consensus,
                 has_audio & has_lyrics,
                 has_metadata,
             ],
             axis=1,
         ).astype(bool)
+        empty_rows = ~block_mask.any(axis=1)
+        if empty_rows.any():
+            block_mask = np.array(block_mask, copy=True)
+            block_mask[empty_rows, 0] = True
+        return block_mask
     return np.ones((mask.shape[0], 1), dtype=bool)
 
 
