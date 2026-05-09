@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from cluster.pipeline.train import (
+    _cluster_label_names_for_outputs,
     _dataset_plot_va,
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
@@ -14,6 +15,16 @@ from cluster.pipeline.train import (
     cluster_feature_weights,
     run_k_selection,
 )
+
+
+def test_cluster_label_names_for_outputs_reads_macro_micro_selection_info():
+    class Result:
+        pass
+
+    assert _cluster_label_names_for_outputs(Result(), {"label_names": {"0": "M1-a", 1: "M1-b"}}) == {
+        0: "M1-a",
+        1: "M1-b",
+    }
 
 
 def test_quadrant_heatmap_matrix_reports_missing_labels():

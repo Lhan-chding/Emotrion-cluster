@@ -1394,6 +1394,12 @@ def _normalize_cluster_label_names(cluster_label_names: Optional[Dict[Any, Any]]
     return normalized
 
 
+def _cluster_label_names_for_outputs(k_result: Any, selection_info: Dict[str, Any]) -> Dict[int, str]:
+    if isinstance(k_result, HierarchicalClusterResult):
+        return _normalize_cluster_label_names(k_result.label_names)
+    return _normalize_cluster_label_names(selection_info.get("label_names"))
+
+
 def _parse_macro_micro_label(label: str) -> Optional[Tuple[int, int, str]]:
     text = str(label or "").strip()
     if not text.startswith("M"):
@@ -2175,6 +2181,7 @@ def main() -> None:
 
     # Resolve GMM model and selected_k depending on strategy
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
+    cluster_output_label_names = _cluster_label_names_for_outputs(k_result, selection_info)
 
     # Block hierarchical + complete_first combination
     if assignment_mode in {"complete_first", "partial_likelihood"} and is_hierarchical:
@@ -2336,15 +2343,14 @@ def main() -> None:
             cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
-            cluster_label_names=k_result.label_names if is_hierarchical else None,
+            cluster_label_names=cluster_output_label_names,
         )
         split_outputs[split] = payload
 
-    # Save hierarchical label names if applicable
-    if is_hierarchical:
-        label_names_path = os.path.join(out_dir, "hierarchical_label_names.json")
+    if cluster_output_label_names:
+        label_names_path = os.path.join(out_dir, "cluster_label_names.json")
         with open(label_names_path, "w", encoding="utf-8") as f:
-            json.dump({str(k): v for k, v in k_result.label_names.items()}, f, ensure_ascii=False, indent=2)
+            json.dump({str(k): v for k, v in cluster_output_label_names.items()}, f, ensure_ascii=False, indent=2)
 
     pipeline_summary = {
         "processed_dir": str(args.processed_dir),
@@ -2384,7 +2390,10 @@ def main() -> None:
     }
     if is_hierarchical:
         pipeline_summary["macro_k"] = k_result.macro_k
-        pipeline_summary["label_names"] = {str(k): v for k, v in k_result.label_names.items()}
+    elif "macro_k" in selection_info:
+        pipeline_summary["macro_k"] = int(selection_info["macro_k"])
+    if cluster_output_label_names:
+        pipeline_summary["label_names"] = {str(k): v for k, v in cluster_output_label_names.items()}
     if "min_cluster_size_threshold" in selection_info:
         pipeline_summary["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
 
@@ -2405,7 +2414,10 @@ def main() -> None:
     print(f"  - selected_k: {selected_k}")
     if is_hierarchical:
         print(f"  - macro_k: {k_result.macro_k}")
-        print(f"  - label_names: {k_result.label_names}")
+    elif "macro_k" in selection_info:
+        print(f"  - macro_k: {selection_info['macro_k']}")
+    if cluster_output_label_names:
+        print(f"  - label_names: {cluster_output_label_names}")
     print("  - training_history.csv")
     print("  - training_curves.png")
     print("  - pipeline_summary.json")

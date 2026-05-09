@@ -21,6 +21,7 @@ from cluster.models.discovery_net import (
 from cluster.pipeline.k_selection import HierarchicalClusterResult
 from cluster.pipeline.train import (
     _build_cluster_features,
+    _cluster_label_names_for_outputs,
     _dataset_mean_va,
     _ensure_dir,
     _parse_eval_splits,
@@ -320,6 +321,7 @@ def main() -> None:
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
+    cluster_output_label_names = _cluster_label_names_for_outputs(k_result, selection_info)
 
     # Block hierarchical + complete_first combination
     if assignment_mode in {"complete_first", "partial_likelihood"} and is_hierarchical:
@@ -477,16 +479,16 @@ def main() -> None:
             cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
-            cluster_label_names=k_result.label_names if is_hierarchical else None,
+            cluster_label_names=cluster_output_label_names,
         )
         split_outputs[split] = payload
         if split == search_split:
             search_assignments = assignments
 
-    if is_hierarchical:
-        label_names_path = os.path.join(out_dir, "hierarchical_label_names.json")
+    if cluster_output_label_names:
+        label_names_path = os.path.join(out_dir, "cluster_label_names.json")
         with open(label_names_path, "w", encoding="utf-8") as f:
-            json.dump({str(k): v for k, v in k_result.label_names.items()}, f, ensure_ascii=False, indent=2)
+            json.dump({str(k): v for k, v in cluster_output_label_names.items()}, f, ensure_ascii=False, indent=2)
 
     summary = {
         "processed_dir": str(args.processed_dir),
@@ -515,7 +517,10 @@ def main() -> None:
     }
     if is_hierarchical:
         summary["macro_k"] = k_result.macro_k
-        summary["label_names"] = {str(k): v for k, v in k_result.label_names.items()}
+    elif "macro_k" in selection_info:
+        summary["macro_k"] = int(selection_info["macro_k"])
+    if cluster_output_label_names:
+        summary["label_names"] = {str(k): v for k, v in cluster_output_label_names.items()}
     if "min_cluster_size_threshold" in selection_info:
         summary["min_cluster_size_threshold"] = int(selection_info["min_cluster_size_threshold"])
 
