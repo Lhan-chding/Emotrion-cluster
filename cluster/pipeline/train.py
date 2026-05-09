@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
+from scipy.stats import hypergeom
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -1175,6 +1176,33 @@ def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
     return _dataset_mean_va(dataset)
 
 
+METADATA_MIN_GLOBAL_SUPPORT = 10
+METADATA_MIN_CLUSTER_SUPPORT = 5
+
+
+def _split_metadata_feature_name(name: str) -> Tuple[str, str]:
+    text = str(name)
+    if "::" not in text:
+        return "metadata", text
+    field, token = text.split("::", 1)
+    return field, token
+
+
+def _benjamini_hochberg_qvalues(p_values: Sequence[float]) -> np.ndarray:
+    values = np.asarray(p_values, dtype=np.float64)
+    if values.size == 0:
+        return values
+    order = np.argsort(values)
+    ranked = values[order]
+    n = float(values.size)
+    adjusted = ranked * n / np.arange(1, values.size + 1, dtype=np.float64)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    adjusted = np.clip(adjusted, 0.0, 1.0)
+    out = np.empty_like(adjusted)
+    out[order] = adjusted
+    return out
+
+
 def _cluster_summary(
     assignments: np.ndarray,
     dataset,
@@ -1191,11 +1219,17 @@ def _cluster_summary(
     numeric_indices = [idx for idx, name in enumerate(metadata_feature_names) if str(name).startswith("numeric::")]
     token_indices = [idx for idx, name in enumerate(metadata_feature_names) if not str(name).startswith("numeric::")]
     token_global_rates = {}
+    token_global_supports = {}
     if token_indices:
         token_values = raw_metadata[:, token_indices] > 0.0
         global_rates = token_values.mean(axis=0)
+        global_supports = token_values.sum(axis=0)
         token_global_rates = {
             feature_idx: float(global_rates[rel_idx])
+            for rel_idx, feature_idx in enumerate(token_indices)
+        }
+        token_global_supports = {
+            feature_idx: int(global_supports[rel_idx])
             for rel_idx, feature_idx in enumerate(token_indices)
         }
 
@@ -1214,27 +1248,56 @@ def _cluster_summary(
             cluster_token_values = raw_metadata[mask][:, token_indices] > 0.0
             cluster_rates = cluster_token_values.mean(axis=0)
             supports = cluster_token_values.sum(axis=0)
-            enrichment = np.divide(
-                cluster_rates,
-                np.maximum(np.asarray([token_global_rates[token_indices[idx]] for idx in range(len(token_indices))]), 1e-8),
-            )
-            order = np.lexsort((-supports, -cluster_rates, -enrichment))[:10]
-            for rel_idx in order.tolist():
+            eligible_entries: List[Dict[str, Any]] = []
+            for rel_idx in range(len(token_indices)):
                 cluster_rate = float(cluster_rates[rel_idx])
                 if cluster_rate <= 0:
                     continue
                 feature_idx = token_indices[rel_idx]
+                cluster_support = int(supports[rel_idx])
+                global_support = int(token_global_supports.get(feature_idx, 0))
+                if (
+                    cluster_support < METADATA_MIN_CLUSTER_SUPPORT
+                    or global_support < METADATA_MIN_GLOBAL_SUPPORT
+                ):
+                    continue
                 population_rate = float(token_global_rates[feature_idx])
-                top_tokens.append(
+                p_value = float(
+                    hypergeom.sf(
+                        cluster_support - 1,
+                        len(assignments),
+                        global_support,
+                        cluster_size,
+                    )
+                )
+                field, token = _split_metadata_feature_name(str(metadata_feature_names[feature_idx]))
+                eligible_entries.append(
                     {
                         "feature": str(metadata_feature_names[feature_idx]),
+                        "field": field,
+                        "token": token,
                         "cluster_rate": cluster_rate,
                         "population_rate": population_rate,
                         "enrichment": float(cluster_rate / max(population_rate, 1e-8)),
-                        "support": int(supports[rel_idx]),
+                        "support": cluster_support,
+                        "global_support": global_support,
+                        "p_value": p_value,
                         "mean_weight": float(raw_metadata[mask][:, feature_idx].mean()),
                     }
                 )
+            q_values = _benjamini_hochberg_qvalues([entry["p_value"] for entry in eligible_entries])
+            for entry, q_value in zip(eligible_entries, q_values.tolist()):
+                entry["q_value"] = float(q_value)
+            top_tokens = sorted(
+                eligible_entries,
+                key=lambda item: (
+                    item["q_value"],
+                    item["p_value"],
+                    -item["enrichment"],
+                    -item["support"],
+                    item["feature"],
+                ),
+            )[:10]
 
         numeric_means: Dict[str, float] = {}
         for feature_idx in numeric_indices:
@@ -1374,6 +1437,15 @@ def _write_split_outputs(
                     str(entry["feature"]).split("::", 1)[-1]
                     for entry in item.get("top_metadata_tokens", [])[:5]
                 ),
+                "top_metadata_token_stats": "; ".join(
+                    (
+                        f"{entry.get('field', 'metadata')}::{entry.get('token', str(entry['feature']).split('::', 1)[-1])}"
+                        f"(n={int(entry.get('support', 0))},"
+                        f"N={int(entry.get('global_support', 0))},"
+                        f"q={float(entry.get('q_value', 1.0)):.3g})"
+                    )
+                    for entry in item.get("top_metadata_tokens", [])[:5]
+                ),
             }
             for item in summary
         ]
@@ -1426,6 +1498,12 @@ def _write_split_outputs(
         "feature_dim": int(feature_dim),
         "num_samples": int(len(assignments)),
         "plot_va_source": str(plot_va_source),
+        "metadata_token_thresholds": {
+            "min_global_support": int(METADATA_MIN_GLOBAL_SUPPORT),
+            "min_cluster_support": int(METADATA_MIN_CLUSTER_SUPPORT),
+            "fdr_method": "benjamini_hochberg",
+            "p_value_test": "hypergeometric_right_tail",
+        },
         "cluster_summary": summary,
         "output_files": {
             "cluster_assignments": assignment_path,
@@ -1494,7 +1572,10 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
         cluster_preview = payload["cluster_summary"][:5]
         for cluster in cluster_preview:
             tokens = ", ".join(
-                str(item["feature"]).split("::", 1)[-1]
+                (
+                    f"{str(item['feature']).split('::', 1)[-1]}"
+                    f" (n={int(item.get('support', 0))}, q={float(item.get('q_value', 1.0)):.3g})"
+                )
                 for item in cluster.get("top_metadata_tokens", [])[:3]
             )
             diff_ratio = cluster.get("diff_observed_ratio", -1)

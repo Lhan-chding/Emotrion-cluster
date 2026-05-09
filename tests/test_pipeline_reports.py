@@ -1,9 +1,11 @@
 import numpy as np
+import pandas as pd
 
 from cluster.pipeline.train import (
     _dataset_plot_va,
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
+    _cluster_summary,
     build_parser,
     apply_cluster_feature_weights,
     build_cluster_features,
@@ -495,6 +497,50 @@ def test_cluster_feature_pca_plot_writes_actual_gmm_feature_projection(tmp_path)
 
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def test_cluster_summary_filters_low_support_metadata_tokens_with_fdr():
+    class Dataset:
+        raw_audio = np.full((20, 2), 0.5, dtype=np.float32)
+        raw_lyrics = np.full((20, 2), 0.5, dtype=np.float32)
+        view_mask = np.ones((20, 3), dtype=np.float32)
+        labels = np.zeros(20, dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(20)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(20)])
+        consistency = np.ones(20, dtype=np.float32)
+        va_diff = np.zeros((20, 2), dtype=np.float32)
+        canonical_metadata = pd.DataFrame()
+
+    metadata = np.zeros((20, 3), dtype=np.float32)
+    metadata[:2, 0] = 1.0
+    metadata[:8, 1] = 1.0
+    metadata[10:12, 1] = 1.0
+    metadata[:, 2] = 1.0
+    Dataset.raw_metadata = metadata
+    Dataset.raw_metadata_report = metadata
+
+    summary = _cluster_summary(
+        assignments=np.asarray([0] * 10 + [1] * 10, dtype=np.int64),
+        dataset=Dataset(),
+        metadata_feature_names=[
+            "Genres::rare-low-support",
+            "MoodsAll::bright",
+            "Themes::common",
+        ],
+    )
+
+    cluster_zero_tokens = summary[0]["top_metadata_tokens"]
+    token_names = [item["feature"] for item in cluster_zero_tokens]
+    assert "Genres::rare-low-support" not in token_names
+    assert "MoodsAll::bright" in token_names
+
+    bright = next(item for item in cluster_zero_tokens if item["feature"] == "MoodsAll::bright")
+    assert bright["field"] == "MoodsAll"
+    assert bright["token"] == "bright"
+    assert bright["support"] == 8
+    assert bright["global_support"] == 10
+    assert 0.0 <= bright["p_value"] <= bright["q_value"] <= 1.0
+    assert all(item["support"] >= 5 and item["global_support"] >= 10 for item in cluster_zero_tokens)
 
 
 def test_full_strategy_no_missingness_leakage():
