@@ -313,6 +313,22 @@ class VAHead(nn.Module):
         return self.net(z)
 
 
+class SignedDiffHead(nn.Module):
+    """Predicts signed audio-minus-lyrics VA delta from a latent vector."""
+
+    def __init__(self, latent_dim: int, hidden_dim: int = 64) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(latent_dim), int(hidden_dim)),
+            nn.ReLU(),
+            nn.Linear(int(hidden_dim), 2),
+            nn.Tanh(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
 class DECClusterHead(nn.Module):
     def __init__(self, n_clusters: int, latent_dim: int, temperature: float = 1.0) -> None:
         super().__init__()
@@ -414,6 +430,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
             dropout=dropout,
         )
         self.va_head = VAHead(latent_dim=latent_dim)
+        self.signed_diff_head = SignedDiffHead(latent_dim=latent_dim)
         # Gate weight initialization: Xavier for learning, asymmetric bias
         for layer in self.gate_mlp:
             if isinstance(layer, nn.Linear):
@@ -521,6 +538,8 @@ class MusicMetadataDiscoveryNet(nn.Module):
 
         # VA head: predict consensus VA from fused latent
         va_pred = self.va_head(fused)
+        signed_diff_pred = self.signed_diff_head(z_diff)
+        pair_signed_diff_pred = self.signed_diff_head(z_audio - z_lyrics)
 
         outputs = {
             "z_audio": z_audio,
@@ -539,6 +558,8 @@ class MusicMetadataDiscoveryNet(nn.Module):
             "gate_weights": gate_weights,
             "z_diff": z_diff,
             "va_pred": va_pred,
+            "signed_diff_pred": signed_diff_pred,
+            "pair_signed_diff_pred": pair_signed_diff_pred,
         }
         if self.cluster_head is not None:
             outputs.update(
@@ -648,8 +669,17 @@ def _discovery_loss(
     audio_lyrics_mask = audio_mask * lyrics_mask
     audio_metadata_mask = audio_mask * metadata_mask
     lyrics_metadata_mask = lyrics_mask * metadata_mask
+    signed_va_diff = batch.get("signed_va_diff")
+    align_agreement = consistency
+    if signed_va_diff is not None:
+        signed_va_diff = signed_va_diff.to(device=audio.device, dtype=audio.dtype)
+        if signed_va_diff.ndim == 2 and signed_va_diff.shape[1] == 2:
+            diff_gap = torch.norm(signed_va_diff, dim=1)
+            # Similar audio/lyrics pairs should align; large signed disagreements
+            # should be allowed to remain separated so diff information survives.
+            align_agreement = torch.exp(-3.0 * diff_gap)
     align_audio_lyrics = _masked_mean(
-        consistency * _cosine_distance(outputs["proj_audio"], outputs["proj_lyrics"]),
+        align_agreement * _cosine_distance(outputs["proj_audio"], outputs["proj_lyrics"]),
         audio_lyrics_mask,
     )
     align_audio_metadata = _masked_mean(
@@ -675,10 +705,10 @@ def _discovery_loss(
 
     # Disagreement preservation: keep latent distance proportional to VA distance
     if diff_preserve_weight > 0:
-        signed_va_diff = batch.get("signed_va_diff")
         diff_obs = batch.get("diff_observed")
         if signed_va_diff is not None and diff_obs is not None:
-            diff_mask = (diff_obs > 0.0).to(dtype=audio.dtype)
+            signed_va_diff = signed_va_diff.to(device=audio.device, dtype=audio.dtype)
+            diff_mask = (diff_obs > 0.0).to(device=audio.device, dtype=audio.dtype)
             if diff_mask.any():
                 z_dist = torch.norm(outputs["z_audio"] - outputs["z_lyrics"], dim=1)
                 z_diff_dist = torch.norm(outputs["z_diff"], dim=1)
@@ -686,8 +716,30 @@ def _discovery_loss(
                 alpha = 0.5
                 latent_pair_loss = F.smooth_l1_loss(z_dist, alpha * va_dist, reduction="none")
                 diff_latent_loss = F.smooth_l1_loss(z_diff_dist, alpha * va_dist, reduction="none")
+                magnitude_loss = 0.5 * (latent_pair_loss + diff_latent_loss)
+                signed_terms = []
+                nonzero_target = (va_dist > 1e-6).to(dtype=audio.dtype)
+                for pred_key in ("signed_diff_pred", "pair_signed_diff_pred"):
+                    pred = outputs.get(pred_key)
+                    if pred is None:
+                        continue
+                    vector_loss = F.smooth_l1_loss(
+                        pred,
+                        signed_va_diff,
+                        reduction="none",
+                    ).mean(dim=1)
+                    direction_loss = (
+                        1.0
+                        - F.cosine_similarity(pred, signed_va_diff, dim=1, eps=1e-8)
+                    ) * nonzero_target
+                    signed_terms.append(vector_loss + 0.25 * direction_loss)
+                if signed_terms:
+                    signed_loss = torch.stack(signed_terms, dim=0).mean(dim=0)
+                    per_sample_diff_loss = 0.65 * signed_loss + 0.35 * magnitude_loss
+                else:
+                    per_sample_diff_loss = magnitude_loss
                 diff_preserve_loss = _masked_mean(
-                    0.5 * (latent_pair_loss + diff_latent_loss),
+                    per_sample_diff_loss,
                     diff_mask,
                 )
 
@@ -1214,7 +1266,7 @@ def load_music_discovery_checkpoint(
     ).to(device)
 
     load_result = model.load_state_dict(state_dict, strict=False)
-    allowed_missing_prefixes = ("diff_encoder.", "va_head.")
+    allowed_missing_prefixes = ("diff_encoder.", "va_head.", "signed_diff_head.")
     disallowed_missing = [
         key for key in load_result.missing_keys
         if not key.startswith(allowed_missing_prefixes)

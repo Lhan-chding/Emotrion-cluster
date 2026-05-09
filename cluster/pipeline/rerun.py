@@ -438,6 +438,7 @@ def main() -> None:
             metadata_feature_names=datasets.metadata_feature_names,
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
+            cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
         )

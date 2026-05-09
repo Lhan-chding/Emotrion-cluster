@@ -165,3 +165,99 @@ def test_diff_preserve_loss_trains_diff_encoder():
         for param in model.diff_encoder.parameters()
     )
     assert grad_total > 0.0
+
+
+def _minimal_loss_tensors():
+    audio = torch.zeros((2, 2), dtype=torch.float32)
+    lyrics = torch.zeros((2, 2), dtype=torch.float32)
+    metadata = torch.zeros((2, 1), dtype=torch.float32)
+    latent = torch.zeros((2, 4), dtype=torch.float32)
+    gate = torch.full((2, 3), 1.0 / 3.0, dtype=torch.float32)
+    outputs = {
+        "z_audio": latent,
+        "z_lyrics": latent,
+        "z_metadata": latent,
+        "z_fused": latent,
+        "z_diff": latent,
+        "audio_recon": audio,
+        "lyrics_recon": lyrics,
+        "metadata_recon": metadata,
+        "fused_audio_recon": audio,
+        "fused_lyrics_recon": lyrics,
+        "proj_audio": torch.tensor([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
+        "proj_lyrics": torch.tensor([[0.0, 1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=torch.float32),
+        "proj_metadata": latent,
+        "proj_fused": latent,
+        "gate_weights": gate,
+        "va_pred": audio,
+    }
+    batch = {
+        "audio": audio,
+        "lyrics": lyrics,
+        "metadata": metadata,
+        "view_mask": torch.ones((2, 3), dtype=torch.float32),
+        "consistency": torch.ones(2, dtype=torch.float32),
+        "va_diff": torch.zeros((2, 2), dtype=torch.float32),
+        "signed_va_diff": torch.tensor([[0.4, -0.2], [-0.3, 0.5]], dtype=torch.float32),
+        "diff_observed": torch.ones(2, dtype=torch.float32),
+        "mean_va": torch.zeros((2, 2), dtype=torch.float32),
+    }
+    return outputs, batch
+
+
+def test_diff_preserve_loss_is_signed_vector_aware():
+    outputs, batch = _minimal_loss_tensors()
+    matching = dict(outputs)
+    matching["signed_diff_pred"] = batch["signed_va_diff"].clone()
+    matching["pair_signed_diff_pred"] = batch["signed_va_diff"].clone()
+    flipped = dict(outputs)
+    flipped["signed_diff_pred"] = -batch["signed_va_diff"]
+    flipped["pair_signed_diff_pred"] = -batch["signed_va_diff"]
+
+    matching_losses = _discovery_loss(
+        outputs=matching,
+        batch=batch,
+        metadata_recon_weight=0.0,
+        fused_recon_weight=0.0,
+        align_weight=0.0,
+        metadata_align_weight=0.0,
+        diff_preserve_weight=1.0,
+    )
+    flipped_losses = _discovery_loss(
+        outputs=flipped,
+        batch=batch,
+        metadata_recon_weight=0.0,
+        fused_recon_weight=0.0,
+        align_weight=0.0,
+        metadata_align_weight=0.0,
+        diff_preserve_weight=1.0,
+    )
+
+    assert matching_losses["diff_preserve"].item() < flipped_losses["diff_preserve"].item()
+
+
+def test_audio_lyrics_alignment_downweights_large_signed_disagreement():
+    outputs, batch = _minimal_loss_tensors()
+    small_gap = dict(batch)
+    small_gap["signed_va_diff"] = torch.tensor([[0.02, 0.01], [0.01, -0.02]], dtype=torch.float32)
+    large_gap = dict(batch)
+    large_gap["signed_va_diff"] = torch.tensor([[0.8, -0.7], [-0.75, 0.6]], dtype=torch.float32)
+
+    small_losses = _discovery_loss(
+        outputs=outputs,
+        batch=small_gap,
+        metadata_recon_weight=0.0,
+        fused_recon_weight=0.0,
+        align_weight=1.0,
+        metadata_align_weight=0.0,
+    )
+    large_losses = _discovery_loss(
+        outputs=outputs,
+        batch=large_gap,
+        metadata_recon_weight=0.0,
+        fused_recon_weight=0.0,
+        align_weight=1.0,
+        metadata_align_weight=0.0,
+    )
+
+    assert large_losses["align_audio_lyrics"].item() < small_losses["align_audio_lyrics"].item()

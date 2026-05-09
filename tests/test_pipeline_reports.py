@@ -2,6 +2,7 @@ import numpy as np
 
 from cluster.pipeline.train import (
     _dataset_plot_va,
+    _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
     apply_cluster_feature_weights,
     build_cluster_features,
@@ -302,6 +303,26 @@ def test_dataset_plot_va_can_use_original_va():
         original_va = np.asarray([[0.7, 0.6], [0.3, 0.4]], dtype=np.float32)
 
     np.testing.assert_allclose(_dataset_plot_va(Dataset(), "original"), Dataset.original_va)
+
+
+def test_cluster_feature_pca_plot_writes_actual_gmm_feature_projection(tmp_path):
+    features = np.asarray(
+        [
+            [0.0, 0.1, 0.2],
+            [0.1, 0.0, 0.3],
+            [3.0, 3.1, 2.9],
+            [3.2, 3.0, 3.1],
+        ],
+        dtype=np.float32,
+    )
+    assignments = np.asarray([0, 0, 1, 1], dtype=np.int64)
+    palette = {0: "#cc3333", 1: "#3366dd"}
+    out_path = tmp_path / "cluster_feature_pca.png"
+
+    _plot_cluster_feature_pca(features, assignments, str(out_path), palette)
+
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
 
 
 def test_full_strategy_no_missingness_leakage():

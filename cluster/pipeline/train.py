@@ -8,6 +8,9 @@ import pickle
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -850,6 +853,47 @@ def _plot_cluster_latent_pca(
     plt.close(fig)
 
 
+def _plot_cluster_feature_pca(
+    features: np.ndarray,
+    assignments: np.ndarray,
+    out_path: str,
+    palette: Dict[int, str],
+) -> bool:
+    matrix = np.asarray(features, dtype=np.float32)
+    if matrix.ndim != 2:
+        raise ValueError(f"cluster features must be 2D, got shape {matrix.shape}.")
+    n_components = min(2, matrix.shape[1], matrix.shape[0])
+    if n_components < 2:
+        return False
+    coords = PCA(n_components=2, random_state=42).fit_transform(matrix)
+    cluster_ids = sorted(np.unique(assignments).tolist())
+    colors = [palette[int(item)] for item in assignments.tolist()]
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(
+        coords[:, 0],
+        coords[:, 1],
+        c=colors,
+        s=34,
+        alpha=0.85,
+        edgecolors="none",
+    )
+    ax.set_xlabel("Feature PCA-1")
+    ax.set_ylabel("Feature PCA-2")
+    ax.set_title("Clusters on Actual GMM Feature PCA")
+    ax.legend(
+        handles=_legend_handles(palette, cluster_ids),
+        title="Cluster",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=False,
+        ncol=1,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+    return True
+
+
 def _plot_cluster_size_bar(assignments: np.ndarray, out_path: str, palette: Dict[int, str]) -> None:
     unique, counts = np.unique(assignments, return_counts=True)
     fig, ax = plt.subplots(figsize=(7, 4))
@@ -1215,6 +1259,7 @@ def _write_split_outputs(
     metadata_feature_names: Sequence[str],
     selected_k: int,
     feature_dim: int,
+    cluster_features: Optional[np.ndarray] = None,
     search_metrics: Optional[pd.DataFrame] = None,
     plot_va_source: str = "mean",
 ) -> Dict[str, Any]:
@@ -1256,6 +1301,7 @@ def _write_split_outputs(
     catalog_path = os.path.join(out_dir, "cluster_catalog.csv")
     scatter_path = os.path.join(out_dir, "cluster_scatter_mean_va.png")
     latent_pca_path = os.path.join(out_dir, "cluster_pca_fused.png")
+    feature_pca_path = os.path.join(out_dir, "cluster_pca_features.png")
     size_bar_path = os.path.join(out_dir, "cluster_size_bar.png")
     quadrant_heatmap_path = os.path.join(out_dir, "cluster_quadrant_heatmap.png")
     gate_profile_path = os.path.join(out_dir, "cluster_gate_profile.png")
@@ -1268,6 +1314,9 @@ def _write_split_outputs(
     catalog_frame.to_csv(catalog_path, index=False, encoding="utf-8")
     _plot_cluster_scatter(mean_va, assignments, scatter_path, palette)
     _plot_cluster_latent_pca(embeddings["z_fused"], assignments, latent_pca_path, palette)
+    feature_pca_written = False
+    if cluster_features is not None:
+        feature_pca_written = _plot_cluster_feature_pca(cluster_features, assignments, feature_pca_path, palette)
     _plot_cluster_size_bar(assignments, size_bar_path, palette)
     _plot_quadrant_heatmap(assignments, dataset.labels, quadrant_heatmap_path)
     _plot_gate_profiles(assignments, embeddings["gate_weights"], gate_profile_path)
@@ -1302,6 +1351,7 @@ def _write_split_outputs(
             "cluster_summary": summary_path,
             "cluster_scatter": scatter_path,
             "cluster_pca_fused": latent_pca_path,
+            "cluster_pca_features": feature_pca_path if feature_pca_written else None,
             "cluster_size_bar": size_bar_path,
             "cluster_quadrant_heatmap": quadrant_heatmap_path,
             "cluster_gate_profile": gate_profile_path,
@@ -1356,6 +1406,9 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
         lines.append(f"### {split}")
         lines.append("")
         lines.append(f"- Samples: `{payload['num_samples']}`")
+        feature_pca = payload.get("output_files", {}).get("cluster_pca_features")
+        if feature_pca:
+            lines.append(f"- Actual GMM feature PCA: `{feature_pca}`")
         cluster_preview = payload["cluster_summary"][:5]
         for cluster in cluster_preview:
             tokens = ", ".join(
@@ -1831,6 +1884,7 @@ def main() -> None:
             metadata_feature_names=datasets.metadata_feature_names,
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
+            cluster_features=features,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
         )
