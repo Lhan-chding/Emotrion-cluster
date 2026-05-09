@@ -287,7 +287,8 @@ def main() -> None:
         feature_weights,
     )
     search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
-    k_strategy = "composite" if str(args.k_strategy).strip().lower() == "semantic_composite" else str(args.k_strategy).strip().lower()
+    k_strategy = str(args.k_strategy).strip().lower()
+    block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -305,6 +306,9 @@ def main() -> None:
         silhouette_sample_size=int(args.silhouette_sample_size),
         silhouette_chunk_size=int(args.silhouette_chunk_size),
         view_mask=search_view_mask,
+        assignment_mode=assignment_mode,
+        block_mask=search_block_mask,
+        block_slices=block_slices,
     )
 
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
@@ -352,17 +356,6 @@ def main() -> None:
     elif assignment_mode == "partial_likelihood":
         if str(args.covariance_type) != "diag":
             raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
-        from cluster.backends.partial_gmm import PartialGaussianMixture
-
-        block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
-        gmm_model = PartialGaussianMixture(
-            n_components=selected_k,
-            block_slices=block_slices,
-            covariance_type="diag",
-            reg_covar=1e-5,
-            n_init=10,
-            random_state=int(args.random_state),
-        ).fit(search_features, block_mask=search_block_mask)
         selection_info["partial_likelihood"] = True
         selection_info["feature_block_slices"] = block_slices
 
@@ -536,7 +529,7 @@ def main() -> None:
         "actual_eval_backend": str(selection_info.get("actual_eval_backend", args.eval_backend)),
         "epochs": sidecar.get("config", {}).get("epochs", "raw_feature_only" if not requires_checkpoint else "reused"),
         "latent_dim": sidecar.get("config", {}).get("latent_dim", "raw_feature_only" if not requires_checkpoint else "reused"),
-        "metadata_feature_dim": len(datasets.metadata_feature_names),
+        "metadata_feature_dim": int(datasets.train_dataset.metadata.shape[1]),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": os.path.join(str(args.run_dir), "training_history.csv") if args.run_dir else None,

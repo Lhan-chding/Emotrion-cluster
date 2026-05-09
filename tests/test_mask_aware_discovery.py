@@ -119,6 +119,7 @@ def test_model_gate_and_loss_are_mask_aware():
         ),
     }
     assert model.gate_mlp[0].in_features == 4 * 3 + 20
+    assert model.cluster_fusion_mlp[0].in_features == 4 * 3
 
     outputs = model(
         audio=batch["audio"],
@@ -132,6 +133,11 @@ def test_model_gate_and_loss_are_mask_aware():
 
     assert outputs["metadata_recon"].shape == (2, 2)
     assert outputs["z_consensus"].shape == outputs["z_cluster"].shape == (2, 4)
+    np.testing.assert_allclose(
+        outputs["z_affect"].detach().numpy(),
+        outputs["z_fused"].detach().numpy(),
+        atol=1e-6,
+    )
     assert outputs["z_tension"].shape == (2, 4)
     assert outputs["gate_weights"][1, 0].item() == 0.0
     assert outputs["gate_weights"][1, 2].item() == 0.0
@@ -149,3 +155,42 @@ def test_model_gate_and_loss_are_mask_aware():
     )
     assert torch.isfinite(losses["loss"])
     assert torch.isfinite(losses["recon_metadata"])
+
+
+def test_cluster_head_makes_z_affect_trainable_cluster_latent():
+    model = MusicMetadataDiscoveryNet(
+        audio_dim=2,
+        lyrics_dim=2,
+        metadata_dim=1,
+        latent_dim=4,
+        hidden_dim=8,
+        metadata_hidden_dim=8,
+        gate_hidden_dim=12,
+        cluster_head_k=3,
+    )
+    batch = {
+        "audio": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        "lyrics": torch.tensor([[1.5, 2.5], [3.5, 4.5]], dtype=torch.float32),
+        "metadata": torch.tensor([[1.0], [0.5]], dtype=torch.float32),
+        "view_mask": torch.ones((2, 3), dtype=torch.float32),
+        "consistency": torch.ones(2, dtype=torch.float32),
+        "va_diff": torch.zeros((2, 2), dtype=torch.float32),
+        "va_geometry": torch.ones((2, 17), dtype=torch.float32),
+    }
+
+    outputs = model(
+        audio=batch["audio"],
+        lyrics=batch["lyrics"],
+        metadata=batch["metadata"],
+        consistency=batch["consistency"],
+        va_diff=batch["va_diff"],
+        va_geometry=batch["va_geometry"],
+        view_mask=batch["view_mask"],
+    )
+
+    np.testing.assert_allclose(
+        outputs["z_affect"].detach().numpy(),
+        outputs["z_cluster"].detach().numpy(),
+        atol=1e-6,
+    )
+    assert outputs["q_fused"].shape == (2, 3)

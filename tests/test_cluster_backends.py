@@ -6,7 +6,7 @@ from sklearn.metrics import silhouette_score
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.torch_gmm_backend import TorchGaussianMixture
 from cluster.backends.torch_metrics import torch_silhouette_score_chunked
-from cluster.pipeline.k_selection import KSelectionConfig, _score_silhouette, search_gmm_bic_only
+from cluster.pipeline.k_selection import KSelectionConfig, _score_silhouette, search_gmm_bic_only, search_gmm_composite
 
 
 def _two_blob_features():
@@ -150,3 +150,23 @@ def test_bic_search_can_use_torch_backend():
     assert result.selection_info["actual_eval_backend"] == "torch"
     assert result.selection_info["device"] == "cpu"
     assert np.isfinite(float(result.metrics.loc[0, "bic"]))
+
+
+def test_composite_k_selection_fails_when_no_k_satisfies_min_size():
+    features = _two_blob_features()
+
+    with pytest.raises(ValueError, match="No K candidate satisfied"):
+        search_gmm_composite(
+            features,
+            KSelectionConfig(
+                k_min=2,
+                k_max=2,
+                min_cluster_size=4,
+                min_cluster_size_ratio=0.0,
+                stability_runs=1,
+                cluster_backend="sklearn",
+                eval_backend="sklearn",
+                silhouette_mode="sampled",
+                silhouette_sample_size=0,
+            ),
+        )

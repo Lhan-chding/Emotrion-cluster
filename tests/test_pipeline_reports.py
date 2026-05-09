@@ -4,9 +4,11 @@ from cluster.pipeline.train import (
     _dataset_plot_va,
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
+    build_parser,
     apply_cluster_feature_weights,
     build_cluster_features,
     cluster_feature_weights,
+    run_k_selection,
 )
 
 
@@ -295,9 +297,10 @@ def test_masked_diffaware_feature_weights_apply_after_scaling():
     np.testing.assert_allclose(weights[4:6], np.full(2, 0.75, dtype=np.float32))
 
 
-def test_macro_micro_diffaware_uses_cluster_tension_metadata_blocks():
+def test_macro_micro_diffaware_uses_trained_affect_tension_metadata_blocks():
     embeddings = {
         "z_cluster": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        "z_affect": np.asarray([[0.5, 1.5], [2.5, 3.5]], dtype=np.float32),
         "z_fused": np.asarray([[9.0, 9.0], [8.0, 8.0]], dtype=np.float32),
         "z_tension": np.asarray([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
         "z_diff": np.asarray([[7.0, 7.0], [6.0, 6.0]], dtype=np.float32),
@@ -314,9 +317,127 @@ def test_macro_micro_diffaware_uses_cluster_tension_metadata_blocks():
         diff_cluster_weight=0.35,
     )
 
-    np.testing.assert_allclose(features[:, :2], embeddings["z_cluster"])
+    np.testing.assert_allclose(features[:, :2], embeddings["z_affect"])
     np.testing.assert_allclose(features[:, 2:4], embeddings["z_tension"])
     np.testing.assert_allclose(features[:, 4:6], embeddings["z_metadata"])
+
+
+def test_macro_micro_diffaware_falls_back_to_trained_fused_when_affect_missing():
+    embeddings = {
+        "z_cluster": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        "z_fused": np.asarray([[9.0, 9.0], [8.0, 8.0]], dtype=np.float32),
+        "z_tension": np.asarray([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
+        "z_metadata": np.asarray([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+    }
+
+    features, _, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="macro_micro_diffaware",
+        diff_cluster_weight=0.35,
+    )
+
+    np.testing.assert_allclose(features[:, :2], embeddings["z_fused"])
+
+
+def test_semantic_composite_selection_is_not_plain_composite_alias():
+    features = np.asarray(
+        [
+            [-3.0, -3.0],
+            [-3.1, -2.9],
+            [-2.8, -3.2],
+            [3.0, 3.0],
+            [3.2, 2.9],
+            [2.9, 3.1],
+        ],
+        dtype=np.float32,
+    )
+
+    _model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="semantic_composite",
+        k_min=2,
+        k_max=2,
+        random_state=7,
+        min_cluster_size_abs=1,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=1,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+    )
+
+    assert info["selection_mode"] == "semantic_composite"
+    assert "semantic_composite_score" in metrics.columns
+
+
+def test_run_pipeline_parser_accepts_stage_alias_from_v5_plan():
+    args = build_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--stage",
+            "pretrain",
+        ]
+    )
+
+    assert args.run_stage == "pretrain"
+
+
+def test_partial_likelihood_k_selection_uses_masked_model():
+    features = np.asarray(
+        [
+            [-3.0, -9.0, -3.0],
+            [-2.8, -8.5, -2.9],
+            [-3.2, -9.5, -3.1],
+            [3.0, 9.0, 3.0],
+            [2.8, 8.5, 2.9],
+            [3.2, 9.5, 3.1],
+        ],
+        dtype=np.float32,
+    )
+    block_mask = np.asarray(
+        [
+            [True, True, True],
+            [True, False, True],
+            [True, True, True],
+            [True, True, True],
+            [True, False, True],
+            [True, True, True],
+        ],
+        dtype=bool,
+    )
+
+    model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="semantic_composite",
+        k_min=2,
+        k_max=2,
+        random_state=7,
+        min_cluster_size_abs=1,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=1,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+        assignment_mode="partial_likelihood",
+        block_mask=block_mask,
+        block_slices=[(0, 1), (1, 2), (2, 3)],
+    )
+
+    assert model.__class__.__name__ == "MaskedDiagonalGMM"
+    assert info["partial_likelihood"] is True
+    assert info["selection_mode"] == "masked_semantic_composite"
+    assert "masked_bic" in metrics.columns
 
 
 def test_dataset_plot_va_can_use_original_va():

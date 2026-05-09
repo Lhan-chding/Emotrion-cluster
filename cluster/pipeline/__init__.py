@@ -7,6 +7,8 @@ from cluster.pipeline.k_selection import (
     hierarchical_cluster,
     search_gmm_bic_only,
     search_gmm_composite,
+    search_gmm_semantic_composite,
+    search_masked_diag_gmm_composite,
 )
 from cluster.pipeline.train import (
     ClusterFeatureStrategy,
@@ -26,6 +28,8 @@ __all__ = [
     "KSearchResult",
     "HierarchicalClusterResult",
     "search_gmm_composite",
+    "search_gmm_semantic_composite",
+    "search_masked_diag_gmm_composite",
     "search_gmm_bic_only",
     "hierarchical_cluster",
     "compute_stability_score",

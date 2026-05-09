@@ -26,6 +26,8 @@ from cluster.pipeline.k_selection import (
     KSearchResult,
     HierarchicalClusterResult,
     search_gmm_composite,
+    search_gmm_semantic_composite,
+    search_masked_diag_gmm_composite,
     search_gmm_bic_only,
     hierarchical_cluster,
 )
@@ -60,7 +62,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=120)
-    parser.add_argument("--run_stage", type=str, default="train", choices=["train", "pretrain", "discover", "finetune", "full"])
+    parser.add_argument(
+        "--run_stage",
+        "--stage",
+        dest="run_stage",
+        type=str,
+        default="train",
+        choices=["train", "pretrain", "discover", "search", "finetune", "cluster_finetune", "evaluate", "full"],
+    )
     parser.add_argument("--pretrain_epochs", type=int, default=None)
     parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--learning_rate", type=float, default=5e-4)
@@ -413,11 +422,14 @@ def build_cluster_features(
     imputation_fill: Optional[np.ndarray] = None
 
     if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"}:
-        z_fused = embeddings.get("z_cluster" if base_strategy != "masked_diffaware" else "z_fused")
-        if z_fused is None:
+        if base_strategy == "masked_diffaware":
             z_fused = embeddings.get("z_fused")
+        else:
+            z_fused = embeddings.get("z_affect")
+            if z_fused is None:
+                z_fused = embeddings.get("z_fused")
         if z_fused is None:
-            raise ValueError(f"cluster_feature_strategy='{base_strategy}' requires z_fused or z_cluster embeddings.")
+            raise ValueError(f"cluster_feature_strategy='{base_strategy}' requires z_fused or z_affect embeddings.")
         z_fused = z_fused.astype(np.float32)
         z_tension = embeddings.get("z_tension", embeddings.get("z_diff"))
         if z_tension is None:
@@ -606,48 +618,53 @@ def run_k_selection(
     silhouette_sample_size: int = 0,
     silhouette_chunk_size: int = 4096,
     view_mask: Optional[np.ndarray] = None,
+    assignment_mode: str = "joint",
+    block_mask: Optional[np.ndarray] = None,
+    block_slices: Optional[Sequence[Sequence[int]]] = None,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
     Returns (gmm_model_or_result, metrics_df, selection_info).
     For 'hierarchical', the first element is a HierarchicalClusterResult.
     """
-    k_strategy = "composite" if str(k_strategy).strip().lower() == "semantic_composite" else str(k_strategy).strip().lower()
-    if k_strategy == "composite":
-        config = KSelectionConfig(
-            k_min=k_min,
-            k_max=k_max,
-            covariance_type=covariance_type,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size_abs,
-            min_cluster_size_ratio=min_cluster_size_ratio,
-            stability_runs=stability_runs,
-            cluster_backend=cluster_backend,
-            eval_backend=eval_backend,
-            device=device,
-            silhouette_mode=silhouette_mode,
-            silhouette_sample_size=silhouette_sample_size,
-            silhouette_chunk_size=silhouette_chunk_size,
+    k_strategy = str(k_strategy).strip().lower()
+    config = KSelectionConfig(
+        k_min=k_min,
+        k_max=k_max,
+        covariance_type=covariance_type,
+        random_state=random_state,
+        min_cluster_size=min_cluster_size_abs,
+        min_cluster_size_ratio=min_cluster_size_ratio,
+        stability_runs=stability_runs,
+        cluster_backend=cluster_backend,
+        eval_backend=eval_backend,
+        device=device,
+        silhouette_mode=silhouette_mode,
+        silhouette_sample_size=silhouette_sample_size,
+        silhouette_chunk_size=silhouette_chunk_size,
+    )
+    assignment_mode = str(assignment_mode or "joint").strip().lower()
+    if assignment_mode == "partial_likelihood":
+        if block_mask is None or block_slices is None:
+            raise ValueError("partial_likelihood K search requires block_mask and block_slices.")
+        result = search_masked_diag_gmm_composite(
+            features,
+            config,
+            block_mask=np.asarray(block_mask, dtype=bool),
+            block_slices=block_slices,
+            view_mask=view_mask,
+            semantic=k_strategy == "semantic_composite",
         )
+        return result.best_model, result.metrics, result.selection_info
+
+    if k_strategy == "composite":
         result = search_gmm_composite(features, config, view_mask=view_mask)
+        return result.best_model, result.metrics, result.selection_info
+    elif k_strategy == "semantic_composite":
+        result = search_gmm_semantic_composite(features, config, view_mask=view_mask)
         return result.best_model, result.metrics, result.selection_info
 
     elif k_strategy == "hierarchical":
-        config = KSelectionConfig(
-            k_min=k_min,
-            k_max=k_max,
-            covariance_type=covariance_type,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size_abs,
-            min_cluster_size_ratio=min_cluster_size_ratio,
-            stability_runs=stability_runs,
-            cluster_backend=cluster_backend,
-            eval_backend=eval_backend,
-            device=device,
-            silhouette_mode=silhouette_mode,
-            silhouette_sample_size=silhouette_sample_size,
-            silhouette_chunk_size=silhouette_chunk_size,
-        )
         hier_result = hierarchical_cluster(features, config)
         # Build a summary metrics DataFrame for reporting
         info = hier_result.info
@@ -673,21 +690,6 @@ def run_k_selection(
         return hier_result, metrics, selection_info
 
     else:  # bic_only (legacy)
-        config = KSelectionConfig(
-            k_min=k_min,
-            k_max=k_max,
-            covariance_type=covariance_type,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size_abs,
-            min_cluster_size_ratio=min_cluster_size_ratio,
-            stability_runs=stability_runs,
-            cluster_backend=cluster_backend,
-            eval_backend=eval_backend,
-            device=device,
-            silhouette_mode=silhouette_mode,
-            silhouette_sample_size=silhouette_sample_size,
-            silhouette_chunk_size=silhouette_chunk_size,
-        )
         result = search_gmm_bic_only(
             features=features,
             k_min=k_min,
@@ -1810,7 +1812,8 @@ def main() -> None:
         cluster_scaler.transform(search_features_raw).astype(np.float32),
         feature_weights,
     )
-    k_strategy = "composite" if str(args.k_strategy).strip().lower() == "semantic_composite" else str(args.k_strategy).strip().lower()
+    k_strategy = str(args.k_strategy).strip().lower()
+    block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -1828,6 +1831,9 @@ def main() -> None:
         silhouette_sample_size=int(args.silhouette_sample_size),
         silhouette_chunk_size=int(args.silhouette_chunk_size),
         view_mask=search_view_mask,
+        assignment_mode=assignment_mode,
+        block_mask=search_block_mask,
+        block_slices=block_slices,
     )
 
     # Resolve GMM model and selected_k depending on strategy
@@ -1876,17 +1882,6 @@ def main() -> None:
     elif assignment_mode == "partial_likelihood":
         if str(args.covariance_type) != "diag":
             raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
-        from cluster.backends.partial_gmm import PartialGaussianMixture
-
-        block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
-        gmm_model = PartialGaussianMixture(
-            n_components=selected_k,
-            block_slices=block_slices,
-            covariance_type="diag",
-            reg_covar=1e-5,
-            n_init=10,
-            random_state=int(args.random_state),
-        ).fit(search_features, block_mask=search_block_mask)
         selection_info["partial_likelihood"] = True
         selection_info["feature_block_slices"] = block_slices
 

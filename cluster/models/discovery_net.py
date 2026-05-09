@@ -452,7 +452,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
             dropout=dropout,
         )
         self.cluster_fusion_mlp = nn.Sequential(
-            nn.Linear(latent_dim * 3 + 3, hidden_dim),
+            nn.Linear(latent_dim * 3, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
@@ -564,7 +564,8 @@ class MusicMetadataDiscoveryNet(nn.Module):
         if diff_observed is None:
             diff_observed = torch.zeros(audio.shape[0], dtype=audio.dtype, device=audio.device)
         z_diff = self.diff_encoder(diff_features, diff_observed)
-        z_cluster = self.cluster_fusion_mlp(torch.cat([fused, z_diff, z_metadata, view_mask], dim=1))
+        z_cluster = self.cluster_fusion_mlp(torch.cat([fused, z_diff, z_metadata], dim=1))
+        z_affect = z_cluster if self.cluster_head is not None else fused
 
         # VA head: predict consensus VA from fused latent
         va_pred = self.va_head(fused)
@@ -579,6 +580,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
             "z_consensus": fused,
             "z_tension": z_diff,
             "z_cluster": z_cluster,
+            "z_affect": z_affect,
             "audio_recon": audio_recon,
             "lyrics_recon": lyrics_recon,
             "metadata_recon": metadata_recon,
@@ -600,7 +602,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
                     "q_audio": self.cluster_head(z_audio),
                     "q_lyrics": self.cluster_head(z_lyrics),
                     "q_metadata": self.cluster_head(z_metadata),
-                    "q_fused": self.cluster_head(z_cluster),
+                    "q_fused": self.cluster_head(z_affect),
                 }
             )
         return outputs
@@ -1147,6 +1149,7 @@ def extract_split_embeddings(
         "z_tension": [],
         "z_consensus": [],
         "z_cluster": [],
+        "z_affect": [],
     }
     identifiers: List[str] = []
     lyric_identifiers: List[str] = []
@@ -1188,6 +1191,7 @@ def extract_split_embeddings(
             blocks["z_tension"].append(outputs["z_tension"].cpu().numpy().astype(np.float32))
             blocks["z_consensus"].append(outputs["z_consensus"].cpu().numpy().astype(np.float32))
             blocks["z_cluster"].append(outputs["z_cluster"].cpu().numpy().astype(np.float32))
+            blocks["z_affect"].append(outputs["z_affect"].cpu().numpy().astype(np.float32))
 
     out: Dict[str, Any] = {
         key: np.concatenate(value, axis=0) if value else np.zeros((0, 0), dtype=np.float32)
@@ -1338,6 +1342,16 @@ def load_music_discovery_checkpoint(
         diff_input_dim=int(config.get("diff_input_dim", 26)),
     ).to(device)
 
+    model_state = model.state_dict()
+    incompatible_shape_keys = [
+        key for key, value in state_dict.items()
+        if key in model_state and tuple(value.shape) != tuple(model_state[key].shape)
+    ]
+    if incompatible_shape_keys:
+        state_dict = {
+            key: value for key, value in state_dict.items()
+            if key not in set(incompatible_shape_keys)
+        }
     load_result = model.load_state_dict(state_dict, strict=False)
     allowed_missing_prefixes = ("diff_encoder.", "va_head.", "signed_diff_head.", "cluster_fusion_mlp.")
     disallowed_missing = [
@@ -1356,6 +1370,10 @@ def load_music_discovery_checkpoint(
             if key.startswith(allowed_missing_prefixes)
         }
     )
+    initialized_modules.extend(
+        sorted({key.split(".", 1)[0] for key in incompatible_shape_keys})
+    )
+    initialized_modules = sorted(set(initialized_modules))
     if initialized_modules:
         sidecar["checkpoint_compatibility"] = {
             "initialized_missing_modules": initialized_modules,

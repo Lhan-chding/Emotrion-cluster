@@ -6,16 +6,17 @@ hierarchical two-level clustering, and stability analysis.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, pairwise_distances, silhouette_score
+from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalized_mutual_info_score, pairwise_distances, silhouette_score
 from sklearn.mixture import GaussianMixture
 
 from cluster.backends import resolve_cluster_backend
+from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class KSelectionConfig:
     silhouette_chunk_size: int = 4096
     # Mask purity
     w_mask_purity: float = 0.15
+    strict_min_size: bool = True
     # Hierarchical
     macro_k_min: int = 4
     macro_k_max: int = 8
@@ -85,6 +87,69 @@ def _normalize_series(values: np.ndarray) -> np.ndarray:
     if vmax - vmin < 1e-12:
         return np.zeros_like(values, dtype=np.float64)
     return (values - vmin) / (vmax - vmin)
+
+
+def _min_size_threshold(config: KSelectionConfig, n_samples: int) -> int:
+    return max(
+        int(config.min_cluster_size),
+        int(np.ceil(float(config.min_cluster_size_ratio) * float(n_samples))),
+    )
+
+
+def _mask_patterns(view_mask: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if view_mask is None:
+        return None
+    mask = np.asarray(view_mask, dtype=np.float32)
+    if mask.ndim != 2 or mask.shape[1] < 2:
+        return None
+    return np.array([
+        "".join(["1" if value > 0 else "0" for value in row[:2]])
+        for row in mask
+    ])
+
+
+def _mask_nmi(labels: np.ndarray, view_mask: Optional[np.ndarray]) -> float:
+    patterns = _mask_patterns(view_mask)
+    if patterns is None:
+        return float("nan")
+    return float(normalized_mutual_info_score(np.asarray(labels, dtype=np.int64), patterns))
+
+
+def _max_cluster_mask_purity(labels: np.ndarray, view_mask: Optional[np.ndarray]) -> float:
+    patterns = _mask_patterns(view_mask)
+    if patterns is None:
+        return float("nan")
+    y = np.asarray(labels, dtype=np.int64)
+    purities: List[float] = []
+    for cluster_id in np.unique(y):
+        cluster_patterns = patterns[y == cluster_id]
+        if cluster_patterns.size == 0:
+            continue
+        _, counts = np.unique(cluster_patterns, return_counts=True)
+        purities.append(float(counts.max() / counts.sum()))
+    return float(max(purities)) if purities else float("nan")
+
+
+def _select_best_index(
+    metrics: pd.DataFrame,
+    scores: np.ndarray,
+    config: KSelectionConfig,
+    *,
+    selection_mode: str,
+) -> int:
+    eligible = metrics["min_size_ok"].to_numpy(dtype=bool)
+    if not bool(eligible.any()):
+        threshold = _min_size_threshold(config, int(metrics.attrs.get("n_samples", 0)))
+        min_sizes = ", ".join(
+            f"K={int(row.k)}:{int(row.min_cluster_size)}"
+            for row in metrics[["k", "min_cluster_size"]].itertuples(index=False)
+        )
+        raise ValueError(
+            f"No K candidate satisfied min_cluster_size_threshold={threshold} "
+            f"for {selection_mode}. Candidate minimum sizes: {min_sizes}."
+        )
+    masked_scores = np.where(eligible, scores, -np.inf)
+    return int(np.argmax(masked_scores))
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +313,7 @@ def _fit_single_k(
     )
     n_unique = len(np.unique(labels))
     sizes = np.bincount(labels, minlength=k)
-    min_size_threshold = max(
-        config.min_cluster_size,
-        int(np.ceil(config.min_cluster_size_ratio * features.shape[0])),
-    )
+    min_size_threshold = _min_size_threshold(config, int(features.shape[0]))
     if n_unique > 1:
         if dist_matrix is not None and str(config.eval_backend).lower() == "sklearn":
             sil = _safe_metric(silhouette_score, dist_matrix, labels, metric="precomputed")
@@ -344,18 +406,13 @@ def search_gmm_composite(
     if not results:
         raise RuntimeError("GMM composite search produced no results.")
 
-    # Mask-purity penalty: penalise K values where clusters align with mask patterns
     mask_nmi_arr: Dict[int, float] = {}
+    max_mask_purity_arr: Dict[int, float] = {}
     if view_mask is not None and config.w_mask_purity > 0:
-        from sklearn.metrics import normalized_mutual_info_score
-        mask_patterns = np.array([
-            "".join(["1" if v > 0 else "0" for v in row[:2]])
-            for row in np.asarray(view_mask, dtype=np.float32)
-        ])
         for r in results:
             lbls = r["labels"]
-            nmi = float(normalized_mutual_info_score(lbls, mask_patterns))
-            mask_nmi_arr[r["k"]] = nmi
+            mask_nmi_arr[r["k"]] = _mask_nmi(lbls, view_mask)
+            max_mask_purity_arr[r["k"]] = _max_cluster_mask_purity(lbls, view_mask)
 
     # Build metrics DataFrame
     rows = []
@@ -370,8 +427,10 @@ def search_gmm_composite(
             "min_size_ok": r["min_size_ok"],
             "stability": r["stability"],
             "mask_nmi": mask_nmi_arr.get(r["k"], float("nan")),
+            "max_mask_purity": max_mask_purity_arr.get(r["k"], float("nan")),
         })
     metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
+    metrics.attrs["n_samples"] = int(features.shape[0])
 
     # Composite scoring
     bic_arr = np.array([r["bic"] for r in results], dtype=np.float64)
@@ -399,14 +458,16 @@ def search_gmm_composite(
     mask_penalty_arr: Optional[np.ndarray] = None
     if mask_nmi_arr and config.w_mask_purity > 0:
         mask_penalty_arr = np.array([
-            mask_nmi_arr.get(r["k"], 0.0) for r in results
+            0.5 * mask_nmi_arr.get(r["k"], 0.0)
+            + 0.5 * max_mask_purity_arr.get(r["k"], 0.0)
+            for r in results
         ], dtype=np.float64)
         composite = raw_composite - config.w_mask_purity * mask_penalty_arr
     else:
         composite = raw_composite
     metrics["composite_score"] = composite
 
-    best_idx = int(np.argmax(composite))
+    best_idx = _select_best_index(metrics, composite, config, selection_mode="composite")
     best_result = results[best_idx]
     actual_cluster_backend = str(best_result.get("actual_cluster_backend", config.cluster_backend))
     actual_eval_backend = _resolve_eval_backend_name(config)
@@ -423,7 +484,10 @@ def search_gmm_composite(
         "stability_runs": config.stability_runs,
         "w_mask_purity": config.w_mask_purity,
         "mask_nmi": mask_nmi_arr.get(best_result["k"], float("nan")),
+        "max_mask_purity": max_mask_purity_arr.get(best_result["k"], float("nan")),
         "raw_composite_score": float(raw_composite[best_idx]),
+        "eligible_candidate_count": int(metrics["min_size_ok"].sum()),
+        "candidate_count": int(len(metrics)),
         **_backend_runtime_info(
             config,
             actual_cluster_backend=actual_cluster_backend,
@@ -438,6 +502,254 @@ def search_gmm_composite(
         best_model=best_result["gmm"],
         metrics=metrics,
         selection_info=selection_info,
+    )
+
+
+def search_gmm_semantic_composite(
+    features: np.ndarray,
+    config: KSelectionConfig,
+    view_mask: Optional[np.ndarray] = None,
+) -> KSearchResult:
+    """Semantic composite K search with stricter leakage and support terms."""
+    semantic_config = replace(
+        config,
+        w_bic=0.25,
+        w_silhouette=0.25,
+        w_min_size=0.25,
+        w_stability=0.25,
+        w_mask_purity=max(float(config.w_mask_purity), 0.25),
+    )
+    result = search_gmm_composite(features, semantic_config, view_mask=view_mask)
+    metrics = result.metrics.copy()
+    metrics["semantic_composite_score"] = metrics["composite_score"]
+    info = dict(result.selection_info)
+    info["selection_mode"] = "semantic_composite"
+    info["semantic_terms"] = {
+        "bic": semantic_config.w_bic,
+        "silhouette": semantic_config.w_silhouette,
+        "min_size": semantic_config.w_min_size,
+        "stability": semantic_config.w_stability,
+        "mask_purity_penalty": semantic_config.w_mask_purity,
+    }
+    return KSearchResult(
+        best_k=result.best_k,
+        best_model=result.best_model,
+        metrics=metrics,
+        selection_info=info,
+    )
+
+
+def _fit_single_masked_k(
+    features: np.ndarray,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    k: int,
+    config: KSelectionConfig,
+) -> Dict[str, Any]:
+    model = MaskedDiagonalGMM(
+        n_components=int(k),
+        block_slices=block_slices,
+        covariance_type="diag",
+        reg_covar=1e-5,
+        n_init=int(config.n_init),
+        max_iter=100,
+        random_state=int(config.random_state),
+    ).fit(features, block_mask=block_mask)
+    labels = model.predict(features, block_mask=block_mask).astype(np.int64)
+    sizes = np.bincount(labels, minlength=int(k))
+    n_unique = len(np.unique(labels))
+    if n_unique > 1:
+        sil = _score_silhouette(features, labels, config)
+        db = _safe_metric(davies_bouldin_score, features, labels)
+    else:
+        sil = float("nan")
+        db = float("nan")
+    min_size_threshold = _min_size_threshold(config, int(features.shape[0]))
+    bic = float(model.bic(features, block_mask=block_mask))
+    aic = float(model.aic(features, block_mask=block_mask))
+    return {
+        "k": int(k),
+        "gmm": model,
+        "labels": labels,
+        "bic": bic,
+        "aic": aic,
+        "masked_bic": bic,
+        "masked_aic": aic,
+        "silhouette": sil,
+        "davies_bouldin": db,
+        "min_cluster_size": int(sizes.min()),
+        "min_size_ok": bool(sizes.min() >= min_size_threshold),
+        "min_size_threshold": int(min_size_threshold),
+        "actual_cluster_backend": "masked_diag_gmm",
+    }
+
+
+def compute_masked_stability_score(
+    features: np.ndarray,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    k: int,
+    n_runs: int = 5,
+    random_state: int = 42,
+) -> float:
+    if n_runs < 2:
+        return 1.0
+    labels_by_run: List[np.ndarray] = []
+    for run in range(int(n_runs)):
+        model = MaskedDiagonalGMM(
+            n_components=int(k),
+            block_slices=block_slices,
+            random_state=int(random_state) + run * 1000,
+            n_init=1,
+            max_iter=80,
+        ).fit(features, block_mask=block_mask)
+        labels_by_run.append(model.predict(features, block_mask=block_mask))
+    scores: List[float] = []
+    for i in range(len(labels_by_run)):
+        for j in range(i + 1, len(labels_by_run)):
+            scores.append(adjusted_rand_score(labels_by_run[i], labels_by_run[j]))
+    return float(np.mean(scores)) if scores else 1.0
+
+
+def search_masked_diag_gmm_composite(
+    features: np.ndarray,
+    config: KSelectionConfig,
+    *,
+    block_mask: np.ndarray,
+    block_slices: Sequence[Sequence[int]],
+    view_mask: Optional[np.ndarray] = None,
+    semantic: bool = False,
+) -> KSearchResult:
+    """K search using the same masked likelihood model used for final assignment."""
+    if str(config.covariance_type).lower() != "diag":
+        raise ValueError("MaskedDiagonalGMM K search requires covariance_type='diag'.")
+    matrix = np.asarray(features, dtype=np.float32)
+    mask = np.asarray(block_mask, dtype=bool)
+    if mask.ndim != 2 or mask.shape[0] != matrix.shape[0]:
+        raise ValueError(f"block_mask must have shape [N, B], got {mask.shape} for features {matrix.shape}.")
+    effective_config = (
+        replace(
+            config,
+            w_bic=0.25,
+            w_silhouette=0.25,
+            w_min_size=0.25,
+            w_stability=0.25,
+            w_mask_purity=max(float(config.w_mask_purity), 0.25),
+        )
+        if semantic
+        else config
+    )
+    results = [
+        _fit_single_masked_k(matrix, mask, block_slices, k, effective_config)
+        for k in range(int(effective_config.k_min), int(effective_config.k_max) + 1)
+    ]
+    if not results:
+        raise RuntimeError("MaskedDiagonalGMM search produced no results.")
+    for result in results:
+        result["stability"] = compute_masked_stability_score(
+            matrix,
+            mask,
+            block_slices,
+            int(result["k"]),
+            n_runs=int(effective_config.stability_runs),
+            random_state=int(effective_config.random_state),
+        )
+
+    mask_nmi_arr: Dict[int, float] = {}
+    max_mask_purity_arr: Dict[int, float] = {}
+    if view_mask is not None and effective_config.w_mask_purity > 0:
+        for result in results:
+            mask_nmi_arr[int(result["k"])] = _mask_nmi(result["labels"], view_mask)
+            max_mask_purity_arr[int(result["k"])] = _max_cluster_mask_purity(result["labels"], view_mask)
+
+    rows = []
+    for result in results:
+        rows.append({
+            "k": int(result["k"]),
+            "bic": float(result["bic"]),
+            "aic": float(result["aic"]),
+            "masked_bic": float(result["masked_bic"]),
+            "masked_aic": float(result["masked_aic"]),
+            "silhouette": float(result["silhouette"]),
+            "davies_bouldin": float(result["davies_bouldin"]),
+            "min_cluster_size": int(result["min_cluster_size"]),
+            "min_size_ok": bool(result["min_size_ok"]),
+            "stability": float(result["stability"]),
+            "mask_nmi": mask_nmi_arr.get(int(result["k"]), float("nan")),
+            "max_mask_purity": max_mask_purity_arr.get(int(result["k"]), float("nan")),
+        })
+    metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
+    metrics.attrs["n_samples"] = int(matrix.shape[0])
+
+    bic_norm = 1.0 - _normalize_series(metrics["masked_bic"].to_numpy(dtype=np.float64))
+    sil_norm = _normalize_series(np.nan_to_num(metrics["silhouette"].to_numpy(dtype=np.float64), nan=0.0))
+    stab_norm = _normalize_series(metrics["stability"].to_numpy(dtype=np.float64))
+    threshold = _min_size_threshold(effective_config, int(matrix.shape[0]))
+    size_scores = np.minimum(1.0, metrics["min_cluster_size"].to_numpy(dtype=np.float64) / max(threshold, 1))
+    raw_composite = (
+        effective_config.w_bic * bic_norm
+        + effective_config.w_silhouette * sil_norm
+        + effective_config.w_min_size * size_scores
+        + effective_config.w_stability * stab_norm
+    )
+    if mask_nmi_arr and effective_config.w_mask_purity > 0:
+        mask_penalty = np.asarray(
+            [
+                0.5 * mask_nmi_arr.get(int(k), 0.0)
+                + 0.5 * max_mask_purity_arr.get(int(k), 0.0)
+                for k in metrics["k"].tolist()
+            ],
+            dtype=np.float64,
+        )
+    else:
+        mask_penalty = np.zeros(len(metrics), dtype=np.float64)
+    composite = raw_composite - effective_config.w_mask_purity * mask_penalty
+    score_column = "semantic_composite_score" if semantic else "composite_score"
+    metrics["composite_score"] = composite
+    metrics[score_column] = composite
+
+    mode = "masked_semantic_composite" if semantic else "masked_composite"
+    best_idx = _select_best_index(metrics, composite, effective_config, selection_mode=mode)
+    best_result = results[int(best_idx)]
+    selected_k = int(best_result["k"])
+    info: Dict[str, Any] = {
+        "selected_k": selected_k,
+        "selection_mode": mode,
+        "composite_score": float(composite[best_idx]),
+        "raw_composite_score": float(raw_composite[best_idx]),
+        "bic_elbow_k": detect_bic_elbow({int(r["k"]): float(r["masked_bic"]) for r in results}),
+        "min_cluster_size_threshold": int(threshold),
+        "stability_runs": int(effective_config.stability_runs),
+        "w_mask_purity": float(effective_config.w_mask_purity),
+        "mask_nmi": mask_nmi_arr.get(selected_k, float("nan")),
+        "max_mask_purity": max_mask_purity_arr.get(selected_k, float("nan")),
+        "partial_likelihood": True,
+        "feature_block_slices": [(int(start), int(stop)) for start, stop in block_slices],
+        "eligible_candidate_count": int(metrics["min_size_ok"].sum()),
+        "candidate_count": int(len(metrics)),
+        "cluster_backend": "masked_diag_gmm",
+        "eval_backend": effective_config.eval_backend,
+        "actual_cluster_backend": "masked_diag_gmm",
+        "actual_eval_backend": _resolve_eval_backend_name(effective_config),
+        "device": str(effective_config.device),
+        "silhouette_mode": effective_config.silhouette_mode,
+        "silhouette_sample_size": int(effective_config.silhouette_sample_size),
+        "silhouette_chunk_size": int(effective_config.silhouette_chunk_size),
+        "mask_penalty_applied": float(effective_config.w_mask_purity * mask_penalty[best_idx]),
+    }
+    if semantic:
+        info["semantic_terms"] = {
+            "masked_bic": effective_config.w_bic,
+            "silhouette": effective_config.w_silhouette,
+            "min_size": effective_config.w_min_size,
+            "stability": effective_config.w_stability,
+            "mask_purity_penalty": effective_config.w_mask_purity,
+        }
+    return KSearchResult(
+        best_k=selected_k,
+        best_model=best_result["gmm"],
+        metrics=metrics,
+        selection_info=info,
     )
 
 
@@ -502,8 +814,14 @@ def search_gmm_bic_only(
     eligible = metrics[metrics["eligible_under_size_constraint"]].copy()
     selection_mode = "bic_with_size_constraint"
     if eligible.empty:
-        eligible = metrics.copy()
-        selection_mode = "bic_fallback_no_size_feasible"
+        min_sizes = ", ".join(
+            f"K={int(row.k)}:{int(row.min_cluster_size)}"
+            for row in metrics[["k", "min_cluster_size"]].itertuples(index=False)
+        )
+        raise ValueError(
+            f"No K candidate satisfied min_cluster_size_threshold={min_size_threshold} "
+            f"for bic_only. Candidate minimum sizes: {min_sizes}."
+        )
     selected_idx = eligible["bic"].idxmin()
     selected_row = metrics.loc[selected_idx]
     selected_k = int(selected_row["k"])
