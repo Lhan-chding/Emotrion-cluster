@@ -77,6 +77,7 @@ class MusicDiscoveryDataset(Dataset):
         audio = load_required_array(self.data_dir, "audio", np.float32, cache=_cache)
         lyrics = load_required_array(self.data_dir, "lyrics", np.float32, cache=_cache)
         metadata = load_required_array(self.data_dir, "metadata", np.float32, cache=_cache)
+        metadata_recon_target = load_optional_array(self.data_dir, "metadata_binary", np.float32, cache=_cache)
         view_mask = load_optional_array(self.data_dir, "view_mask", np.float32, cache=_cache)
         consistency = load_required_array(self.data_dir, "consistency", np.float32, cache=_cache)
         va_diff = load_required_array(self.data_dir, "va_diff", np.float32, cache=_cache)
@@ -87,6 +88,12 @@ class MusicDiscoveryDataset(Dataset):
 
         if not (lyrics.shape[0] == metadata.shape[0] == consistency.shape[0] == va_diff.shape[0] == labels.shape[0] == n_samples):
             raise ValueError("Processed discovery arrays do not share the same number of samples.")
+        if metadata_recon_target is None:
+            metadata_recon_target = metadata
+        if metadata_recon_target.shape[0] != n_samples:
+            raise ValueError(
+                f"metadata_binary.npy must have {n_samples} rows, got {metadata_recon_target.shape[0]}."
+            )
         if view_mask is None:
             view_mask = np.ones((n_samples, 3), dtype=np.float32)
         if view_mask.shape != (n_samples, 3):
@@ -116,6 +123,8 @@ class MusicDiscoveryDataset(Dataset):
         self.raw_audio = audio[indices].astype(np.float32)
         self.raw_lyrics = lyrics[indices].astype(np.float32)
         self.raw_metadata = metadata[indices].astype(np.float32)
+        self.raw_metadata_recon_target = metadata_recon_target[indices].astype(np.float32)
+        self.raw_metadata_report = self.raw_metadata_recon_target
         self.view_mask = view_mask[indices].astype(np.float32)
         self.consistency = consistency[indices].astype(np.float32).reshape(-1)
         self.va_diff = va_diff[indices].astype(np.float32)
@@ -163,6 +172,7 @@ class MusicDiscoveryDataset(Dataset):
             "audio": torch.from_numpy(self.audio[idx]),
             "lyrics": torch.from_numpy(self.lyrics[idx]),
             "metadata": torch.from_numpy(self.metadata[idx]),
+            "metadata_recon_target": torch.from_numpy(self.raw_metadata_recon_target[idx]),
             "view_mask": torch.from_numpy(self.view_mask[idx]),
             "consistency": torch.tensor(self.consistency[idx], dtype=torch.float32),
             "va_diff": torch.from_numpy(self.va_diff[idx]),
@@ -194,7 +204,9 @@ def create_music_discovery_datasets(
             split_protocol,
             ["audio", "lyrics", "metadata"],
         )
-    names_path = os.path.join(resolved_dir, "metadata_feature_names.json")
+    names_path = os.path.join(resolved_dir, "metadata_binary_feature_names.json")
+    if not os.path.exists(names_path):
+        names_path = os.path.join(resolved_dir, "metadata_feature_names.json")
     if os.path.exists(names_path):
         with open(names_path, "r", encoding="utf-8") as f:
             metadata_feature_names = [str(item) for item in json.load(f)]
@@ -241,8 +253,10 @@ class _ViewAutoencoder(nn.Module):
         hidden_dim: int,
         latent_dim: int,
         dropout: float = 0.0,
+        output_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
+        decoder_output_dim = int(input_dim if output_dim is None else output_dim)
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -255,7 +269,7 @@ class _ViewAutoencoder(nn.Module):
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-            nn.Linear(hidden_dim, input_dim),
+            nn.Linear(hidden_dim, decoder_output_dim),
         )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -357,6 +371,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
         audio_dim: int,
         lyrics_dim: int,
         metadata_dim: int,
+        metadata_recon_dim: Optional[int] = None,
         latent_dim: int = 16,
         hidden_dim: int = 32,
         metadata_hidden_dim: int = 128,
@@ -372,9 +387,16 @@ class MusicMetadataDiscoveryNet(nn.Module):
         super().__init__()
         cluster_head_k = int(cluster_head_k)
         self.gate_context_dim = int(gate_context_dim)
+        self.metadata_recon_dim = int(metadata_dim if metadata_recon_dim is None else metadata_recon_dim)
         self.audio_view = _ViewAutoencoder(audio_dim, hidden_dim, latent_dim, dropout=dropout)
         self.lyrics_view = _ViewAutoencoder(lyrics_dim, hidden_dim, latent_dim, dropout=dropout)
-        self.metadata_view = _ViewAutoencoder(metadata_dim, metadata_hidden_dim, latent_dim, dropout=dropout)
+        self.metadata_view = _ViewAutoencoder(
+            metadata_dim,
+            metadata_hidden_dim,
+            latent_dim,
+            dropout=dropout,
+            output_dim=self.metadata_recon_dim,
+        )
         self.fused_audio_decoder = nn.Sequential(
             nn.Linear(latent_dim, hidden_dim),
             nn.ReLU(),
@@ -428,6 +450,13 @@ class MusicMetadataDiscoveryNet(nn.Module):
             input_dim=diff_input_dim,
             latent_dim=latent_dim,
             dropout=dropout,
+        )
+        self.cluster_fusion_mlp = nn.Sequential(
+            nn.Linear(latent_dim * 3 + 3, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Linear(hidden_dim, latent_dim),
         )
         self.va_head = VAHead(latent_dim=latent_dim)
         self.signed_diff_head = SignedDiffHead(latent_dim=latent_dim)
@@ -535,6 +564,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
         if diff_observed is None:
             diff_observed = torch.zeros(audio.shape[0], dtype=audio.dtype, device=audio.device)
         z_diff = self.diff_encoder(diff_features, diff_observed)
+        z_cluster = self.cluster_fusion_mlp(torch.cat([fused, z_diff, z_metadata, view_mask], dim=1))
 
         # VA head: predict consensus VA from fused latent
         va_pred = self.va_head(fused)
@@ -546,6 +576,9 @@ class MusicMetadataDiscoveryNet(nn.Module):
             "z_lyrics": z_lyrics,
             "z_metadata": z_metadata,
             "z_fused": fused,
+            "z_consensus": fused,
+            "z_tension": z_diff,
+            "z_cluster": z_cluster,
             "audio_recon": audio_recon,
             "lyrics_recon": lyrics_recon,
             "metadata_recon": metadata_recon,
@@ -567,7 +600,7 @@ class MusicMetadataDiscoveryNet(nn.Module):
                     "q_audio": self.cluster_head(z_audio),
                     "q_lyrics": self.cluster_head(z_lyrics),
                     "q_metadata": self.cluster_head(z_metadata),
-                    "q_fused": self.cluster_head(fused),
+                    "q_fused": self.cluster_head(z_cluster),
                 }
             )
         return outputs
@@ -599,6 +632,26 @@ def _masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) ->
     mask = mask.to(device=pred.device, dtype=pred.dtype).reshape(-1)
     per_sample = torch.mean((pred - target) ** 2, dim=1)
     return _masked_mean(per_sample, mask)
+
+
+def _masked_bce_with_logits(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.to(device=pred.device, dtype=pred.dtype).reshape(-1)
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"metadata BCE target shape {tuple(target.shape)} does not match logits shape {tuple(pred.shape)}."
+        )
+    with torch.no_grad():
+        pos = target.sum(dim=0)
+        neg = target.shape[0] - pos
+        pos_weight = torch.clamp((neg + 1.0) / (pos + 1.0), min=1.0, max=25.0)
+    loss = F.binary_cross_entropy_with_logits(
+        pred,
+        target,
+        pos_weight=pos_weight.to(device=pred.device, dtype=pred.dtype),
+        reduction="none",
+    ).mean(dim=1)
+    return _masked_mean(loss, mask)
 
 
 def _masked_gate_balance_loss(gate: torch.Tensor, view_mask: torch.Tensor) -> torch.Tensor:
@@ -645,6 +698,7 @@ def _discovery_loss(
     assignment_balance_weight: float = 0.0,
     consensus_va_weight: float = 0.0,
     diff_preserve_weight: float = 0.0,
+    metadata_recon_loss: str = "mse",
 ) -> Dict[str, torch.Tensor]:
     audio = batch["audio"]
     lyrics = batch["lyrics"]
@@ -660,7 +714,14 @@ def _discovery_loss(
 
     recon_audio = _masked_mse(outputs["audio_recon"], audio, audio_mask)
     recon_lyrics = _masked_mse(outputs["lyrics_recon"], lyrics, lyrics_mask)
-    recon_metadata = _masked_mse(outputs["metadata_recon"], metadata, metadata_mask)
+    metadata_loss_mode = str(metadata_recon_loss or "mse").strip().lower()
+    metadata_target = batch.get("metadata_recon_target", metadata)
+    if metadata_loss_mode == "bce":
+        recon_metadata = _masked_bce_with_logits(outputs["metadata_recon"], metadata_target, metadata_mask)
+    elif metadata_loss_mode == "mse":
+        recon_metadata = _masked_mse(outputs["metadata_recon"], metadata_target, metadata_mask)
+    else:
+        raise ValueError("metadata_recon_loss must be 'mse' or 'bce'.")
     fused_recon = 0.5 * (
         _masked_mse(outputs["fused_audio_recon"], audio, audio_mask)
         + _masked_mse(outputs["fused_lyrics_recon"], lyrics, lyrics_mask)
@@ -859,6 +920,7 @@ def _run_epoch(
     assignment_balance_weight: float = 0.0,
     consensus_va_weight: float = 0.0,
     diff_preserve_weight: float = 0.0,
+    metadata_recon_loss: str = "mse",
     *,
     grad_clip_norm: float = 0.0,
     scaler: Optional[torch.amp.GradScaler] = None,
@@ -898,6 +960,7 @@ def _run_epoch(
                 assignment_balance_weight=assignment_balance_weight,
                 consensus_va_weight=consensus_va_weight,
                 diff_preserve_weight=diff_preserve_weight,
+                metadata_recon_loss=metadata_recon_loss,
             )
 
         if is_train:
@@ -942,6 +1005,7 @@ def train_music_discovery_model(
     assignment_balance_weight: float = 0.0,
     consensus_va_weight: float = 0.0,
     diff_preserve_weight: float = 0.0,
+    metadata_recon_loss: str = "mse",
     grad_clip_norm: float = 0.0,
     use_amp: bool = False,
     early_stopping_patience: int = 0,
@@ -995,6 +1059,7 @@ def train_music_discovery_model(
             assignment_balance_weight=assignment_balance_weight,
             consensus_va_weight=consensus_va_weight,
             diff_preserve_weight=diff_preserve_weight,
+            metadata_recon_loss=metadata_recon_loss,
             grad_clip_norm=grad_clip_norm,
             scaler=amp_scaler,
             use_amp=use_amp,
@@ -1015,6 +1080,7 @@ def train_music_discovery_model(
                 assignment_balance_weight=assignment_balance_weight,
                 consensus_va_weight=consensus_va_weight,
                 diff_preserve_weight=diff_preserve_weight,
+                metadata_recon_loss=metadata_recon_loss,
                 use_amp=use_amp,
             )
 
@@ -1078,6 +1144,9 @@ def extract_split_embeddings(
         "diff_observed": [],
         "original_va": [],
         "z_diff": [],
+        "z_tension": [],
+        "z_consensus": [],
+        "z_cluster": [],
     }
     identifiers: List[str] = []
     lyric_identifiers: List[str] = []
@@ -1116,6 +1185,9 @@ def extract_split_embeddings(
             blocks["diff_observed"].append(batch["diff_observed"].cpu().numpy().astype(np.float32).reshape(-1, 1))
             blocks["original_va"].append(batch["original_va"].cpu().numpy().astype(np.float32))
             blocks["z_diff"].append(outputs["z_diff"].cpu().numpy().astype(np.float32))
+            blocks["z_tension"].append(outputs["z_tension"].cpu().numpy().astype(np.float32))
+            blocks["z_consensus"].append(outputs["z_consensus"].cpu().numpy().astype(np.float32))
+            blocks["z_cluster"].append(outputs["z_cluster"].cpu().numpy().astype(np.float32))
 
     out: Dict[str, Any] = {
         key: np.concatenate(value, axis=0) if value else np.zeros((0, 0), dtype=np.float32)
@@ -1252,6 +1324,7 @@ def load_music_discovery_checkpoint(
         audio_dim=int(audio_dim),
         lyrics_dim=int(lyrics_dim),
         metadata_dim=int(metadata_dim),
+        metadata_recon_dim=int(config.get("metadata_recon_dim", metadata_dim)),
         latent_dim=latent_dim,
         hidden_dim=int(config.get("hidden_dim", 32)),
         metadata_hidden_dim=int(config.get("metadata_hidden_dim", 128)),
@@ -1266,7 +1339,7 @@ def load_music_discovery_checkpoint(
     ).to(device)
 
     load_result = model.load_state_dict(state_dict, strict=False)
-    allowed_missing_prefixes = ("diff_encoder.", "va_head.", "signed_diff_head.")
+    allowed_missing_prefixes = ("diff_encoder.", "va_head.", "signed_diff_head.", "cluster_fusion_mlp.")
     disallowed_missing = [
         key for key in load_result.missing_keys
         if not key.startswith(allowed_missing_prefixes)

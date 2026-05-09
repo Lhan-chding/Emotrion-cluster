@@ -28,6 +28,8 @@ from cluster.pipeline.train import (
     _write_split_outputs,
     apply_cluster_feature_weights,
     build_cluster_features,
+    cluster_feature_block_mask,
+    cluster_feature_block_slices,
     cluster_feature_weights,
     compute_mask_purity,
     run_k_selection,
@@ -102,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "bic_only", "hierarchical"],
+                        choices=["composite", "semantic_composite", "bic_only", "hierarchical"],
                         help="K-selection strategy")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
@@ -122,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "fused_only",
                             "fused_va_geometry",
                             "masked_diffaware",
+                            "macro_micro_diffaware",
+                            "partial_gmm_diffaware",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
@@ -137,8 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
                         help="Allow checkpoint with mismatched metadata_dim (true/false)")
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
-                        choices=["joint", "complete_first"],
-                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples, then predict all")
+                        choices=["joint", "complete_first", "partial_likelihood"],
+                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
     return parser
 
 
@@ -282,7 +286,8 @@ def main() -> None:
         cluster_scaler.transform(search_features_raw).astype(np.float32),
         feature_weights,
     )
-    k_strategy = str(args.k_strategy).strip().lower()
+    search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
+    k_strategy = "composite" if str(args.k_strategy).strip().lower() == "semantic_composite" else str(args.k_strategy).strip().lower()
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -305,9 +310,9 @@ def main() -> None:
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
 
     # Block hierarchical + complete_first combination
-    if assignment_mode == "complete_first" and is_hierarchical:
+    if assignment_mode in {"complete_first", "partial_likelihood"} and is_hierarchical:
         raise ValueError(
-            "cluster_assignment_mode='complete_first' is incompatible with "
+            f"cluster_assignment_mode='{assignment_mode}' is incompatible with "
             "k_strategy='hierarchical'. Hierarchical clustering uses two-level "
             "macro/micro GMMs that cannot be refitted on complete-pair subset. "
             "Use k_strategy='composite' or 'bic_only' instead."
@@ -344,6 +349,22 @@ def main() -> None:
             selection_info["complete_first_refit"] = True
             selection_info["complete_pair_samples"] = int(both_mask.sum())
             selection_info["total_samples"] = int(search_features.shape[0])
+    elif assignment_mode == "partial_likelihood":
+        if str(args.covariance_type) != "diag":
+            raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
+        from cluster.backends.partial_gmm import PartialGaussianMixture
+
+        block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
+        gmm_model = PartialGaussianMixture(
+            n_components=selected_k,
+            block_slices=block_slices,
+            covariance_type="diag",
+            reg_covar=1e-5,
+            n_init=10,
+            random_state=int(args.random_state),
+        ).fit(search_features, block_mask=search_block_mask)
+        selection_info["partial_likelihood"] = True
+        selection_info["feature_block_slices"] = block_slices
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
     with open(gmm_bundle_path, "wb") as f:
@@ -375,6 +396,8 @@ def main() -> None:
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
                     "cluster_feature_weights": feature_weights.tolist(),
+                    "cluster_assignment_mode": assignment_mode,
+                    "feature_block_slices": cluster_feature_block_slices(feature_strategy, int(search_features.shape[1])),
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "checkpoint_path": checkpoint_path,
@@ -402,6 +425,11 @@ def main() -> None:
             cluster_scaler.transform(features_raw).astype(np.float32),
             feature_weights,
         )
+        split_block_mask = cluster_feature_block_mask(
+            feature_strategy,
+            embeddings_by_split[split].get("view_mask"),
+            int(features.shape[0]),
+        )
 
         if is_hierarchical:
             macro_labels = k_result.macro_model.predict(features).astype(np.int64)
@@ -427,7 +455,10 @@ def main() -> None:
                     assignments[mask] = global_label
                     global_label += 1
         else:
-            assignments = gmm_model.predict(features).astype(np.int64)
+            if assignment_mode == "partial_likelihood":
+                assignments = gmm_model.predict(features, block_mask=split_block_mask).astype(np.int64)
+            else:
+                assignments = gmm_model.predict(features).astype(np.int64)
 
         payload = _write_split_outputs(
             out_dir=os.path.join(out_dir, split),
@@ -470,6 +501,7 @@ def main() -> None:
         "selection_info": selection_info,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
+        "cluster_assignment_mode": assignment_mode,
         "plot_va_source": str(args.plot_va_source),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,

@@ -60,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--run_stage", type=str, default="train", choices=["train", "pretrain", "discover", "finetune", "full"])
+    parser.add_argument("--pretrain_epochs", type=int, default=None)
+    parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--learning_rate", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--latent_dim", type=int, default=16)
@@ -68,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate_hidden_dim", type=int, default=128)
     parser.add_argument("--metadata_aux_scale", type=float, default=0.60)
     parser.add_argument("--metadata_recon_weight", type=float, default=0.35)
+    parser.add_argument("--metadata_recon_loss", type=str, default="mse", choices=["mse", "bce"])
     parser.add_argument("--fused_recon_weight", type=float, default=0.50)
     parser.add_argument("--align_weight", type=float, default=0.20)
     parser.add_argument("--metadata_align_weight", type=float, default=0.08)
@@ -91,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate_entropy_weight", type=float, default=0.01)
     parser.add_argument("--cluster_head_k", type=int, default=0,
                         help="Enable DEC/CVCL cluster head with this K; 0 disables it.")
+    parser.add_argument("--auto_cluster_head", type=str, default="false")
+    parser.add_argument("--cluster_head_init_from", type=str, default="random")
+    parser.add_argument("--cluster_loss_warmup_epochs", type=int, default=0)
     parser.add_argument("--cluster_temperature", type=float, default=1.0,
                         help="Soft assignment temperature for the optional DEC/CVCL cluster head.")
     parser.add_argument("--cluster_loss_weight", type=float, default=0.0,
@@ -106,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_input_dim", type=int, default=26,
                         help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "bic_only", "hierarchical"],
+                        choices=["composite", "semantic_composite", "bic_only", "hierarchical"],
                         help="K-selection strategy: composite (multi-metric), bic_only (legacy), hierarchical (two-level)")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
@@ -131,6 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "fused_only",
                             "fused_va_geometry",
                             "masked_diffaware",
+                            "macro_micro_diffaware",
+                            "partial_gmm_diffaware",
                             "mean_va",
                             "va_geometry",
                             "mean_va_diff",
@@ -149,8 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
-                        choices=["joint", "complete_first"],
-                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples, then predict all")
+                        choices=["joint", "complete_first", "partial_likelihood"],
+                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
+    parser.add_argument("--macro_k_min", type=int, default=4)
+    parser.add_argument("--macro_k_max", type=int, default=6)
+    parser.add_argument("--micro_k_min", type=int, default=2)
+    parser.add_argument("--micro_k_max", type=int, default=5)
+    parser.add_argument("--min_final_clusters", type=int, default=0)
+    parser.add_argument("--max_final_clusters", type=int, default=0)
+    parser.add_argument("--micro_min_cluster_size_abs", type=int, default=0)
+    parser.add_argument("--micro_min_cluster_size_ratio", type=float, default=0.0)
     return parser
 
 
@@ -227,6 +244,8 @@ class ClusterFeatureStrategy(Enum):
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
+    MACRO_MICRO_DIFFAWARE = "macro_micro_diffaware"
+    PARTIAL_GMM_DIFFAWARE = "partial_gmm_diffaware"
 
 
 def _mean_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
@@ -393,14 +412,19 @@ def build_cluster_features(
 
     imputation_fill: Optional[np.ndarray] = None
 
-    if base_strategy == "masked_diffaware":
-        z_fused = embeddings["z_fused"].astype(np.float32)
-        z_diff = embeddings.get("z_diff")
-        if z_diff is None:
-            raise ValueError("cluster_feature_strategy='masked_diffaware' requires z_diff embeddings.")
-        z_diff = z_diff.astype(np.float32)
-        z_diff, imputation_fill = _impute_unobserved_diff_latents(
-            z_diff=z_diff,
+    if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"}:
+        z_fused = embeddings.get("z_cluster" if base_strategy != "masked_diffaware" else "z_fused")
+        if z_fused is None:
+            z_fused = embeddings.get("z_fused")
+        if z_fused is None:
+            raise ValueError(f"cluster_feature_strategy='{base_strategy}' requires z_fused or z_cluster embeddings.")
+        z_fused = z_fused.astype(np.float32)
+        z_tension = embeddings.get("z_tension", embeddings.get("z_diff"))
+        if z_tension is None:
+            raise ValueError(f"cluster_feature_strategy='{base_strategy}' requires z_tension or z_diff embeddings.")
+        z_tension = z_tension.astype(np.float32)
+        z_tension, imputation_fill = _impute_unobserved_diff_latents(
+            z_diff=z_tension,
             view_mask=view_mask,
             anchors=z_fused,
             fitted_state=fitted_imputation,
@@ -412,7 +436,7 @@ def build_cluster_features(
         features = np.concatenate(
             [
                 z_fused,
-                z_diff,
+                z_tension,
                 z_meta,
             ],
             axis=1,
@@ -500,11 +524,39 @@ def cluster_feature_weights(
         weights[:latent_dim] = 0.5
         weights[latent_dim : latent_dim + 2] = 2.0
         weights[latent_dim + 2 : latent_dim + VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
-    elif base_strategy == "masked_diffaware" and int(feature_dim) % 3 == 0:
+    elif base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and int(feature_dim) % 3 == 0:
         latent_dim = int(feature_dim) // 3
         weights[latent_dim : 2 * latent_dim] = float(diff_cluster_weight)
         weights[2 * latent_dim : 3 * latent_dim] = float(metadata_cluster_weight)
     return weights.astype(np.float32)
+
+
+def cluster_feature_block_slices(strategy: str, feature_dim: int) -> List[Tuple[int, int]]:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and int(feature_dim) % 3 == 0:
+        latent_dim = int(feature_dim) // 3
+        return [(0, latent_dim), (latent_dim, 2 * latent_dim), (2 * latent_dim, 3 * latent_dim)]
+    return [(0, int(feature_dim))]
+
+
+def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n_samples: int) -> np.ndarray:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    if view_mask is None:
+        return np.ones((int(n_samples), len(cluster_feature_block_slices(base_strategy, 1))), dtype=bool)
+    mask = np.asarray(view_mask, dtype=np.float32)
+    if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"}:
+        has_audio = mask[:, 0] > 0.0
+        has_lyrics = mask[:, 1] > 0.0
+        has_metadata = mask[:, 2] > 0.0 if mask.shape[1] > 2 else np.ones(mask.shape[0], dtype=bool)
+        return np.stack(
+            [
+                has_audio | has_lyrics,
+                has_audio & has_lyrics,
+                has_metadata,
+            ],
+            axis=1,
+        ).astype(bool)
+    return np.ones((mask.shape[0], 1), dtype=bool)
 
 
 def apply_cluster_feature_weights(features: np.ndarray, weights: np.ndarray) -> np.ndarray:
@@ -560,6 +612,7 @@ def run_k_selection(
     Returns (gmm_model_or_result, metrics_df, selection_info).
     For 'hierarchical', the first element is a HierarchicalClusterResult.
     """
+    k_strategy = "composite" if str(k_strategy).strip().lower() == "semantic_composite" else str(k_strategy).strip().lower()
     if k_strategy == "composite":
         config = KSelectionConfig(
             k_min=k_min,
@@ -1122,11 +1175,21 @@ def _cluster_summary(
 ) -> List[Dict[str, Any]]:
     raw_audio = dataset.raw_audio
     raw_lyrics = dataset.raw_lyrics
-    raw_metadata = dataset.raw_metadata
+    raw_metadata = getattr(dataset, "raw_metadata_report", dataset.raw_metadata)
+    if raw_metadata.shape[1] != len(metadata_feature_names):
+        raw_metadata = dataset.raw_metadata
     view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32)).astype(np.float32)
     mean_va = _dataset_plot_va(dataset, plot_va_source)
     numeric_indices = [idx for idx, name in enumerate(metadata_feature_names) if str(name).startswith("numeric::")]
     token_indices = [idx for idx, name in enumerate(metadata_feature_names) if not str(name).startswith("numeric::")]
+    token_global_rates = {}
+    if token_indices:
+        token_values = raw_metadata[:, token_indices] > 0.0
+        global_rates = token_values.mean(axis=0)
+        token_global_rates = {
+            feature_idx: float(global_rates[rel_idx])
+            for rel_idx, feature_idx in enumerate(token_indices)
+        }
 
     summaries: List[Dict[str, Any]] = []
     for cluster_id in sorted(np.unique(assignments).tolist()):
@@ -1140,17 +1203,28 @@ def _cluster_summary(
 
         top_tokens: List[Dict[str, Any]] = []
         if token_indices:
-            token_means = raw_metadata[mask][:, token_indices].mean(axis=0)
-            order = np.argsort(-token_means)[:10]
+            cluster_token_values = raw_metadata[mask][:, token_indices] > 0.0
+            cluster_rates = cluster_token_values.mean(axis=0)
+            supports = cluster_token_values.sum(axis=0)
+            enrichment = np.divide(
+                cluster_rates,
+                np.maximum(np.asarray([token_global_rates[token_indices[idx]] for idx in range(len(token_indices))]), 1e-8),
+            )
+            order = np.lexsort((-supports, -cluster_rates, -enrichment))[:10]
             for rel_idx in order.tolist():
-                value = float(token_means[rel_idx])
-                if value <= 0:
+                cluster_rate = float(cluster_rates[rel_idx])
+                if cluster_rate <= 0:
                     continue
                 feature_idx = token_indices[rel_idx]
+                population_rate = float(token_global_rates[feature_idx])
                 top_tokens.append(
                     {
                         "feature": str(metadata_feature_names[feature_idx]),
-                        "mean_weight": value,
+                        "cluster_rate": cluster_rate,
+                        "population_rate": population_rate,
+                        "enrichment": float(cluster_rate / max(population_rate, 1e-8)),
+                        "support": int(supports[rel_idx]),
+                        "mean_weight": float(raw_metadata[mask][:, feature_idx].mean()),
                     }
                 )
 
@@ -1550,11 +1624,13 @@ def main() -> None:
     }
 
     _use_amp = str(args.use_amp).strip().lower() in {"1", "true", "yes", "y"}
+    train_epochs = int(args.pretrain_epochs) if args.pretrain_epochs is not None else int(args.epochs)
 
     model = MusicMetadataDiscoveryNet(
         audio_dim=int(datasets.train_dataset.audio.shape[1]),
         lyrics_dim=int(datasets.train_dataset.lyrics.shape[1]),
         metadata_dim=int(datasets.train_dataset.metadata.shape[1]),
+        metadata_recon_dim=int(datasets.train_dataset.raw_metadata_recon_target.shape[1]),
         latent_dim=int(args.latent_dim),
         hidden_dim=int(args.hidden_dim),
         metadata_hidden_dim=int(args.metadata_hidden_dim),
@@ -1572,7 +1648,7 @@ def main() -> None:
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        epochs=int(args.epochs),
+        epochs=train_epochs,
         learning_rate=float(args.learning_rate),
         weight_decay=float(args.weight_decay),
         metadata_recon_weight=float(args.metadata_recon_weight),
@@ -1585,6 +1661,7 @@ def main() -> None:
         assignment_balance_weight=float(args.assignment_balance_weight),
         consensus_va_weight=float(args.consensus_va_weight),
         diff_preserve_weight=float(args.diff_preserve_weight),
+        metadata_recon_loss=str(args.metadata_recon_loss),
         grad_clip_norm=float(args.grad_clip_norm),
         use_amp=_use_amp,
         early_stopping_patience=int(args.early_stopping_patience),
@@ -1623,11 +1700,16 @@ def main() -> None:
             "gate_context_dim": int(model.gate_context_dim),
             "metadata_aux_scale": float(args.metadata_aux_scale),
             "metadata_recon_weight": float(args.metadata_recon_weight),
+            "metadata_recon_loss": str(args.metadata_recon_loss),
+            "metadata_recon_dim": int(model.metadata_recon_dim),
             "fused_recon_weight": float(args.fused_recon_weight),
             "align_weight": float(args.align_weight),
             "metadata_align_weight": float(args.metadata_align_weight),
             "batch_size": int(args.batch_size),
-            "epochs": int(args.epochs),
+            "epochs": int(train_epochs),
+            "run_stage": str(args.run_stage),
+            "pretrain_epochs": int(args.pretrain_epochs) if args.pretrain_epochs is not None else None,
+            "finetune_epochs": int(args.finetune_epochs),
             "learning_rate": float(args.learning_rate),
             "weight_decay": float(args.weight_decay),
             "dropout": float(args.dropout),
@@ -1695,6 +1777,11 @@ def main() -> None:
                 "complete_first mode requires at least one track with both audio+lyrics "
                 f"in search split '{search_split}', but none found."
             )
+    search_block_mask = cluster_feature_block_mask(
+        feature_strategy,
+        search_view_mask,
+        int(embeddings_by_split[search_split]["z_fused"].shape[0]) if "z_fused" in embeddings_by_split[search_split] else 0,
+    )
 
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
@@ -1723,7 +1810,7 @@ def main() -> None:
         cluster_scaler.transform(search_features_raw).astype(np.float32),
         feature_weights,
     )
-    k_strategy = str(args.k_strategy).strip().lower()
+    k_strategy = "composite" if str(args.k_strategy).strip().lower() == "semantic_composite" else str(args.k_strategy).strip().lower()
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -1747,9 +1834,9 @@ def main() -> None:
     is_hierarchical = isinstance(k_result, HierarchicalClusterResult)
 
     # Block hierarchical + complete_first combination
-    if assignment_mode == "complete_first" and is_hierarchical:
+    if assignment_mode in {"complete_first", "partial_likelihood"} and is_hierarchical:
         raise ValueError(
-            "cluster_assignment_mode='complete_first' is incompatible with "
+            f"cluster_assignment_mode='{assignment_mode}' is incompatible with "
             "k_strategy='hierarchical'. Hierarchical clustering uses two-level "
             "macro/micro GMMs that cannot be refitted on complete-pair subset. "
             "Use k_strategy='composite' or 'bic_only' instead."
@@ -1786,6 +1873,22 @@ def main() -> None:
             selection_info["complete_first_refit"] = True
             selection_info["complete_pair_samples"] = int(both_mask.sum())
             selection_info["total_samples"] = int(search_features.shape[0])
+    elif assignment_mode == "partial_likelihood":
+        if str(args.covariance_type) != "diag":
+            raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
+        from cluster.backends.partial_gmm import PartialGaussianMixture
+
+        block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
+        gmm_model = PartialGaussianMixture(
+            n_components=selected_k,
+            block_slices=block_slices,
+            covariance_type="diag",
+            reg_covar=1e-5,
+            n_init=10,
+            random_state=int(args.random_state),
+        ).fit(search_features, block_mask=search_block_mask)
+        selection_info["partial_likelihood"] = True
+        selection_info["feature_block_slices"] = block_slices
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
     with open(gmm_bundle_path, "wb") as f:
@@ -1817,6 +1920,8 @@ def main() -> None:
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
                     "cluster_feature_weights": feature_weights.tolist(),
+                    "cluster_assignment_mode": assignment_mode,
+                    "feature_block_slices": cluster_feature_block_slices(feature_strategy, int(search_features.shape[1])),
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "selection_info": selection_info,
@@ -1842,6 +1947,11 @@ def main() -> None:
         features = apply_cluster_feature_weights(
             cluster_scaler.transform(features_raw).astype(np.float32),
             feature_weights,
+        )
+        split_block_mask = cluster_feature_block_mask(
+            feature_strategy,
+            embeddings_by_split[split].get("view_mask"),
+            int(features.shape[0]),
         )
         if is_hierarchical:
             # For hierarchical: predict macro, then apply micro sub-labels
@@ -1871,7 +1981,10 @@ def main() -> None:
                     assignments[mask] = global_label
                     global_label += 1
         else:
-            assignments = gmm_model.predict(features).astype(np.int64)
+            if assignment_mode == "partial_likelihood":
+                assignments = gmm_model.predict(features, block_mask=split_block_mask).astype(np.int64)
+            else:
+                assignments = gmm_model.predict(features).astype(np.int64)
 
         split_assignments[split] = assignments
         split_dir = os.path.join(out_dir, split)
@@ -1904,7 +2017,7 @@ def main() -> None:
         "selected_k": selected_k,
         "k_strategy": k_strategy,
         "selection_mode": str(selection_info.get("selection_mode", k_strategy)),
-        "epochs": int(args.epochs),
+        "epochs": int(train_epochs),
         "latent_dim": int(args.latent_dim),
         "cluster_head_k": int(args.cluster_head_k),
         "cluster_temperature": float(args.cluster_temperature),
@@ -1918,6 +2031,7 @@ def main() -> None:
         "metadata_summary_path": metadata_summary_path,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
+        "cluster_assignment_mode": assignment_mode,
         "plot_va_source": str(args.plot_va_source),
         "pca_target_dim": int(args.pca_target_dim),
         "cluster_backend": str(args.cluster_backend),

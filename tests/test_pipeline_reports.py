@@ -295,6 +295,30 @@ def test_masked_diffaware_feature_weights_apply_after_scaling():
     np.testing.assert_allclose(weights[4:6], np.full(2, 0.75, dtype=np.float32))
 
 
+def test_macro_micro_diffaware_uses_cluster_tension_metadata_blocks():
+    embeddings = {
+        "z_cluster": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        "z_fused": np.asarray([[9.0, 9.0], [8.0, 8.0]], dtype=np.float32),
+        "z_tension": np.asarray([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
+        "z_diff": np.asarray([[7.0, 7.0], [6.0, 6.0]], dtype=np.float32),
+        "z_metadata": np.asarray([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+    }
+
+    features, _, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="macro_micro_diffaware",
+        diff_cluster_weight=0.35,
+    )
+
+    np.testing.assert_allclose(features[:, :2], embeddings["z_cluster"])
+    np.testing.assert_allclose(features[:, 2:4], embeddings["z_tension"])
+    np.testing.assert_allclose(features[:, 4:6], embeddings["z_metadata"])
+
+
 def test_dataset_plot_va_can_use_original_va():
     class Dataset:
         raw_audio = np.asarray([[0.1, 0.1], [0.9, 0.9]], dtype=np.float32)

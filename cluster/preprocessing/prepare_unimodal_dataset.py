@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import pickle
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,19 +12,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import TruncatedSVD
 
 from cluster.config import MUSIC_LABEL_NAMES
 from cluster.utils import find_column
 
 
-LIST_METADATA_FIELDS: Tuple[str, ...] = (
+DEFAULT_LIST_METADATA_FIELDS: Tuple[str, ...] = (
     "Genres",
     "Moods",
     "MoodsAll",
     "Themes",
     "Styles",
-    "Artist",
 )
+
+OPTIONAL_IDENTITY_FIELDS: Tuple[str, ...] = ("Artist",)
+
+LIST_METADATA_FIELDS: Tuple[str, ...] = DEFAULT_LIST_METADATA_FIELDS + OPTIONAL_IDENTITY_FIELDS
 
 NUMERIC_METADATA_FIELDS: Tuple[str, ...] = (
     "Duration",
@@ -33,6 +38,15 @@ NUMERIC_METADATA_FIELDS: Tuple[str, ...] = (
     "num_MoodsAll",
     "Tempo",
 )
+
+DEFAULT_METADATA_GROUP_WEIGHTS: Dict[str, float] = {
+    "Genres": 0.25,
+    "Styles": 0.35,
+    "Themes": 0.50,
+    "Moods": 0.50,
+    "MoodsAll": 0.70,
+    "Artist": 0.00,
+}
 
 
 @dataclass(frozen=True)
@@ -121,6 +135,46 @@ def _split_tokens(value: object) -> List[str]:
     return [token for token in (_normalise_token(part) for part in raw) if token]
 
 
+def _parse_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_metadata_group_weights(value: Optional[object]) -> Dict[str, float]:
+    weights = dict(DEFAULT_METADATA_GROUP_WEIGHTS)
+    if value is None:
+        return weights
+    if isinstance(value, dict):
+        items = value.items()
+    else:
+        text = str(value).strip()
+        if not text:
+            return weights
+        parsed: List[Tuple[str, str]] = []
+        for part in text.split(","):
+            if "=" not in part:
+                raise ValueError(
+                    "metadata_group_weights must use comma-separated key=value pairs."
+                )
+            key, raw = part.split("=", 1)
+            parsed.append((key.strip(), raw.strip()))
+        items = parsed
+    for key, raw in items:
+        group = str(key).strip()
+        if not group:
+            continue
+        weights[group] = float(raw)
+    return weights
+
+
+def _row_l2_normalize(matrix: np.ndarray) -> np.ndarray:
+    values = np.asarray(matrix, dtype=np.float32)
+    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    norms = np.where(norms <= 1e-12, 1.0, norms)
+    return (values / norms).astype(np.float32)
+
+
 def _resolve_metadata_frame(
     combined: pd.DataFrame,
     metadata_csv: Optional[str],
@@ -152,15 +206,25 @@ def _resolve_metadata_frame(
 def _build_metadata_matrix(
     metadata_frame: pd.DataFrame,
     max_tokens_per_field: int = 512,
-) -> Tuple[np.ndarray, List[str], Dict[str, List[str]], np.ndarray, np.ndarray]:
+    *,
+    metadata_use_artist: bool = False,
+    metadata_representation: str = "binary",
+    metadata_svd_dim: int = 32,
+    metadata_group_weights: Optional[object] = None,
+) -> Tuple[np.ndarray, List[str], Dict[str, List[str]], np.ndarray, np.ndarray, Dict[str, Any]]:
     n_rows = len(metadata_frame)
-    feature_blocks: List[np.ndarray] = []
-    feature_names: List[str] = []
+    binary_blocks: List[np.ndarray] = []
+    binary_feature_names: List[str] = []
+    binary_feature_groups: List[Dict[str, Any]] = []
     vocab: Dict[str, List[str]] = {}
     has_any = np.zeros(n_rows, dtype=bool)
     completeness_parts: List[np.ndarray] = []
+    group_weights = _parse_metadata_group_weights(metadata_group_weights)
+    list_fields = list(DEFAULT_LIST_METADATA_FIELDS)
+    if bool(metadata_use_artist):
+        list_fields.extend(OPTIONAL_IDENTITY_FIELDS)
 
-    for field in LIST_METADATA_FIELDS:
+    for field in list_fields:
         column = _optional_column(metadata_frame.columns, [field.lower(), field])
         if column is None:
             vocab[field] = []
@@ -190,40 +254,90 @@ def _build_metadata_matrix(
                 col_idx = token_to_idx.get(token)
                 if col_idx is not None:
                     block[row_idx, col_idx] = 1.0
-        feature_blocks.append(block)
-        feature_names.extend([f"{field}::{token}" for token in kept])
+        binary_blocks.append(block)
+        names = [f"{field}::{token}" for token in kept]
+        binary_feature_names.extend(names)
+        weight = float(group_weights.get(field, 1.0))
+        binary_feature_groups.extend(
+            {"feature": name, "group": field, "weight": weight}
+            for name in names
+        )
         completeness_parts.append((block.sum(axis=1) > 0).astype(np.float32))
 
-    for field in NUMERIC_METADATA_FIELDS:
-        column = _optional_column(metadata_frame.columns, [field.lower(), field])
-        if column is None:
-            continue
-        values = pd.to_numeric(metadata_frame[column], errors="coerce").to_numpy(dtype=np.float32)
-        valid = np.isfinite(values)
-        if not valid.any():
-            continue
-        fill = float(np.nanmedian(values[valid]))
-        values = np.where(valid, values, fill).astype(np.float32)
-        feature_blocks.append(values.reshape(-1, 1))
-        feature_names.append(f"numeric::{field}")
-        has_any |= valid
-        completeness_parts.append(valid.astype(np.float32))
+    if binary_blocks:
+        metadata_binary = np.concatenate(binary_blocks, axis=1).astype(np.float32)
+    else:
+        metadata_binary = np.zeros((n_rows, 1), dtype=np.float32)
+        binary_feature_names = ["metadata::dummy"]
+        binary_feature_groups = [{"feature": "metadata::dummy", "group": "metadata", "weight": 0.0}]
 
-    if not feature_blocks:
-        return (
-            np.zeros((n_rows, 1), dtype=np.float32),
-            ["metadata::dummy"],
-            {},
-            np.zeros(n_rows, dtype=bool),
-            np.zeros(n_rows, dtype=np.float32),
+    feature_weights = np.asarray(
+        [float(item["weight"]) for item in binary_feature_groups],
+        dtype=np.float32,
+    ).reshape(1, -1)
+    doc_freq = (metadata_binary > 0.0).sum(axis=0).astype(np.float32)
+    idf = (np.log((1.0 + float(n_rows)) / (1.0 + doc_freq)) + 1.0).astype(np.float32)
+    metadata_tfidf = _row_l2_normalize(metadata_binary * idf.reshape(1, -1) * feature_weights)
+
+    representation = str(metadata_representation).strip().lower()
+    if representation not in {"binary", "tfidf", "tfidf_svd"}:
+        raise ValueError(
+            "metadata_representation must be one of 'binary', 'tfidf', or 'tfidf_svd'."
         )
 
-    metadata = np.concatenate(feature_blocks, axis=1).astype(np.float32)
+    svd_model: Optional[TruncatedSVD] = None
+    svd_dim = max(int(metadata_svd_dim), 1)
+    max_components = max(1, min(svd_dim, metadata_tfidf.shape[0], metadata_tfidf.shape[1]))
+    if (
+        representation == "tfidf_svd"
+        and metadata_tfidf.shape[1] > 1
+        and max_components < metadata_tfidf.shape[1]
+        and float(np.var(metadata_tfidf)) > 1e-12
+    ):
+        svd_model = TruncatedSVD(n_components=max_components, random_state=42)
+        metadata_svd = svd_model.fit_transform(metadata_tfidf).astype(np.float32)
+    else:
+        metadata_svd = metadata_tfidf[:, :max_components].astype(np.float32)
+    if metadata_svd.shape[1] < svd_dim:
+        pad = np.zeros((n_rows, svd_dim - metadata_svd.shape[1]), dtype=np.float32)
+        metadata_svd = np.concatenate([metadata_svd, pad], axis=1)
+    elif metadata_svd.shape[1] > svd_dim:
+        metadata_svd = metadata_svd[:, :svd_dim].astype(np.float32)
+
+    if representation == "binary":
+        metadata = metadata_binary
+        feature_names = list(binary_feature_names)
+        feature_groups = list(binary_feature_groups)
+    elif representation == "tfidf":
+        metadata = metadata_tfidf
+        feature_names = list(binary_feature_names)
+        feature_groups = list(binary_feature_groups)
+    else:
+        metadata = metadata_svd
+        feature_names = [f"metadata_svd::{idx:03d}" for idx in range(metadata.shape[1])]
+        feature_groups = [
+            {"feature": name, "group": "metadata_svd", "weight": 1.0}
+            for name in feature_names
+        ]
+
     if completeness_parts:
         completeness = np.mean(np.stack(completeness_parts, axis=1), axis=1).astype(np.float32)
     else:
         completeness = np.zeros(n_rows, dtype=np.float32)
-    return metadata, feature_names, vocab, has_any, completeness
+    artifacts = {
+        "metadata_binary": metadata_binary.astype(np.float32),
+        "metadata_tfidf": metadata_tfidf.astype(np.float32),
+        "metadata_svd": metadata_svd.astype(np.float32),
+        "metadata_svd_model": svd_model,
+        "metadata_binary_feature_names": binary_feature_names,
+        "metadata_feature_groups": feature_groups,
+        "metadata_binary_feature_groups": binary_feature_groups,
+        "metadata_group_weights": group_weights,
+        "metadata_representation": representation,
+        "metadata_use_artist": bool(metadata_use_artist),
+        "metadata_svd_dim": int(svd_dim),
+    }
+    return metadata, feature_names, vocab, has_any, completeness, artifacts
 
 
 def _label_to_id(value: object) -> int:
@@ -436,6 +550,10 @@ def prepare_unimodal_dataset(
     seed: int = 42,
     dataset_version: str = "v1",
     max_tokens_per_field: int = 512,
+    metadata_use_artist: bool = False,
+    metadata_representation: str = "binary",
+    metadata_svd_dim: int = 32,
+    metadata_group_weights: Optional[object] = None,
 ) -> Dict[str, Any]:
     del audio_split_dir, lyrics_split_dir  # Reserved for compatibility with upstream split folders.
     if split_policy != "preserve_then_hash":
@@ -487,9 +605,20 @@ def prepare_unimodal_dataset(
     )
 
     metadata_frame = _resolve_metadata_frame(combined, metadata_csv, track_ids, id_col or "")
-    metadata, metadata_feature_names, metadata_vocab, has_metadata, metadata_completeness = _build_metadata_matrix(
+    (
+        metadata,
+        metadata_feature_names,
+        metadata_vocab,
+        has_metadata,
+        metadata_completeness,
+        metadata_artifacts,
+    ) = _build_metadata_matrix(
         metadata_frame=metadata_frame,
         max_tokens_per_field=max_tokens_per_field,
+        metadata_use_artist=metadata_use_artist,
+        metadata_representation=metadata_representation,
+        metadata_svd_dim=metadata_svd_dim,
+        metadata_group_weights=metadata_group_weights,
     )
 
     view_mask = np.stack([has_audio, has_lyrics, has_metadata], axis=1).astype(np.float32)
@@ -520,6 +649,9 @@ def prepare_unimodal_dataset(
     np.save(os.path.join(out_processed_dir, "audio.npy"), audio.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "lyrics.npy"), lyrics.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "metadata.npy"), metadata.astype(np.float32))
+    np.save(os.path.join(out_processed_dir, "metadata_binary.npy"), metadata_artifacts["metadata_binary"])
+    np.save(os.path.join(out_processed_dir, "metadata_tfidf.npy"), metadata_artifacts["metadata_tfidf"])
+    np.save(os.path.join(out_processed_dir, "metadata_svd.npy"), metadata_artifacts["metadata_svd"])
     np.save(os.path.join(out_processed_dir, "view_mask.npy"), view_mask.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "consistency.npy"), consistency.astype(np.float32))
     np.save(os.path.join(out_processed_dir, "va_diff.npy"), va_diff.astype(np.float32))
@@ -531,14 +663,35 @@ def prepare_unimodal_dataset(
 
     with open(os.path.join(out_processed_dir, "metadata_feature_names.json"), "w", encoding="utf-8") as f:
         json.dump(metadata_feature_names, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_processed_dir, "metadata_binary_feature_names.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata_artifacts["metadata_binary_feature_names"], f, ensure_ascii=False, indent=2)
     with open(os.path.join(out_processed_dir, "metadata_vocab.json"), "w", encoding="utf-8") as f:
         json.dump(metadata_vocab, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_processed_dir, "metadata_feature_groups.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata_artifacts["metadata_feature_groups"], f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_processed_dir, "metadata_binary_feature_groups.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata_artifacts["metadata_binary_feature_groups"], f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_processed_dir, "metadata_group_weights.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata_artifacts["metadata_group_weights"], f, ensure_ascii=False, indent=2)
+    svd_model = metadata_artifacts.get("metadata_svd_model")
+    if svd_model is not None:
+        with open(os.path.join(out_processed_dir, "metadata_svd_model.pkl"), "wb") as f:
+            pickle.dump(svd_model, f)
 
     metadata_schema = {
         "feature_names": metadata_feature_names,
+        "binary_feature_names": metadata_artifacts["metadata_binary_feature_names"],
+        "feature_groups": metadata_artifacts["metadata_feature_groups"],
+        "binary_feature_groups": metadata_artifacts["metadata_binary_feature_groups"],
+        "group_weights": metadata_artifacts["metadata_group_weights"],
         "vocab": metadata_vocab,
-        "list_fields": list(LIST_METADATA_FIELDS),
+        "list_fields": list(DEFAULT_LIST_METADATA_FIELDS)
+        + (list(OPTIONAL_IDENTITY_FIELDS) if metadata_use_artist else []),
+        "optional_identity_fields": list(OPTIONAL_IDENTITY_FIELDS),
         "numeric_fields": list(NUMERIC_METADATA_FIELDS),
+        "metadata_use_artist": bool(metadata_use_artist),
+        "metadata_representation": str(metadata_artifacts["metadata_representation"]),
+        "metadata_svd_dim": int(metadata_artifacts["metadata_svd_dim"]),
     }
     schema_payload = {
         "va_order": ["Valence", "Arousal"],
@@ -548,6 +701,9 @@ def prepare_unimodal_dataset(
             "va_diff.npy",
             "signed_va_diff.npy",
             "diff_observed.npy",
+            "metadata_binary.npy",
+            "metadata_tfidf.npy",
+            "metadata_svd.npy",
         ],
         "source_columns": list(combined.columns),
         "metadata_schema": metadata_schema,
@@ -626,6 +782,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset_version", default="v1")
     parser.add_argument("--max_tokens_per_field", type=int, default=512)
+    parser.add_argument("--metadata_use_artist", default="false")
+    parser.add_argument("--metadata_representation", default="binary", choices=["binary", "tfidf", "tfidf_svd"])
+    parser.add_argument("--metadata_svd_dim", type=int, default=32)
+    parser.add_argument("--metadata_group_weights", default=None)
     return parser
 
 
@@ -643,6 +803,10 @@ def main() -> None:
         seed=int(args.seed),
         dataset_version=str(args.dataset_version),
         max_tokens_per_field=int(args.max_tokens_per_field),
+        metadata_use_artist=_parse_bool(args.metadata_use_artist),
+        metadata_representation=str(args.metadata_representation),
+        metadata_svd_dim=int(args.metadata_svd_dim),
+        metadata_group_weights=args.metadata_group_weights,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

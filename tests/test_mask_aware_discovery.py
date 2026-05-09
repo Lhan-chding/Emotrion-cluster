@@ -95,6 +95,7 @@ def test_model_gate_and_loss_are_mask_aware():
         audio_dim=2,
         lyrics_dim=2,
         metadata_dim=1,
+        metadata_recon_dim=2,
         latent_dim=4,
         hidden_dim=8,
         metadata_hidden_dim=8,
@@ -105,6 +106,7 @@ def test_model_gate_and_loss_are_mask_aware():
         "audio": torch.tensor([[1.0, 2.0], [0.0, 0.0]], dtype=torch.float32),
         "lyrics": torch.tensor([[1.5, 2.5], [3.0, 4.0]], dtype=torch.float32),
         "metadata": torch.tensor([[1.0], [0.0]], dtype=torch.float32),
+        "metadata_recon_target": torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
         "view_mask": torch.tensor([[1.0, 1.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32),
         "consistency": torch.tensor([1.0, 0.0], dtype=torch.float32),
         "va_diff": torch.tensor([[0.5, 0.5], [0.0, 0.0]], dtype=torch.float32),
@@ -128,6 +130,9 @@ def test_model_gate_and_loss_are_mask_aware():
         view_mask=batch["view_mask"],
     )
 
+    assert outputs["metadata_recon"].shape == (2, 2)
+    assert outputs["z_consensus"].shape == outputs["z_cluster"].shape == (2, 4)
+    assert outputs["z_tension"].shape == (2, 4)
     assert outputs["gate_weights"][1, 0].item() == 0.0
     assert outputs["gate_weights"][1, 2].item() == 0.0
     assert outputs["gate_weights"][1, 1].item() == 1.0
@@ -140,6 +145,7 @@ def test_model_gate_and_loss_are_mask_aware():
         align_weight=0.2,
         metadata_align_weight=0.1,
         gate_entropy_weight=0.01,
+        metadata_recon_loss="bce",
     )
     assert torch.isfinite(losses["loss"])
     assert torch.isfinite(losses["recon_metadata"])

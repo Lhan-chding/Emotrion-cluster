@@ -211,3 +211,67 @@ def test_prepare_unimodal_dataset_derives_quadrants_from_original_va_when_label_
     assert manifest["quadrant"].tolist() == ["Q1", "Q2", "Q3", "Q4"]
     audio_aligned = pd.read_csv(aligned_root / "aligned_audio_metadata.csv")
     assert audio_aligned["Quadrant"].tolist() == ["Q1", "Q2", "Q3", "Q4"]
+
+
+def test_prepare_unimodal_dataset_writes_tfidf_svd_and_excludes_artist_by_default(tmp_path):
+    combined_csv = tmp_path / "metadata.csv"
+    pd.DataFrame(
+        [
+            {"track_id": "a", "Audio_Valence": 0.8, "Audio_Arousal": 0.7, "Lyrics_Valence": 0.7, "Lyrics_Arousal": 0.6, "Genres": "Rock", "MoodsAll": "Aggressive, Energetic", "Themes": "Action", "Styles": "Alt", "Artist": "Artist A"},
+            {"track_id": "b", "Audio_Valence": 0.2, "Audio_Arousal": 0.8, "Lyrics_Valence": 0.3, "Lyrics_Arousal": 0.7, "Genres": "Rock", "MoodsAll": "Aggressive", "Themes": "Conflict", "Styles": "Metal", "Artist": "Artist B"},
+            {"track_id": "c", "Audio_Valence": 0.6, "Audio_Arousal": 0.3, "Lyrics_Valence": 0.5, "Lyrics_Arousal": 0.4, "Genres": "Folk", "MoodsAll": "Reflective, Warm", "Themes": "Love", "Styles": "Acoustic", "Artist": "Artist C"},
+            {"track_id": "d", "Audio_Valence": 0.4, "Audio_Arousal": 0.2, "Lyrics_Valence": 0.4, "Lyrics_Arousal": 0.3, "Genres": "Folk", "MoodsAll": "Reflective", "Themes": "Memory", "Styles": "Acoustic", "Artist": "Artist D"},
+        ]
+    ).to_csv(combined_csv, index=False)
+
+    out_dir = tmp_path / "processed"
+    prepare_unimodal_dataset(
+        combined_csv=str(combined_csv),
+        out_processed_dir=str(out_dir),
+        metadata_use_artist=False,
+        metadata_representation="tfidf_svd",
+        metadata_svd_dim=2,
+        metadata_group_weights="Genres=0.25,Styles=0.35,Themes=0.50,MoodsAll=0.70,Artist=0.00",
+    )
+
+    metadata = np.load(out_dir / "metadata.npy")
+    metadata_binary = np.load(out_dir / "metadata_binary.npy")
+    metadata_tfidf = np.load(out_dir / "metadata_tfidf.npy")
+    metadata_svd = np.load(out_dir / "metadata_svd.npy")
+    assert metadata.shape == (4, 2)
+    np.testing.assert_allclose(metadata, metadata_svd)
+    assert metadata_binary.shape == metadata_tfidf.shape
+
+    binary_names = json.loads((out_dir / "metadata_binary_feature_names.json").read_text(encoding="utf-8"))
+    assert any(name.startswith("MoodsAll::") for name in binary_names)
+    assert not any(name.startswith("Artist::") for name in binary_names)
+
+    feature_names = json.loads((out_dir / "metadata_feature_names.json").read_text(encoding="utf-8"))
+    assert feature_names == ["metadata_svd::000", "metadata_svd::001"]
+
+    groups = json.loads((out_dir / "metadata_binary_feature_groups.json").read_text(encoding="utf-8"))
+    aggressive = next(item for item in groups if item["feature"] == "MoodsAll::aggressive")
+    assert aggressive["group"] == "MoodsAll"
+    assert aggressive["weight"] == 0.70
+
+
+def test_prepare_unimodal_dataset_can_include_artist_for_ablation(tmp_path):
+    combined_csv = tmp_path / "metadata.csv"
+    pd.DataFrame(
+        [
+            {"track_id": "a", "Audio_Valence": 0.8, "Audio_Arousal": 0.7, "Lyrics_Valence": 0.7, "Lyrics_Arousal": 0.6, "Artist": "Artist A"},
+            {"track_id": "b", "Audio_Valence": 0.2, "Audio_Arousal": 0.8, "Lyrics_Valence": 0.3, "Lyrics_Arousal": 0.7, "Artist": "Artist B"},
+        ]
+    ).to_csv(combined_csv, index=False)
+
+    out_dir = tmp_path / "processed"
+    prepare_unimodal_dataset(
+        combined_csv=str(combined_csv),
+        out_processed_dir=str(out_dir),
+        metadata_use_artist=True,
+        metadata_representation="binary",
+    )
+
+    feature_names = json.loads((out_dir / "metadata_feature_names.json").read_text(encoding="utf-8"))
+    assert "Artist::artist a" in feature_names
+    assert "Artist::artist b" in feature_names
