@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 import pandas as pd
+import numpy as np
 
 
 DEFAULT_CONFIGS: Tuple[str, ...] = (
@@ -66,6 +67,7 @@ class SuiteArgs(NamedTuple):
     micro_k_max: int
     min_cluster_size_abs: int
     metadata_policy: str
+    require_both_va: bool
 
 
 def _repo_script_path(script_name: str) -> str:
@@ -123,6 +125,8 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         str(int(args.stability_runs)),
         "--metadata_policy",
         metadata_policy,
+        "--require_both_va",
+        "true" if bool(args.require_both_va) else "false",
         "--diff_cluster_weight",
         f"{diff_weight:g}",
         "--covariance_type",
@@ -160,10 +164,71 @@ def _score_from_row(row: pd.Series) -> float:
     return float("nan")
 
 
+def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: float) -> float:
+    if row.empty:
+        return float("nan")
+    if "final_silhouette" in row and pd.notna(row["final_silhouette"]):
+        separation = float(row["final_silhouette"])
+    elif "silhouette" in row and pd.notna(row["silhouette"]):
+        separation = float(row["silhouette"])
+    else:
+        return float("nan")
+    leakage_penalty = 0.0 if not np.isfinite(mask_nmi) else max(0.0, float(mask_nmi) - 0.05)
+    enrichment_penalty = 0.0 if not np.isfinite(max_mask_enrichment) else max(0.0, float(max_mask_enrichment) - 1.30) * 0.05
+    return float(separation - leakage_penalty - enrichment_penalty)
+
+
+def _run_error_path(run_dir: Path) -> Path:
+    return run_dir / "run_error.json"
+
+
+def _write_run_error(run_dir: Path, config_name: str, command: Sequence[str], error: BaseException) -> Path:
+    payload: Dict[str, Any] = {
+        "config": config_name,
+        "status": "failed",
+        "command": list(command),
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+    }
+    returncode = getattr(error, "returncode", None)
+    if returncode is not None:
+        payload["returncode"] = int(returncode)
+    path = _run_error_path(run_dir)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _summarize_failed_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
+    error_path = _run_error_path(run_dir)
+    error_payload: Dict[str, Any] = {}
+    if error_path.exists():
+        error_payload = json.loads(error_path.read_text(encoding="utf-8"))
+    return {
+        "config": config_name,
+        "status": "failed",
+        "run_dir": str(run_dir),
+        "selected_k": float("nan"),
+        "k_strategy": CONFIG_REGISTRY.get(config_name, {}).get("k_strategy"),
+        "cluster_feature_strategy": CONFIG_REGISTRY.get(config_name, {}).get("strategy"),
+        "score": float("nan"),
+        "claim_score": float("nan"),
+        "silhouette": float("nan"),
+        "macro_silhouette": float("nan"),
+        "final_silhouette": float("nan"),
+        "seed_ari_mean": float("nan"),
+        "cluster_jaccard_min": float("nan"),
+        "mask_nmi": float("nan"),
+        "max_mask_enrichment": float("nan"),
+        "error_type": error_payload.get("error_type"),
+        "error_message": error_payload.get("error_message", f"Missing rerun summary for config '{config_name}'."),
+        "returncode": error_payload.get("returncode"),
+    }
+
+
 def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
     summary_path = run_dir / "rerun_summary.json"
     if not summary_path.exists():
-        raise FileNotFoundError(f"Missing rerun summary for config '{config_name}': {summary_path}")
+        return _summarize_failed_run(run_dir, config_name)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     selected_k = int(summary.get("selected_k", -1))
     metric_path = _first_existing_metric_path(run_dir)
@@ -174,18 +239,27 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
             metric_row = _selected_metric_row(metrics, selected_k)
     mask_diag = summary.get("mask_purity_diagnostics", {}) or {}
     clusters = mask_diag.get("clusters", []) or []
+    mask_nmi = float(mask_diag.get("nmi", float("nan")))
+    max_mask_enrichment = max([float(item.get("enrichment_vs_baseline", 0.0)) for item in clusters], default=float("nan"))
     return {
         "config": config_name,
+        "status": "ok",
         "run_dir": str(run_dir),
         "selected_k": selected_k,
         "k_strategy": summary.get("k_strategy"),
         "cluster_feature_strategy": summary.get("cluster_feature_strategy"),
         "score": _score_from_row(metric_row) if not metric_row.empty else float("nan"),
+        "claim_score": _claim_score_from_row(metric_row, mask_nmi, max_mask_enrichment),
         "silhouette": float(metric_row.get("silhouette", float("nan"))) if not metric_row.empty else float("nan"),
+        "macro_silhouette": float(metric_row.get("macro_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
+        "final_silhouette": float(metric_row.get("final_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "seed_ari_mean": float((summary.get("selection_info", {}) or {}).get("seed_ari_mean", metric_row.get("seed_ari_mean", float("nan")))),
         "cluster_jaccard_min": float((summary.get("selection_info", {}) or {}).get("cluster_jaccard_min", metric_row.get("cluster_jaccard_min", float("nan")))),
-        "mask_nmi": float(mask_diag.get("nmi", float("nan"))),
-        "max_mask_enrichment": max([float(item.get("enrichment_vs_baseline", 0.0)) for item in clusters], default=float("nan")),
+        "mask_nmi": mask_nmi,
+        "max_mask_enrichment": max_mask_enrichment,
+        "error_type": None,
+        "error_message": None,
+        "returncode": None,
     }
 
 
@@ -195,10 +269,15 @@ def write_suite_reports(out_dir: Path | str, configs: Sequence[str]) -> Tuple[Pa
     baseline = pd.DataFrame(rows)
     baseline_path = root / "baseline_comparison.csv"
     baseline.to_csv(baseline_path, index=False)
-    proposed = baseline.loc[baseline["config"] == "proposed_full", "score"]
+    score_column = "claim_score" if "claim_score" in baseline.columns else "score"
+    proposed = baseline.loc[baseline["config"] == "proposed_full", score_column]
     proposed_score = float(proposed.iloc[0]) if not proposed.empty else float("nan")
     ablation = baseline.copy()
-    ablation["delta_score_vs_proposed_full"] = ablation["score"] - proposed_score
+    ablation["delta_claim_score_vs_proposed_full"] = pd.to_numeric(ablation[score_column], errors="coerce") - proposed_score
+    if "score" in ablation.columns:
+        proposed_internal = baseline.loc[baseline["config"] == "proposed_full", "score"]
+        proposed_internal_score = float(proposed_internal.iloc[0]) if not proposed_internal.empty else float("nan")
+        ablation["delta_score_vs_proposed_full"] = pd.to_numeric(ablation["score"], errors="coerce") - proposed_internal_score
     ablation_path = root / "ablation_report.csv"
     ablation.to_csv(ablation_path, index=False)
     return baseline_path, ablation_path
@@ -235,6 +314,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--micro_k_max", type=int, default=5)
     parser.add_argument("--min_cluster_size_abs", type=int, default=40)
     parser.add_argument("--metadata_policy", default="report_only")
+    parser.add_argument(
+        "--require_both_va",
+        choices=("true", "false"),
+        default="true",
+        help="Run every ablation on the same complete audio+lyrics VA subset.",
+    )
+    parser.add_argument(
+        "--skip_existing",
+        choices=("true", "false"),
+        default="true",
+        help="Skip configs whose rerun_summary.json already exists. Failed or incomplete configs are retried.",
+    )
     return parser
 
 
@@ -258,13 +349,21 @@ def main() -> None:
         micro_k_max=int(ns.micro_k_max),
         min_cluster_size_abs=int(ns.min_cluster_size_abs),
         metadata_policy=str(ns.metadata_policy),
+        require_both_va=str(ns.require_both_va).lower() == "true",
     )
     for config in configs:
         run_out_dir = out_dir / config
         run_out_dir.mkdir(parents=True, exist_ok=True)
+        if str(ns.skip_existing).lower() == "true" and (run_out_dir / "rerun_summary.json").exists():
+            print(f"[Ablation] Skip existing successful config: {config}", flush=True)
+            continue
         command = build_rerun_command(args, config, run_out_dir)
         print("[Ablation]", " ".join(command), flush=True)
-        subprocess.run(command, check=True)
+        try:
+            subprocess.run(command, check=True)
+        except subprocess.CalledProcessError as exc:
+            error_path = _write_run_error(run_out_dir, config, command, exc)
+            print(f"[Ablation][FAILED] {config}: wrote {error_path}; continuing.", flush=True)
     baseline_path, ablation_path = write_suite_reports(out_dir, configs)
     print(f"[Ablation] Wrote {baseline_path}")
     print(f"[Ablation] Wrote {ablation_path}")

@@ -94,6 +94,9 @@ def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
 
     required_configs = {
         "mean_va",
+        "audio_va",
+        "lyrics_va",
+        "mean_va_diff",
         "va_geometry",
         "metadata_only",
         "proposed_no_diff",
@@ -111,22 +114,44 @@ def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
             "Ablation reports exist but do not cover the required baseline matrix.",
             {"missing_configs": missing_configs},
         )
-    if "score" in baseline.columns:
-        proposed = baseline.loc[baseline["config"].astype(str) == "proposed_full", "score"]
-        if not proposed.empty and pd.notna(proposed.iloc[0]):
-            proposed_score = float(proposed.iloc[0])
-            competitors = baseline[baseline["config"].astype(str) != "proposed_full"].copy()
-            competitors = competitors[pd.to_numeric(competitors["score"], errors="coerce").notna()]
-            non_improved = competitors[pd.to_numeric(competitors["score"], errors="coerce") >= proposed_score]
-            if not non_improved.empty:
-                return _gate(
-                    FAIL,
-                    "proposed_full must outperform every required baseline before it can be claimed as the main result.",
-                    {
-                        "proposed_full_score": proposed_score,
-                        "non_improved_configs": non_improved["config"].astype(str).tolist(),
-                    },
-                )
+    if "status" in baseline.columns:
+        status = baseline["status"].astype(str).str.lower()
+        required_rows = baseline[baseline["config"].astype(str).isin(required_configs)]
+        failed_required = required_rows[~status.loc[required_rows.index].isin({"ok", "pass", "success", "completed"})]
+        if not failed_required.empty:
+            value: Dict[str, Any] = {"failed_configs": failed_required["config"].astype(str).tolist()}
+            if "error_message" in failed_required.columns:
+                value["errors"] = {
+                    str(row.config): str(row.error_message)
+                    for row in failed_required[["config", "error_message"]].itertuples(index=False)
+                }
+            return _gate(
+                FAIL,
+                "Required ablation configs must complete successfully before main-result claims.",
+                value,
+            )
+    score_column = "claim_score" if "claim_score" in baseline.columns else "score"
+    if score_column in baseline.columns:
+        proposed = baseline.loc[baseline["config"].astype(str) == "proposed_full", score_column]
+        if proposed.empty or pd.isna(proposed.iloc[0]):
+            return _gate(
+                FAIL,
+                f"proposed_full must have a valid {score_column} before it can be claimed as the main result.",
+            )
+        proposed_score = float(proposed.iloc[0])
+        competitors = baseline[baseline["config"].astype(str) != "proposed_full"].copy()
+        competitors = competitors[pd.to_numeric(competitors[score_column], errors="coerce").notna()]
+        non_improved = competitors[pd.to_numeric(competitors[score_column], errors="coerce") >= proposed_score]
+        if not non_improved.empty:
+            return _gate(
+                FAIL,
+                "proposed_full must outperform every required baseline before it can be claimed as the main result.",
+                {
+                    "proposed_full_score": proposed_score,
+                    "score_column": score_column,
+                    "non_improved_configs": non_improved["config"].astype(str).tolist(),
+                },
+            )
     return _gate(PASS, "Required ablation/baseline matrix is present and proposed_full is above listed baselines.")
 
 
@@ -177,6 +202,13 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
     gates["metadata_policy_declared"] = _gate(
         PASS if bool(summary.get("metadata_policy") or selection.get("metadata_policy")) else FAIL,
         "Run must declare metadata policy: affective_va_only, non_affective_metadata, or all_metadata_upper_bound.",
+    )
+    filter_summary = summary.get("dataset_filter_summary", {}) or {}
+    require_both_va = bool(summary.get("require_both_va", filter_summary.get("require_both_va", False)))
+    gates["complete_audio_lyrics_va_subset"] = _gate(
+        PASS if require_both_va else FAIL,
+        "Main result must use the complete audio+lyrics VA subset unless explicitly running an incomplete-view ablation.",
+        filter_summary.get("splits"),
     )
 
     hard_failures = {

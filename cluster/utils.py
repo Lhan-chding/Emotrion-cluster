@@ -129,6 +129,7 @@ def fit_scaler_state(
     *,
     load_split_indices_fn: Any = None,
     cache: Optional[ArrayCache] = None,
+    sample_filter: Optional[np.ndarray] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     """Compute per-view mean/std from the *train* split only.
 
@@ -144,6 +145,9 @@ def fit_scaler_state(
 
     split_indices = load_split_indices_fn(data_dir, split_protocol)
     train_idx = split_indices["train"]
+    if sample_filter is not None:
+        keep = np.asarray(sample_filter, dtype=bool)
+        train_idx = train_idx[keep[train_idx]]
     view_mask = load_optional_array(data_dir, "view_mask", np.float32, cache=cache)
     view_to_mask_col = {"audio": 0, "lyrics": 1, "metadata": 2}
     scaler_state: Dict[str, Dict[str, List[float]]] = {}

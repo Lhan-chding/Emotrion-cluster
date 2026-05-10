@@ -17,6 +17,7 @@ from cluster.models.discovery_net import (
     extract_split_embeddings,
     initialize_discovery_runtime,
     load_music_discovery_checkpoint,
+    music_discovery_dataset_filter_summary,
 )
 from cluster.pipeline.k_selection import HierarchicalClusterResult
 from cluster.pipeline.train import (
@@ -161,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--block_scaler", type=str, default="auto", choices=["auto", "standard", "observed"])
     parser.add_argument("--run_topconf_audit", type=str, default="false")
+    parser.add_argument(
+        "--require_both_va",
+        type=str,
+        default="false",
+        help="When true, keep only samples with both audio and lyrics VA in rerun search/eval splits.",
+    )
     parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
                         help="Allow checkpoint with mismatched metadata_dim (true/false)")
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
@@ -237,11 +244,14 @@ def main() -> None:
     split_protocol = parse_split_protocol(
         str(sidecar.get("config", {}).get("split_protocol", str(args.split_protocol)))
     )
+    require_both_va = parse_bool_text(args.require_both_va)
     datasets = create_music_discovery_datasets(
         data_dir=str(args.processed_dir),
         split_protocol=split_protocol,
         scaler_state=sidecar.get("scaler_state"),
+        require_both_va=require_both_va,
     )
+    dataset_filter_summary = music_discovery_dataset_filter_summary(datasets)
     eval_splits = _parse_eval_splits(str(args.eval_splits), search_split=str(args.search_split).strip().lower())
 
     eval_loaders = {
@@ -566,6 +576,8 @@ def main() -> None:
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "split_outputs": split_outputs,
+        "require_both_va": bool(require_both_va),
+        "dataset_filter_summary": dataset_filter_summary,
     }
     if is_hierarchical:
         summary["macro_k"] = k_result.macro_k
@@ -601,6 +613,8 @@ def main() -> None:
         "latent_dim": sidecar.get("config", {}).get("latent_dim", "raw_feature_only" if not requires_checkpoint else "reused"),
         "metadata_feature_dim": int(datasets.train_dataset.metadata.shape[1]),
         "metadata_policy": metadata_policy_info,
+        "require_both_va": bool(require_both_va),
+        "dataset_filter_summary": dataset_filter_summary,
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": os.path.join(str(args.run_dir), "training_history.csv") if args.run_dir else None,

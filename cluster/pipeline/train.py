@@ -41,6 +41,7 @@ from cluster.models.discovery_net import (
     create_music_discovery_loader,
     extract_split_embeddings,
     initialize_discovery_runtime,
+    music_discovery_dataset_filter_summary,
     save_discovery_checkpoint,
     train_music_discovery_model,
 )
@@ -211,6 +212,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--block_scaler", type=str, default="auto", choices=["auto", "standard", "observed"])
     parser.add_argument("--run_topconf_audit", type=str, default="false")
+    parser.add_argument(
+        "--require_both_va",
+        type=str,
+        default="false",
+        help="When true, keep only samples with both audio and lyrics VA in train/search/eval splits.",
+    )
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
                         choices=["joint", "complete_first", "partial_likelihood"],
@@ -2006,6 +2013,16 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
             )
         else:
             lines.append(f"- Metadata policy: `{policy}`")
+    if "require_both_va" in summary:
+        lines.append(f"- Complete audio+lyrics VA subset: `{bool(summary['require_both_va'])}`")
+        filter_summary = summary.get("dataset_filter_summary", {}) or {}
+        split_counts = filter_summary.get("splits", {}) if isinstance(filter_summary, dict) else {}
+        if split_counts:
+            count_text = ", ".join(
+                f"{split}: {int(values.get('kept_samples', 0))}/{int(values.get('original_samples', 0))}"
+                for split, values in split_counts.items()
+            )
+            lines.append(f"- Filtered sample counts: `{count_text}`")
     if "plot_va_source" in summary:
         lines.append(f"- Plot VA source: `{summary['plot_va_source']}`")
     lines.append(f"- Metadata feature dim: `{summary['metadata_feature_dim']}`")
@@ -2150,10 +2167,13 @@ def main() -> None:
         json.dump(metadata_summary, f, ensure_ascii=False, indent=2)
 
     split_protocol = parse_split_protocol(str(args.split_protocol))
+    require_both_va = parse_bool_text(args.require_both_va)
     datasets = create_music_discovery_datasets(
         data_dir=str(args.processed_dir),
         split_protocol=split_protocol,
+        require_both_va=require_both_va,
     )
+    dataset_filter_summary = music_discovery_dataset_filter_summary(datasets)
     device = initialize_discovery_runtime(seed=int(args.seed), gpu=str(args.gpu))
 
     train_loader = create_music_discovery_loader(datasets.train_dataset, batch_size=int(args.batch_size), shuffle=True)
@@ -2288,6 +2308,8 @@ def main() -> None:
             "max_tokens_per_field": int(args.max_tokens_per_field),
             "mask_aware_gate": True,
             "dec_cvcl_head": int(args.cluster_head_k) > 0,
+            "require_both_va": bool(require_both_va),
+            "dataset_filter_summary": dataset_filter_summary,
         },
         best_metrics=best_metrics,
         dataset_version=processed_meta.get("dataset_version"),
@@ -2609,6 +2631,8 @@ def main() -> None:
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": history_path,
         "metadata_summary_path": metadata_summary_path,
+        "require_both_va": bool(require_both_va),
+        "dataset_filter_summary": dataset_filter_summary,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
         "block_scaler": str(args.block_scaler),

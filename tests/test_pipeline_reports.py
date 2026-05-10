@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from cluster.pipeline.rerun import build_parser as build_rerun_parser
 from cluster.pipeline.train import (
     _cluster_label_names_for_outputs,
     _dataset_plot_va,
@@ -521,6 +522,8 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
             "observed",
             "--run_topconf_audit",
             "true",
+            "--require_both_va",
+            "true",
         ]
     )
 
@@ -530,6 +533,24 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
     assert args.silhouette_mode == "masked_torch_chunked"
     assert args.block_scaler == "observed"
     assert args.run_topconf_audit == "true"
+    assert args.require_both_va == "true"
+
+
+def test_rerun_parser_accepts_complete_pair_filter_flag():
+    args = build_rerun_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--cluster_feature_strategy",
+            "mean_va",
+            "--require_both_va",
+            "true",
+        ]
+    )
+
+    assert args.require_both_va == "true"
 
 
 def test_metadata_only_strategy_uses_metadata_embedding_without_other_views():

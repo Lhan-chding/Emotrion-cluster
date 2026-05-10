@@ -95,3 +95,69 @@ def test_topconf_audit_requires_named_ablation_configs_and_proposed_gain(tmp_pat
     gate = result["gates"]["required_ablations_present"]
     assert gate["status"] == "fail"
     assert "required baseline matrix" in gate["detail"].lower() or "outperform" in gate["detail"].lower()
+
+
+def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
+    run_dir = tmp_path
+    (run_dir / "train").mkdir()
+    summary = {"selected_k": 9, "selection_info": {}}
+    (run_dir / "rerun_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    pd.DataFrame([{"macro_k": 4, "total_clusters": 9, "total_k_ok": True, "min_size_ok": True}]).to_csv(
+        run_dir / "train" / "cluster_search_metrics.csv",
+        index=False,
+    )
+    rows = [
+        {"config": "mean_va", "status": "ok", "score": 0.10},
+        {"config": "audio_va", "status": "ok", "score": 0.10},
+        {"config": "lyrics_va", "status": "ok", "score": 0.10},
+        {"config": "mean_va_diff", "status": "ok", "score": 0.10},
+        {"config": "va_geometry", "status": "ok", "score": 0.11},
+        {
+            "config": "metadata_only",
+            "status": "failed",
+            "score": float("nan"),
+            "error_message": "No K candidate satisfied min_cluster_size_threshold=40",
+        },
+        {"config": "proposed_no_diff", "status": "ok", "score": 0.12},
+        {"config": "proposed_no_metadata", "status": "ok", "score": 0.13},
+        {"config": "proposed_full", "status": "ok", "score": 0.30},
+    ]
+    pd.DataFrame(rows).to_csv(run_dir / "baseline_comparison.csv", index=False)
+    pd.DataFrame(rows).to_csv(run_dir / "ablation_report.csv", index=False)
+
+    result = audit_run(run_dir)
+
+    gate = result["gates"]["required_ablations_present"]
+    assert gate["status"] == "fail"
+    assert gate["value"]["failed_configs"] == ["metadata_only"]
+
+
+def test_topconf_audit_uses_common_claim_score_to_reject_weaker_proposed_model(tmp_path):
+    run_dir = tmp_path
+    (run_dir / "train").mkdir()
+    summary = {"selected_k": 9, "selection_info": {}, "require_both_va": True}
+    (run_dir / "rerun_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    pd.DataFrame([{"macro_k": 4, "total_clusters": 9, "total_k_ok": True, "min_size_ok": True}]).to_csv(
+        run_dir / "train" / "cluster_search_metrics.csv",
+        index=False,
+    )
+    rows = [
+        {"config": "mean_va", "status": "ok", "score": 0.10, "claim_score": 0.08},
+        {"config": "audio_va", "status": "ok", "score": 0.80, "claim_score": 0.30},
+        {"config": "lyrics_va", "status": "ok", "score": 0.10, "claim_score": 0.06},
+        {"config": "mean_va_diff", "status": "ok", "score": 0.10, "claim_score": 0.07},
+        {"config": "va_geometry", "status": "ok", "score": 0.11, "claim_score": 0.07},
+        {"config": "metadata_only", "status": "ok", "score": 0.12, "claim_score": 0.04},
+        {"config": "proposed_no_diff", "status": "ok", "score": 0.12, "claim_score": 0.05},
+        {"config": "proposed_no_metadata", "status": "ok", "score": 0.13, "claim_score": 0.09},
+        {"config": "proposed_full", "status": "ok", "score": 0.90, "claim_score": 0.20},
+    ]
+    pd.DataFrame(rows).to_csv(run_dir / "baseline_comparison.csv", index=False)
+    pd.DataFrame(rows).to_csv(run_dir / "ablation_report.csv", index=False)
+
+    result = audit_run(run_dir)
+
+    gate = result["gates"]["required_ablations_present"]
+    assert gate["status"] == "fail"
+    assert gate["value"]["score_column"] == "claim_score"
+    assert gate["value"]["non_improved_configs"] == ["audio_va"]

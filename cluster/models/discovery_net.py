@@ -66,6 +66,7 @@ class MusicDiscoveryDataset(Dataset):
         split_protocol: str,
         scaler_state: Dict[str, Dict[str, List[float]]],
         *,
+        require_both_va: bool = False,
         cache: Optional[ArrayCache] = None,
     ) -> None:
         self.data_dir = resolve_music_data_dir(data_dir)
@@ -115,6 +116,14 @@ class MusicDiscoveryDataset(Dataset):
             split=self.split,
             n_samples=n_samples,
         )
+        original_indices = indices
+        self.require_both_va = bool(require_both_va)
+        if self.require_both_va:
+            both_audio_lyrics = (view_mask[:, 0] > 0.0) & (view_mask[:, 1] > 0.0)
+            indices = indices[both_audio_lyrics[indices]]
+        self.original_split_size = int(original_indices.shape[0])
+        self.filtered_split_size = int(indices.shape[0])
+        self.dropped_missing_va_count = int(self.original_split_size - self.filtered_split_size)
         track_index = load_track_index(self.data_dir)
         self.identifiers = [track_index["identifier"][int(idx)] for idx in indices.tolist()]
         self.lyric_identifiers = [track_index["lyric_identifier"][int(idx)] for idx in indices.tolist()]
@@ -192,17 +201,51 @@ class MusicDiscoveryDataset(Dataset):
         return item
 
 
+def music_discovery_dataset_filter_summary(artifacts: MusicDiscoveryDatasetArtifacts) -> Dict[str, Any]:
+    datasets = {
+        "train": artifacts.train_dataset,
+        "val": artifacts.val_dataset,
+        "test": artifacts.test_dataset,
+        "all": artifacts.all_dataset,
+    }
+    splits = {
+        name: {
+            "original_samples": int(getattr(dataset, "original_split_size", len(dataset))),
+            "kept_samples": int(len(dataset)),
+            "dropped_missing_va_samples": int(getattr(dataset, "dropped_missing_va_count", 0)),
+        }
+        for name, dataset in datasets.items()
+    }
+    return {
+        "require_both_va": bool(getattr(artifacts.train_dataset, "require_both_va", False)),
+        "splits": splits,
+    }
+
+
 def create_music_discovery_datasets(
     data_dir: str,
     split_protocol: str,
     scaler_state: Optional[Dict[str, Dict[str, List[float]]]] = None,
+    *,
+    require_both_va: bool = False,
 ) -> MusicDiscoveryDatasetArtifacts:
     resolved_dir = resolve_music_data_dir(data_dir)
+    cache = ArrayCache()
+    sample_filter = None
+    if bool(require_both_va):
+        view_mask = load_optional_array(resolved_dir, "view_mask", np.float32, cache=cache)
+        if view_mask is None or view_mask.ndim != 2 or view_mask.shape[1] < 2:
+            raise ValueError("--require_both_va true requires view_mask.npy with audio and lyrics columns.")
+        sample_filter = (view_mask[:, 0] > 0.0) & (view_mask[:, 1] > 0.0)
+        if not bool(sample_filter.any()):
+            raise ValueError("--require_both_va true would drop every sample; no audio+lyrics VA pairs found.")
     if scaler_state is None:
         scaler_state = fit_scaler_state(
             resolved_dir,
             split_protocol,
             ["audio", "lyrics", "metadata"],
+            cache=cache,
+            sample_filter=sample_filter,
         )
     names_path = os.path.join(resolved_dir, "metadata_binary_feature_names.json")
     if not os.path.exists(names_path):
@@ -214,12 +257,14 @@ def create_music_discovery_datasets(
         metadata = load_required_array(resolved_dir, "metadata", np.float32)
         metadata_feature_names = [f"metadata::{idx}" for idx in range(metadata.shape[1])]
 
-    cache = ArrayCache()
+    train_dataset = MusicDiscoveryDataset(resolved_dir, "train", split_protocol, scaler_state, require_both_va=require_both_va, cache=cache)
+    if bool(require_both_va) and len(train_dataset) == 0:
+        raise ValueError("--require_both_va true would drop every train sample; cannot train or search.")
     return MusicDiscoveryDatasetArtifacts(
-        train_dataset=MusicDiscoveryDataset(resolved_dir, "train", split_protocol, scaler_state, cache=cache),
-        val_dataset=MusicDiscoveryDataset(resolved_dir, "val", split_protocol, scaler_state, cache=cache),
-        test_dataset=MusicDiscoveryDataset(resolved_dir, "test", split_protocol, scaler_state, cache=cache),
-        all_dataset=MusicDiscoveryDataset(resolved_dir, "all", split_protocol, scaler_state, cache=cache),
+        train_dataset=train_dataset,
+        val_dataset=MusicDiscoveryDataset(resolved_dir, "val", split_protocol, scaler_state, require_both_va=require_both_va, cache=cache),
+        test_dataset=MusicDiscoveryDataset(resolved_dir, "test", split_protocol, scaler_state, require_both_va=require_both_va, cache=cache),
+        all_dataset=MusicDiscoveryDataset(resolved_dir, "all", split_protocol, scaler_state, require_both_va=require_both_va, cache=cache),
         scaler_state=scaler_state,
         metadata_feature_names=metadata_feature_names,
     )

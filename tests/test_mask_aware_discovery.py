@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from cluster.models.discovery_net import (
+    create_music_discovery_datasets,
     MusicDiscoveryDataset,
     MusicMetadataDiscoveryNet,
     _discovery_loss,
@@ -78,6 +79,27 @@ def test_scaler_and_dataset_ignore_missing_view_values(tmp_path):
     np.testing.assert_allclose(raw_embeddings["mean_va"][0], np.asarray([2.0, 3.0], dtype=np.float32))
     assert raw_embeddings["va_geometry"].shape == (2, 17)
     assert raw_embeddings["z_fused"].shape == (2, 2)
+
+
+def test_discovery_datasets_can_filter_to_complete_audio_lyrics_pairs(tmp_path):
+    _write_processed_dataset(tmp_path)
+
+    artifacts = create_music_discovery_datasets(
+        data_dir=str(tmp_path),
+        split_protocol="70_15_15",
+        require_both_va=True,
+    )
+
+    assert len(artifacts.train_dataset) == 1
+    assert len(artifacts.val_dataset) == 0
+    assert len(artifacts.test_dataset) == 0
+    assert len(artifacts.all_dataset) == 1
+    assert artifacts.train_dataset.identifiers == ["a"]
+    np.testing.assert_array_equal(artifacts.train_dataset.view_mask[:, :2], np.asarray([[1.0, 1.0]], dtype=np.float32))
+    assert artifacts.train_dataset.dropped_missing_va_count == 1
+    assert artifacts.all_dataset.dropped_missing_va_count == 2
+    assert artifacts.scaler_state["audio"]["mean"] == [1.0, 2.0]
+    assert artifacts.scaler_state["lyrics"]["mean"] == [3.0, 4.0]
 
 
 def test_rerun_checkpoint_requirement_matches_feature_strategy():
