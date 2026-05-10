@@ -3,9 +3,12 @@ import math
 import numpy as np
 
 from cluster.features.va_geometry import (
+    BALANCED_VA_DIFF_DIM,
+    BALANCED_VA_DIFF_FEATURE_NAMES,
     VA_GEOMETRY_FEATURE_NAMES,
     VA_GEOMETRY_OBSERVED_NAMES,
     VA_GEOMETRY_OBSERVED_DIM,
+    build_balanced_va_diff_features,
     build_va_geometry_features,
     build_va_geometry_observed_features,
     build_va_geometry_mask,
@@ -75,6 +78,28 @@ def test_va_geometry_features_include_consensus_and_circumplex_disagreement():
         "has_lyrics",
     ]
     np.testing.assert_allclose(features[0], expected, atol=1e-6)
+
+
+def test_balanced_va_diff_features_keep_both_modal_va_and_disagreement():
+    audio = np.asarray([[0.8, 0.6]], dtype=np.float32)
+    lyrics = np.asarray([[0.2, 0.7]], dtype=np.float32)
+    view_mask = np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32)
+
+    features = build_balanced_va_diff_features(audio, lyrics, view_mask)
+
+    assert BALANCED_VA_DIFF_DIM == 18
+    assert BALANCED_VA_DIFF_FEATURE_NAMES[:6] == [
+        "consensus_valence",
+        "consensus_arousal",
+        "audio_valence",
+        "audio_arousal",
+        "lyrics_valence",
+        "lyrics_arousal",
+    ]
+    np.testing.assert_allclose(features[:, :2], np.asarray([[0.5, 0.65]], dtype=np.float32))
+    np.testing.assert_allclose(features[:, 2:4], audio)
+    np.testing.assert_allclose(features[:, 4:6], lyrics)
+    np.testing.assert_allclose(features[:, 6:8], np.asarray([[0.6, -0.1]], dtype=np.float32), atol=1e-6)
 
 
 def test_va_geometry_features_treat_missing_pair_conflict_as_unknown_not_agreement():

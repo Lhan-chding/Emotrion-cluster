@@ -109,6 +109,7 @@ def test_rerun_checkpoint_requirement_matches_feature_strategy():
     assert not _strategy_requires_checkpoint("mean_va")
     assert not _strategy_requires_checkpoint("va_geometry")
     assert not _strategy_requires_checkpoint("mean_va_diff")
+    assert not _strategy_requires_checkpoint("balanced_va_diff")
     assert not _strategy_requires_checkpoint("original_va")
 
 

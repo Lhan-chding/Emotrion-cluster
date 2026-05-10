@@ -43,7 +43,16 @@ from cluster.pipeline.train import (
 )
 
 RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset(
-    {"mean_va", "audio_va", "lyrics_va", "va_geometry", "mean_va_diff", "original_va", "metadata_only"}
+    {
+        "mean_va",
+        "audio_va",
+        "lyrics_va",
+        "balanced_va_diff",
+        "va_geometry",
+        "mean_va_diff",
+        "original_va",
+        "metadata_only",
+    }
 )
 
 
@@ -141,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "mean_va",
                             "audio_va",
                             "lyrics_va",
+                            "balanced_va_diff",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -177,6 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--macro_k_max", type=int, default=8)
     parser.add_argument("--micro_k_min", type=int, default=1)
     parser.add_argument("--micro_k_max", type=int, default=5)
+    parser.add_argument(
+        "--affect_gate",
+        type=str,
+        default="true",
+        help="When true, K selection rejects candidates with mixed VA/quadrant clusters.",
+    )
+    parser.add_argument("--min_affect_dominant_ratio", type=float, default=0.70)
+    parser.add_argument("--max_affect_mixed_cluster_fraction", type=float, default=0.15)
+    parser.add_argument("--min_affect_weighted_purity", type=float, default=0.80)
+    parser.add_argument("--min_affect_valid_fraction", type=float, default=0.95)
     return parser
 
 
@@ -365,6 +385,12 @@ def main() -> None:
         macro_k_max=int(args.macro_k_max),
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
+        affect_labels=getattr(eval_datasets[search_split], "labels", None),
+        affect_gate_enabled=parse_bool_text(args.affect_gate),
+        min_affect_dominant_ratio=float(args.min_affect_dominant_ratio),
+        max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
+        min_affect_weighted_purity=float(args.min_affect_weighted_purity),
+        min_affect_valid_fraction=float(args.min_affect_valid_fraction),
     )
     selection_info["metadata_policy"] = dict(metadata_policy_info)
 
@@ -448,6 +474,11 @@ def main() -> None:
                     "silhouette_mode": str(args.silhouette_mode),
                     "silhouette_sample_size": int(args.silhouette_sample_size),
                     "silhouette_chunk_size": int(args.silhouette_chunk_size),
+                    "affect_gate": parse_bool_text(args.affect_gate),
+                    "min_affect_dominant_ratio": float(args.min_affect_dominant_ratio),
+                    "max_affect_mixed_cluster_fraction": float(args.max_affect_mixed_cluster_fraction),
+                    "min_affect_weighted_purity": float(args.min_affect_weighted_purity),
+                    "min_affect_valid_fraction": float(args.min_affect_valid_fraction),
                     "metadata_policy": metadata_policy_info,
                     "metadata_cluster_weight": effective_metadata_cluster_weight,
                     "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),

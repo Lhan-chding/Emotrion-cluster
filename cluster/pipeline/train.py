@@ -23,7 +23,14 @@ from sklearn.preprocessing import StandardScaler
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.features.block_scaler import BlockwiseObservedScaler
-from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM, impute_unobserved_pairwise
+from cluster.features.va_geometry import (
+    BALANCED_VA_DIFF_DIM,
+    VA_GEOMETRY_FEATURE_NAMES,
+    VA_GEOMETRY_OBSERVED_NAMES,
+    VA_GEOMETRY_OBSERVED_DIM,
+    build_balanced_va_diff_features,
+    impute_unobserved_pairwise,
+)
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
@@ -182,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "mean_va",
                             "audio_va",
                             "lyrics_va",
+                            "balanced_va_diff",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -226,6 +234,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--macro_k_max", type=int, default=6)
     parser.add_argument("--micro_k_min", type=int, default=1)
     parser.add_argument("--micro_k_max", type=int, default=5)
+    parser.add_argument(
+        "--affect_gate",
+        type=str,
+        default="true",
+        help="When true, K selection rejects candidates with mixed VA/quadrant clusters.",
+    )
+    parser.add_argument("--min_affect_dominant_ratio", type=float, default=0.70)
+    parser.add_argument("--max_affect_mixed_cluster_fraction", type=float, default=0.15)
+    parser.add_argument("--min_affect_weighted_purity", type=float, default=0.80)
+    parser.add_argument("--min_affect_valid_fraction", type=float, default=0.95)
     parser.add_argument("--min_final_clusters", type=int, default=0)
     parser.add_argument("--max_final_clusters", type=int, default=0)
     parser.add_argument("--micro_min_cluster_size_abs", type=int, default=0)
@@ -306,6 +324,7 @@ class ClusterFeatureStrategy(Enum):
     LYRICS_VA = "lyrics_va"           # raw lyrics VA baseline
     VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
+    BALANCED_VA_DIFF = "balanced_va_diff"  # consensus + audio/lyrics VA + disagreement encoding
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     METADATA_ONLY = "metadata_only"   # metadata-only leakage/upper-bound baseline
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
@@ -367,6 +386,18 @@ def _original_va_features(embeddings: Dict[str, Any]) -> np.ndarray:
     if features.ndim != 2 or features.shape[1] != 2:
         raise ValueError(f"original_va must have shape [N, 2], got {features.shape}.")
     return features
+
+
+def _balanced_va_diff_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
+    audio = embeddings.get("audio_va")
+    lyrics = embeddings.get("lyrics_va")
+    if audio is None or lyrics is None:
+        raise ValueError("cluster_feature_strategy='balanced_va_diff' requires audio_va and lyrics_va embeddings.")
+    return build_balanced_va_diff_features(
+        np.asarray(audio, dtype=np.float32),
+        np.asarray(lyrics, dtype=np.float32),
+        np.asarray(view_mask, dtype=np.float32),
+    )
 
 
 def _metadata_only_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
@@ -543,6 +574,8 @@ def build_cluster_features(
         features = _view_va_features(embeddings, "audio_va", 0)
     elif base_strategy == "lyrics_va":
         features = _view_va_features(embeddings, "lyrics_va", 1)
+    elif base_strategy == "balanced_va_diff":
+        features = _balanced_va_diff_features(embeddings, view_mask)
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
         raw_geom = _va_geometry_features(embeddings)
         features, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
@@ -621,6 +654,10 @@ def cluster_feature_weights(
     if base_strategy in {"va_geometry", "mean_va_diff"} and int(feature_dim) == VA_GEOMETRY_OBSERVED_DIM:
         weights[0:2] = 2.0
         weights[2:VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
+    elif base_strategy == "balanced_va_diff" and int(feature_dim) == BALANCED_VA_DIFF_DIM:
+        weights[0:2] = 2.5
+        weights[2:6] = 1.0
+        weights[6:BALANCED_VA_DIFF_DIM] = float(diff_cluster_weight)
     elif base_strategy == "fused_va_geometry" and int(feature_dim) > VA_GEOMETRY_OBSERVED_DIM:
         latent_dim = int(feature_dim) - VA_GEOMETRY_OBSERVED_DIM
         weights[:latent_dim] = 0.5
@@ -838,6 +875,12 @@ def run_k_selection(
     macro_k_max: int = 8,
     micro_k_min: int = 1,
     micro_k_max: int = 5,
+    affect_labels: Optional[np.ndarray] = None,
+    affect_gate_enabled: bool = False,
+    min_affect_dominant_ratio: float = 0.70,
+    max_affect_mixed_cluster_fraction: float = 0.15,
+    min_affect_weighted_purity: float = 0.80,
+    min_affect_valid_fraction: float = 0.95,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -863,6 +906,11 @@ def run_k_selection(
         macro_k_max=int(macro_k_max),
         micro_k_min=int(micro_k_min),
         micro_k_max=int(micro_k_max),
+        affect_gate_enabled=bool(affect_gate_enabled),
+        min_affect_dominant_ratio=float(min_affect_dominant_ratio),
+        max_affect_mixed_cluster_fraction=float(max_affect_mixed_cluster_fraction),
+        min_affect_weighted_purity=float(min_affect_weighted_purity),
+        min_affect_valid_fraction=float(min_affect_valid_fraction),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
     if k_strategy == "macro_micro":
@@ -876,6 +924,7 @@ def run_k_selection(
             block_mask=np.asarray(block_mask, dtype=bool),
             block_slices=block_slices,
             view_mask=view_mask,
+            affect_labels=affect_labels,
         )
         return result.best_model, result.metrics, result.selection_info
 
@@ -889,14 +938,15 @@ def run_k_selection(
             block_slices=block_slices,
             view_mask=view_mask,
             semantic=k_strategy == "semantic_composite",
+            affect_labels=affect_labels,
         )
         return result.best_model, result.metrics, result.selection_info
 
     if k_strategy == "composite":
-        result = search_gmm_composite(features, config, view_mask=view_mask)
+        result = search_gmm_composite(features, config, view_mask=view_mask, affect_labels=affect_labels)
         return result.best_model, result.metrics, result.selection_info
     elif k_strategy == "semantic_composite":
-        result = search_gmm_semantic_composite(features, config, view_mask=view_mask)
+        result = search_gmm_semantic_composite(features, config, view_mask=view_mask, affect_labels=affect_labels)
         return result.best_model, result.metrics, result.selection_info
 
     elif k_strategy == "hierarchical":
@@ -2422,6 +2472,12 @@ def main() -> None:
         macro_k_max=int(args.macro_k_max),
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
+        affect_labels=getattr(eval_datasets[search_split], "labels", None),
+        affect_gate_enabled=parse_bool_text(args.affect_gate),
+        min_affect_dominant_ratio=float(args.min_affect_dominant_ratio),
+        max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
+        min_affect_weighted_purity=float(args.min_affect_weighted_purity),
+        min_affect_valid_fraction=float(args.min_affect_valid_fraction),
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 
@@ -2506,6 +2562,11 @@ def main() -> None:
                     "silhouette_mode": str(args.silhouette_mode),
                     "silhouette_sample_size": int(args.silhouette_sample_size),
                     "silhouette_chunk_size": int(args.silhouette_chunk_size),
+                    "affect_gate": parse_bool_text(args.affect_gate),
+                    "min_affect_dominant_ratio": float(args.min_affect_dominant_ratio),
+                    "max_affect_mixed_cluster_fraction": float(args.max_affect_mixed_cluster_fraction),
+                    "min_affect_weighted_purity": float(args.min_affect_weighted_purity),
+                    "min_affect_valid_fraction": float(args.min_affect_valid_fraction),
                     "metadata_policy": metadata_policy_info,
                     "metadata_cluster_weight": effective_metadata_cluster_weight,
                     "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),

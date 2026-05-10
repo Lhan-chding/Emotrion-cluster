@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
 import pytest
 
+from cluster.pipeline.k_selection import _select_best_index, compute_affect_purity_metrics, KSelectionConfig
 from cluster.pipeline.train import run_k_selection
 
 
@@ -135,3 +137,43 @@ def test_macro_micro_reports_bootstrap_stability_when_requested():
         assert column in info
     assert 0.0 <= info["seed_ari_mean"] <= 1.0
     assert info["bootstrap_valid_rate"] > 0.0
+
+
+def test_affect_purity_metrics_flag_large_mixed_va_clusters():
+    cluster_labels = np.asarray([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int64)
+    quadrant_labels = np.asarray([0, 0, 1, 1, 1, 1, 1, 1], dtype=np.int64)
+
+    metrics = compute_affect_purity_metrics(
+        cluster_labels,
+        quadrant_labels,
+        min_dominant_ratio=0.70,
+        min_weighted_purity=0.80,
+        max_mixed_cluster_fraction=0.15,
+        min_valid_fraction=0.95,
+    )
+
+    assert metrics["affect_valid_fraction"] == 1.0
+    assert metrics["affect_min_dominant_ratio"] == 0.5
+    assert metrics["affect_weighted_dominant_ratio"] == 0.75
+    assert metrics["affect_mixed_cluster_fraction"] == 0.5
+    assert metrics["affect_gate_ok"] is False
+
+
+def test_affect_gate_filters_higher_scoring_but_mixed_candidate():
+    metrics = pd.DataFrame(
+        [
+            {"k": 4, "min_size_ok": True, "affect_gate_ok": False},
+            {"k": 5, "min_size_ok": True, "affect_gate_ok": True},
+        ]
+    )
+    metrics.attrs["n_samples"] = 100
+    scores = np.asarray([0.95, 0.40], dtype=np.float64)
+
+    selected = _select_best_index(
+        metrics,
+        scores,
+        KSelectionConfig(min_cluster_size=1, min_cluster_size_ratio=0.0),
+        selection_mode="composite",
+    )
+
+    assert selected == 1

@@ -162,6 +162,39 @@ def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
     assert pca is None
 
 
+def test_balanced_va_diff_cluster_feature_strategy_uses_audio_lyrics_and_delta():
+    embeddings = {
+        "audio_va": np.asarray([[0.8, 0.6], [0.7, 0.4]], dtype=np.float32),
+        "lyrics_va": np.asarray([[0.2, 0.7], [0.3, 0.2]], dtype=np.float32),
+        "mean_va": np.asarray([[0.5, 0.65], [0.5, 0.3]], dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+    }
+
+    features, pca, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="balanced_va_diff",
+    )
+    weights = cluster_feature_weights(
+        "balanced_va_diff",
+        int(features.shape[1]),
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        diff_cluster_weight=0.65,
+    )
+
+    np.testing.assert_allclose(features[:, :2], embeddings["mean_va"])
+    np.testing.assert_allclose(features[:, 2:4], embeddings["audio_va"])
+    np.testing.assert_allclose(features[:, 4:6], embeddings["lyrics_va"])
+    np.testing.assert_allclose(features[:, 6:8], embeddings["audio_va"] - embeddings["lyrics_va"])
+    np.testing.assert_allclose(weights[:2], np.full(2, 2.5, dtype=np.float32))
+    np.testing.assert_allclose(weights[2:6], np.ones(4, dtype=np.float32))
+    np.testing.assert_allclose(weights[6:], np.full(12, 0.65, dtype=np.float32))
+    assert pca is None
+
+
 def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():
     embeddings = {
         "va_geometry": np.zeros((2, 17), dtype=np.float32),
@@ -524,6 +557,14 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
             "true",
             "--require_both_va",
             "true",
+            "--affect_gate",
+            "true",
+            "--min_affect_dominant_ratio",
+            "0.70",
+            "--max_affect_mixed_cluster_fraction",
+            "0.15",
+            "--min_affect_weighted_purity",
+            "0.80",
         ]
     )
 
@@ -534,6 +575,10 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
     assert args.block_scaler == "observed"
     assert args.run_topconf_audit == "true"
     assert args.require_both_va == "true"
+    assert args.affect_gate == "true"
+    assert args.min_affect_dominant_ratio == 0.70
+    assert args.max_affect_mixed_cluster_fraction == 0.15
+    assert args.min_affect_weighted_purity == 0.80
 
 
 def test_rerun_parser_accepts_complete_pair_filter_flag():
@@ -544,13 +589,14 @@ def test_rerun_parser_accepts_complete_pair_filter_flag():
             "--out_dir",
             "out",
             "--cluster_feature_strategy",
-            "mean_va",
+            "balanced_va_diff",
             "--require_both_va",
             "true",
         ]
     )
 
     assert args.require_both_va == "true"
+    assert args.cluster_feature_strategy == "balanced_va_diff"
 
 
 def test_metadata_only_strategy_uses_metadata_embedding_without_other_views():

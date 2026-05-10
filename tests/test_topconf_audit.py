@@ -118,6 +118,7 @@ def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
             "score": float("nan"),
             "error_message": "No K candidate satisfied min_cluster_size_threshold=40",
         },
+        {"config": "balanced_va_diff", "status": "ok", "score": 0.20},
         {"config": "proposed_no_diff", "status": "ok", "score": 0.12},
         {"config": "proposed_no_metadata", "status": "ok", "score": 0.13},
         {"config": "proposed_full", "status": "ok", "score": 0.30},
@@ -148,6 +149,7 @@ def test_topconf_audit_uses_common_claim_score_to_reject_weaker_proposed_model(t
         {"config": "mean_va_diff", "status": "ok", "score": 0.10, "claim_score": 0.07},
         {"config": "va_geometry", "status": "ok", "score": 0.11, "claim_score": 0.07},
         {"config": "metadata_only", "status": "ok", "score": 0.12, "claim_score": 0.04},
+        {"config": "balanced_va_diff", "status": "ok", "score": 0.14, "claim_score": 0.10},
         {"config": "proposed_no_diff", "status": "ok", "score": 0.12, "claim_score": 0.05},
         {"config": "proposed_no_metadata", "status": "ok", "score": 0.13, "claim_score": 0.09},
         {"config": "proposed_full", "status": "ok", "score": 0.90, "claim_score": 0.20},
@@ -161,3 +163,52 @@ def test_topconf_audit_uses_common_claim_score_to_reject_weaker_proposed_model(t
     assert gate["status"] == "fail"
     assert gate["value"]["score_column"] == "claim_score"
     assert gate["value"]["non_improved_configs"] == ["audio_va"]
+
+
+def test_topconf_audit_fails_large_mixed_affect_cluster(tmp_path):
+    run_dir = tmp_path
+    (run_dir / "train").mkdir()
+    (run_dir / "all").mkdir()
+    summary = {
+        "selected_k": 12,
+        "require_both_va": True,
+        "cluster_head_k": 0,
+        "selection_info": {
+            "affect_gate_enabled": True,
+            "min_affect_dominant_ratio": 0.70,
+            "max_affect_mixed_cluster_fraction": 0.15,
+            "min_affect_weighted_purity": 0.80,
+            "seed_ari_mean": 0.8,
+            "cluster_jaccard_min": 0.5,
+            "bootstrap_valid_rate": 1.0,
+        },
+        "mask_purity_diagnostics": {"nmi": 0.0, "clusters": [{"enrichment_vs_baseline": 1.0}]},
+        "metadata_policy": {"metadata_policy": "report_only"},
+    }
+    (run_dir / "rerun_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    pd.DataFrame(
+        [
+            {
+                "macro_k": 5,
+                "total_clusters": 12,
+                "total_k_ok": True,
+                "min_size_ok": True,
+                "affect_gate_ok": False,
+                "seed_ari_mean": 0.8,
+                "cluster_jaccard_min": 0.5,
+                "bootstrap_valid_rate": 1.0,
+            }
+        ]
+    ).to_csv(run_dir / "train" / "cluster_search_metrics.csv", index=False)
+    pd.DataFrame(
+        [
+            {"cluster_id": 0, "num_samples": 100, "dominant_quadrant_ratio": 0.95},
+            {"cluster_id": 1, "num_samples": 200, "dominant_quadrant_ratio": 0.42},
+        ]
+    ).to_csv(run_dir / "all" / "cluster_catalog.csv", index=False)
+
+    result = audit_run(run_dir)
+
+    gate = result["gates"]["affect_purity_gate"]
+    assert gate["status"] == "fail"
+    assert gate["value"]["affect_mixed_cluster_fraction"] > 0.15

@@ -51,6 +51,12 @@ class KSelectionConfig:
     macro_k_max: int = 8
     micro_k_min: int = 2
     micro_k_max: int = 5
+    # Affect-first hard gates
+    affect_gate_enabled: bool = False
+    min_affect_dominant_ratio: float = 0.70
+    max_affect_mixed_cluster_fraction: float = 0.15
+    min_affect_weighted_purity: float = 0.80
+    min_affect_valid_fraction: float = 0.95
 
 
 @dataclass
@@ -133,6 +139,104 @@ def _max_cluster_mask_purity(labels: np.ndarray, view_mask: Optional[np.ndarray]
     return float(max(purities)) if purities else float("nan")
 
 
+def compute_affect_purity_metrics(
+    cluster_labels: np.ndarray,
+    affect_labels: Optional[np.ndarray],
+    *,
+    min_dominant_ratio: float,
+    max_mixed_cluster_fraction: float,
+    min_weighted_purity: float,
+    min_valid_fraction: float,
+) -> Dict[str, Any]:
+    """Measure whether discovered clusters remain coherent on the affect quadrant plane."""
+    if affect_labels is None:
+        return {
+            "affect_valid_fraction": float("nan"),
+            "affect_weighted_dominant_ratio": float("nan"),
+            "affect_min_dominant_ratio": float("nan"),
+            "affect_mixed_cluster_fraction": float("nan"),
+            "affect_nmi": float("nan"),
+            "affect_gate_ok": False,
+        }
+
+    clusters = np.asarray(cluster_labels, dtype=np.int64)
+    labels = np.asarray(affect_labels, dtype=np.int64)
+    if clusters.shape[0] != labels.shape[0]:
+        raise ValueError(
+            f"affect_labels length {labels.shape[0]} does not match cluster labels length {clusters.shape[0]}."
+        )
+    valid = (labels >= 0) & (labels < 4)
+    valid_count = int(valid.sum())
+    valid_fraction = float(valid_count / max(labels.shape[0], 1))
+    if valid_count == 0:
+        return {
+            "affect_valid_fraction": valid_fraction,
+            "affect_weighted_dominant_ratio": float("nan"),
+            "affect_min_dominant_ratio": float("nan"),
+            "affect_mixed_cluster_fraction": float("nan"),
+            "affect_nmi": float("nan"),
+            "affect_gate_ok": False,
+        }
+
+    weighted_dominant = 0.0
+    mixed_count = 0
+    dominant_ratios: List[float] = []
+    for cluster_id in np.unique(clusters[valid]):
+        cluster_mask = valid & (clusters == int(cluster_id))
+        cluster_size = int(cluster_mask.sum())
+        if cluster_size == 0:
+            continue
+        counts = np.bincount(labels[cluster_mask], minlength=4).astype(np.float64)
+        dominant = float(counts.max() / max(cluster_size, 1))
+        dominant_ratios.append(dominant)
+        weighted_dominant += float(counts.max())
+        if dominant < float(min_dominant_ratio):
+            mixed_count += cluster_size
+
+    weighted_ratio = float(weighted_dominant / max(valid_count, 1))
+    min_ratio = float(min(dominant_ratios)) if dominant_ratios else float("nan")
+    mixed_fraction = float(mixed_count / max(valid_count, 1))
+    affect_nmi = float(normalized_mutual_info_score(clusters[valid], labels[valid]))
+    gate_ok = (
+        valid_fraction >= float(min_valid_fraction)
+        and weighted_ratio >= float(min_weighted_purity)
+        and min_ratio >= float(min_dominant_ratio)
+        and mixed_fraction <= float(max_mixed_cluster_fraction)
+    )
+    return {
+        "affect_valid_fraction": valid_fraction,
+        "affect_weighted_dominant_ratio": weighted_ratio,
+        "affect_min_dominant_ratio": min_ratio,
+        "affect_mixed_cluster_fraction": mixed_fraction,
+        "affect_nmi": affect_nmi,
+        "affect_gate_ok": bool(gate_ok),
+    }
+
+
+def _add_affect_selection_info(
+    info: Dict[str, Any],
+    row: pd.Series,
+    config: KSelectionConfig,
+) -> None:
+    if not bool(config.affect_gate_enabled):
+        return
+    info["affect_gate_enabled"] = True
+    info["min_affect_dominant_ratio"] = float(config.min_affect_dominant_ratio)
+    info["max_affect_mixed_cluster_fraction"] = float(config.max_affect_mixed_cluster_fraction)
+    info["min_affect_weighted_purity"] = float(config.min_affect_weighted_purity)
+    info["min_affect_valid_fraction"] = float(config.min_affect_valid_fraction)
+    info["affect_gate_ok"] = bool(row.get("affect_gate_ok", False))
+    for field in (
+        "affect_valid_fraction",
+        "affect_weighted_dominant_ratio",
+        "affect_min_dominant_ratio",
+        "affect_mixed_cluster_fraction",
+        "affect_nmi",
+    ):
+        value = row.get(field, float("nan"))
+        info[field] = float(value) if pd.notna(value) else float("nan")
+
+
 def _select_best_index(
     metrics: pd.DataFrame,
     scores: np.ndarray,
@@ -141,15 +245,38 @@ def _select_best_index(
     selection_mode: str,
 ) -> int:
     eligible = metrics["min_size_ok"].to_numpy(dtype=bool)
+    if "affect_gate_ok" in metrics.columns:
+        eligible = eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
     if not bool(eligible.any()):
         threshold = _min_size_threshold(config, int(metrics.attrs.get("n_samples", 0)))
         min_sizes = ", ".join(
             f"K={int(row.k)}:{int(row.min_cluster_size)}"
             for row in metrics[["k", "min_cluster_size"]].itertuples(index=False)
         )
+        affect_detail = ""
+        if "affect_gate_ok" in metrics.columns:
+            affect_detail = (
+                " Affect gate candidates: "
+                + ", ".join(
+                    f"K={int(row.k)}:ok={bool(row.affect_gate_ok)},"
+                    f"weighted={float(row.affect_weighted_dominant_ratio):.3f},"
+                    f"min={float(row.affect_min_dominant_ratio):.3f},"
+                    f"mixed={float(row.affect_mixed_cluster_fraction):.3f}"
+                    for row in metrics[
+                        [
+                            "k",
+                            "affect_gate_ok",
+                            "affect_weighted_dominant_ratio",
+                            "affect_min_dominant_ratio",
+                            "affect_mixed_cluster_fraction",
+                        ]
+                    ].itertuples(index=False)
+                )
+                + "."
+            )
         raise ValueError(
             f"No K candidate satisfied min_cluster_size_threshold={threshold} "
-            f"for {selection_mode}. Candidate minimum sizes: {min_sizes}."
+            f"for {selection_mode}. Candidate minimum sizes: {min_sizes}.{affect_detail}"
         )
     masked_scores = np.where(eligible, scores, -np.inf)
     return int(np.argmax(masked_scores))
@@ -465,6 +592,7 @@ def search_gmm_composite(
     features: np.ndarray,
     config: KSelectionConfig,
     view_mask: Optional[np.ndarray] = None,
+    affect_labels: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """Multi-metric K selection with composite scoring.
 
@@ -519,6 +647,16 @@ def search_gmm_composite(
     # Build metrics DataFrame
     rows = []
     for r in results:
+        affect_metrics: Dict[str, Any] = {}
+        if config.affect_gate_enabled:
+            affect_metrics = compute_affect_purity_metrics(
+                r["labels"],
+                affect_labels,
+                min_dominant_ratio=float(config.min_affect_dominant_ratio),
+                max_mixed_cluster_fraction=float(config.max_affect_mixed_cluster_fraction),
+                min_weighted_purity=float(config.min_affect_weighted_purity),
+                min_valid_fraction=float(config.min_affect_valid_fraction),
+            )
         rows.append({
             "k": r["k"],
             "bic": r["bic"],
@@ -530,6 +668,7 @@ def search_gmm_composite(
             "stability": r["stability"],
             "mask_nmi": mask_nmi_arr.get(r["k"], float("nan")),
             "max_mask_purity": max_mask_purity_arr.get(r["k"], float("nan")),
+            **affect_metrics,
         })
     metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
     metrics.attrs["n_samples"] = int(features.shape[0])
@@ -598,6 +737,8 @@ def search_gmm_composite(
     }
     if mask_penalty_arr is not None:
         selection_info["mask_penalty_applied"] = float(config.w_mask_purity * mask_penalty_arr[best_idx])
+    if config.affect_gate_enabled:
+        _add_affect_selection_info(selection_info, metrics.loc[best_idx], config)
 
     return KSearchResult(
         best_k=best_result["k"],
@@ -611,6 +752,7 @@ def search_gmm_semantic_composite(
     features: np.ndarray,
     config: KSelectionConfig,
     view_mask: Optional[np.ndarray] = None,
+    affect_labels: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """Semantic composite K search with stricter leakage and support terms."""
     semantic_config = replace(
@@ -621,7 +763,7 @@ def search_gmm_semantic_composite(
         w_stability=0.25,
         w_mask_purity=max(float(config.w_mask_purity), 0.25),
     )
-    result = search_gmm_composite(features, semantic_config, view_mask=view_mask)
+    result = search_gmm_composite(features, semantic_config, view_mask=view_mask, affect_labels=affect_labels)
     metrics = result.metrics.copy()
     metrics["semantic_composite_score"] = metrics["composite_score"]
     info = dict(result.selection_info)
@@ -721,6 +863,7 @@ def search_masked_diag_gmm_composite(
     block_slices: Sequence[Sequence[int]],
     view_mask: Optional[np.ndarray] = None,
     semantic: bool = False,
+    affect_labels: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """K search using the same masked likelihood model used for final assignment."""
     if str(config.covariance_type).lower() != "diag":
@@ -766,6 +909,16 @@ def search_masked_diag_gmm_composite(
 
     rows = []
     for result in results:
+        affect_metrics: Dict[str, Any] = {}
+        if effective_config.affect_gate_enabled:
+            affect_metrics = compute_affect_purity_metrics(
+                result["labels"],
+                affect_labels,
+                min_dominant_ratio=float(effective_config.min_affect_dominant_ratio),
+                max_mixed_cluster_fraction=float(effective_config.max_affect_mixed_cluster_fraction),
+                min_weighted_purity=float(effective_config.min_affect_weighted_purity),
+                min_valid_fraction=float(effective_config.min_affect_valid_fraction),
+            )
         rows.append({
             "k": int(result["k"]),
             "bic": float(result["bic"]),
@@ -779,6 +932,7 @@ def search_masked_diag_gmm_composite(
             "stability": float(result["stability"]),
             "mask_nmi": mask_nmi_arr.get(int(result["k"]), float("nan")),
             "max_mask_purity": max_mask_purity_arr.get(int(result["k"]), float("nan")),
+            **affect_metrics,
         })
     metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
     metrics.attrs["n_samples"] = int(matrix.shape[0])
@@ -847,6 +1001,8 @@ def search_masked_diag_gmm_composite(
             "stability": effective_config.w_stability,
             "mask_purity_penalty": effective_config.w_mask_purity,
         }
+    if effective_config.affect_gate_enabled:
+        _add_affect_selection_info(info, metrics.loc[best_idx], effective_config)
     return KSearchResult(
         best_k=selected_k,
         best_model=best_result["gmm"],
@@ -862,6 +1018,7 @@ def search_macro_micro_diffaware(
     block_mask: np.ndarray,
     block_slices: Sequence[Sequence[int]],
     view_mask: Optional[np.ndarray] = None,
+    affect_labels: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """True macro/micro search for three-block diff-aware feature matrices."""
     if str(config.covariance_type).lower() != "diag":
@@ -908,6 +1065,16 @@ def search_macro_micro_diffaware(
         )
         mask_nmi = _mask_nmi(labels, view_mask) if view_mask is not None else float("nan")
         max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
+        affect_metrics: Dict[str, Any] = {}
+        if config.affect_gate_enabled:
+            affect_metrics = compute_affect_purity_metrics(
+                labels,
+                affect_labels,
+                min_dominant_ratio=float(config.min_affect_dominant_ratio),
+                max_mixed_cluster_fraction=float(config.max_affect_mixed_cluster_fraction),
+                min_weighted_purity=float(config.min_affect_weighted_purity),
+                min_valid_fraction=float(config.min_affect_valid_fraction),
+            )
         score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
         if np.isfinite(mask_nmi):
             score -= 0.25 * float(mask_nmi)
@@ -926,15 +1093,22 @@ def search_macro_micro_diffaware(
                 "min_size_threshold": int(min_size_threshold),
                 "mask_nmi": float(mask_nmi),
                 "max_mask_purity": float(max_mask_purity),
+                **affect_metrics,
             }
         )
 
     metrics = pd.DataFrame(rows).sort_values("macro_k", kind="stable").reset_index(drop=True)
     eligible = metrics["min_size_ok"].to_numpy(dtype=bool) & metrics["total_k_ok"].to_numpy(dtype=bool)
+    if "affect_gate_ok" in metrics.columns:
+        eligible = eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
     if not eligible.any():
         candidates_text = ", ".join(
-            f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},min_size={int(row.min_cluster_size)}"
-            for row in metrics[["macro_k", "total_clusters", "min_cluster_size"]].itertuples(index=False)
+            (
+                f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},"
+                f"min_size={int(row.min_cluster_size)},"
+                f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))}"
+            )
+            for row in metrics.itertuples(index=False)
         )
         raise ValueError(
             "No macro_micro candidate satisfied total K and min-size hard gates "
@@ -974,6 +1148,8 @@ def search_macro_micro_diffaware(
         "silhouette_sample_size": int(config.silhouette_sample_size),
         "silhouette_chunk_size": int(config.silhouette_chunk_size),
     }
+    if config.affect_gate_enabled:
+        _add_affect_selection_info(selection_info, selected_row, config)
     return KSearchResult(
         best_k=int(best_model.n_components),
         best_model=best_model,

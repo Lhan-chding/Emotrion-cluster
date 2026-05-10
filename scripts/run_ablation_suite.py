@@ -28,6 +28,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
     "mean_va": {"strategy": "mean_va", "k_strategy": "composite", "requires_run_dir": False},
     "audio_va": {"strategy": "audio_va", "k_strategy": "composite", "requires_run_dir": False},
     "lyrics_va": {"strategy": "lyrics_va", "k_strategy": "composite", "requires_run_dir": False},
+    "balanced_va_diff": {"strategy": "balanced_va_diff", "k_strategy": "composite", "requires_run_dir": False},
     "mean_va_diff": {"strategy": "mean_va_diff", "k_strategy": "composite", "requires_run_dir": False},
     "va_geometry": {"strategy": "va_geometry", "k_strategy": "composite", "requires_run_dir": False},
     "metadata_only": {"strategy": "metadata_only", "k_strategy": "composite", "requires_run_dir": False},
@@ -44,9 +45,9 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
         "metadata_policy": "report_only",
     },
     "proposed_full": {
-        "strategy": "macro_micro_diffaware",
-        "k_strategy": "macro_micro",
-        "requires_run_dir": True,
+        "strategy": "balanced_va_diff",
+        "k_strategy": "composite",
+        "requires_run_dir": False,
         "metadata_policy": "report_only",
     },
 }
@@ -131,6 +132,8 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         f"{diff_weight:g}",
         "--covariance_type",
         "diag",
+        "--affect_gate",
+        "true",
     ]
     if bool(config.get("requires_run_dir")):
         command.extend(["--run_dir", str(args.base_run_dir)])
@@ -164,6 +167,22 @@ def _score_from_row(row: pd.Series) -> float:
     return float("nan")
 
 
+def _affect_penalty_from_row(row: pd.Series) -> float:
+    if row.empty:
+        return 0.0
+    penalty = 0.0
+    weighted = row.get("affect_weighted_dominant_ratio", float("nan"))
+    mixed = row.get("affect_mixed_cluster_fraction", float("nan"))
+    min_ratio = row.get("affect_min_dominant_ratio", float("nan"))
+    if pd.notna(weighted):
+        penalty += max(0.0, 0.80 - float(weighted))
+    if pd.notna(mixed):
+        penalty += max(0.0, float(mixed) - 0.15)
+    if pd.notna(min_ratio):
+        penalty += max(0.0, 0.70 - float(min_ratio))
+    return float(penalty)
+
+
 def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: float) -> float:
     if row.empty:
         return float("nan")
@@ -175,7 +194,8 @@ def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: 
         return float("nan")
     leakage_penalty = 0.0 if not np.isfinite(mask_nmi) else max(0.0, float(mask_nmi) - 0.05)
     enrichment_penalty = 0.0 if not np.isfinite(max_mask_enrichment) else max(0.0, float(max_mask_enrichment) - 1.30) * 0.05
-    return float(separation - leakage_penalty - enrichment_penalty)
+    affect_penalty = _affect_penalty_from_row(row)
+    return float(separation - leakage_penalty - enrichment_penalty - affect_penalty)
 
 
 def _run_error_path(run_dir: Path) -> Path:
@@ -215,6 +235,10 @@ def _summarize_failed_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "silhouette": float("nan"),
         "macro_silhouette": float("nan"),
         "final_silhouette": float("nan"),
+        "affect_weighted_dominant_ratio": float("nan"),
+        "affect_min_dominant_ratio": float("nan"),
+        "affect_mixed_cluster_fraction": float("nan"),
+        "affect_gate_ok": False,
         "seed_ari_mean": float("nan"),
         "cluster_jaccard_min": float("nan"),
         "mask_nmi": float("nan"),
@@ -253,6 +277,10 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "silhouette": float(metric_row.get("silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "macro_silhouette": float(metric_row.get("macro_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "final_silhouette": float(metric_row.get("final_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
+        "affect_weighted_dominant_ratio": float(metric_row.get("affect_weighted_dominant_ratio", float("nan"))) if not metric_row.empty else float("nan"),
+        "affect_min_dominant_ratio": float(metric_row.get("affect_min_dominant_ratio", float("nan"))) if not metric_row.empty else float("nan"),
+        "affect_mixed_cluster_fraction": float(metric_row.get("affect_mixed_cluster_fraction", float("nan"))) if not metric_row.empty else float("nan"),
+        "affect_gate_ok": bool(metric_row.get("affect_gate_ok", False)) if not metric_row.empty and pd.notna(metric_row.get("affect_gate_ok", float("nan"))) else False,
         "seed_ari_mean": float((summary.get("selection_info", {}) or {}).get("seed_ari_mean", metric_row.get("seed_ari_mean", float("nan")))),
         "cluster_jaccard_min": float((summary.get("selection_info", {}) or {}).get("cluster_jaccard_min", metric_row.get("cluster_jaccard_min", float("nan")))),
         "mask_nmi": mask_nmi,

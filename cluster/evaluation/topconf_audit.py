@@ -83,6 +83,93 @@ def _split_semantic_consistency(run_dir: Path) -> Dict[str, Any]:
     return {"status": status, "detail": "Dominant quadrant consistency across train/val/test.", "value": round(rate, 4)}
 
 
+def _affect_purity_from_catalog(
+    run_dir: Path,
+    *,
+    min_dominant_ratio: float,
+    min_weighted_purity: float,
+    max_mixed_cluster_fraction: float,
+) -> Dict[str, Any]:
+    path = run_dir / "all" / "cluster_catalog.csv"
+    if not path.exists():
+        return _gate(FAIL, "all/cluster_catalog.csv is required to audit VA affect purity.")
+    catalog = pd.read_csv(path)
+    required = {"num_samples", "dominant_quadrant_ratio"}
+    if not required.issubset(set(catalog.columns)):
+        return _gate(
+            FAIL,
+            "cluster_catalog.csv must include num_samples and dominant_quadrant_ratio.",
+            {"missing_columns": sorted(required - set(catalog.columns))},
+        )
+    sizes = pd.to_numeric(catalog["num_samples"], errors="coerce").fillna(0.0)
+    ratios = pd.to_numeric(catalog["dominant_quadrant_ratio"], errors="coerce").fillna(0.0)
+    total = float(sizes.sum())
+    if total <= 0:
+        return _gate(FAIL, "cluster_catalog.csv has no samples.")
+    weighted = float((sizes * ratios).sum() / total)
+    min_ratio = float(ratios.min())
+    mixed_fraction = float(sizes[ratios < float(min_dominant_ratio)].sum() / total)
+    ok = (
+        weighted >= float(min_weighted_purity)
+        and min_ratio >= float(min_dominant_ratio)
+        and mixed_fraction <= float(max_mixed_cluster_fraction)
+    )
+    return _gate(
+        PASS if ok else FAIL,
+        "Clusters must remain coherent on the Mean VA quadrant plane.",
+        {
+            "affect_weighted_dominant_ratio": round(weighted, 4),
+            "affect_min_dominant_ratio": round(min_ratio, 4),
+            "affect_mixed_cluster_fraction": round(mixed_fraction, 4),
+            "min_affect_dominant_ratio": float(min_dominant_ratio),
+            "min_affect_weighted_purity": float(min_weighted_purity),
+            "max_affect_mixed_cluster_fraction": float(max_mixed_cluster_fraction),
+        },
+    )
+
+
+def _affect_purity_gate(run_dir: Path, selection: Mapping[str, Any], metrics: pd.DataFrame, selected_k: int) -> Dict[str, Any]:
+    min_dominant_ratio = float(selection.get("min_affect_dominant_ratio", 0.70))
+    min_weighted_purity = float(selection.get("min_affect_weighted_purity", 0.80))
+    max_mixed_cluster_fraction = float(selection.get("max_affect_mixed_cluster_fraction", 0.15))
+    required_metric_fields = {
+        "affect_gate_ok",
+        "affect_weighted_dominant_ratio",
+        "affect_min_dominant_ratio",
+        "affect_mixed_cluster_fraction",
+    }
+    if not metrics.empty and required_metric_fields.issubset(set(metrics.columns)):
+        selected_rows = pd.DataFrame()
+        for column in ("total_clusters", "k"):
+            if column in metrics.columns:
+                selected_rows = metrics[metrics[column].astype(int) == int(selected_k)]
+                if not selected_rows.empty:
+                    break
+        if selected_rows.empty:
+            selected_rows = metrics
+        row = selected_rows.iloc[0]
+        value = {
+            "affect_gate_ok": bool(row.get("affect_gate_ok", False)),
+            "affect_weighted_dominant_ratio": round(float(row.get("affect_weighted_dominant_ratio", float("nan"))), 4),
+            "affect_min_dominant_ratio": round(float(row.get("affect_min_dominant_ratio", float("nan"))), 4),
+            "affect_mixed_cluster_fraction": round(float(row.get("affect_mixed_cluster_fraction", float("nan"))), 4),
+            "min_affect_dominant_ratio": min_dominant_ratio,
+            "min_affect_weighted_purity": min_weighted_purity,
+            "max_affect_mixed_cluster_fraction": max_mixed_cluster_fraction,
+        }
+        return _gate(
+            PASS if bool(row.get("affect_gate_ok", False)) else FAIL,
+            "Selected K must pass VA affect-purity hard gates.",
+            value,
+        )
+    return _affect_purity_from_catalog(
+        run_dir,
+        min_dominant_ratio=min_dominant_ratio,
+        min_weighted_purity=min_weighted_purity,
+        max_mixed_cluster_fraction=max_mixed_cluster_fraction,
+    )
+
+
 def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
     missing_files = [name for name in ("ablation_report.csv", "baseline_comparison.csv") if not (run_dir / name).exists()]
     if missing_files:
@@ -170,15 +257,29 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
         ok = bool(selected_rows["total_k_ok"].astype(bool).any())
         gates["total_k_constraint_honored"] = _gate(PASS if ok else FAIL, "Selected macro/micro candidate must satisfy total K bounds.", selected_k)
     else:
-        gates["total_k_constraint_honored"] = _gate(FAIL, "Missing total_k_ok column in cluster_search_metrics.csv.")
+        selected_k = int(summary.get("selected_k", selection.get("selected_k", -1)))
+        if not metrics.empty and "k" in metrics.columns and "min_size_ok" in metrics.columns:
+            selected_rows = metrics[metrics["k"].astype(int) == int(selected_k)]
+            ok = bool(not selected_rows.empty and selected_rows["min_size_ok"].astype(bool).any())
+            gates["total_k_constraint_honored"] = _gate(
+                PASS if ok else FAIL,
+                "Selected flat GMM candidate must satisfy min-size gates.",
+                selected_k,
+            )
+        else:
+            gates["total_k_constraint_honored"] = _gate(FAIL, "Missing total_k_ok or flat k/min_size_ok columns in cluster_search_metrics.csv.")
 
-    stability_fields = ("seed_ari_mean", "cluster_jaccard_min", "bootstrap_valid_rate")
-    stability_present = all(field in selection for field in stability_fields)
-    if not stability_present and not metrics.empty:
-        stability_present = all(field in metrics.columns for field in stability_fields)
+    selection_mode = str(summary.get("selection_mode", selection.get("selection_mode", ""))).lower()
+    if "macro_micro" in selection_mode:
+        stability_fields = ("seed_ari_mean", "cluster_jaccard_min", "bootstrap_valid_rate")
+        stability_present = all(field in selection for field in stability_fields)
+        if not stability_present and not metrics.empty:
+            stability_present = all(field in metrics.columns for field in stability_fields)
+    else:
+        stability_present = bool("stability" in selection or (not metrics.empty and "stability" in metrics.columns))
     gates["bootstrap_stability_present"] = _gate(
         PASS if stability_present else FAIL,
-        "macro_micro search must report bootstrap/seed stability metrics.",
+        "Search must report stability metrics.",
     )
 
     mask_nmi = float(summary.get("mask_purity_diagnostics", {}).get("nmi", float("nan")))
@@ -190,14 +291,21 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
         None if pd.isna(max_enrichment) else round(max_enrichment, 4),
     )
     gates["macro_micro_artifacts_present"] = _gate(
-        PASS if _macro_micro_artifacts_present(root) else FAIL,
-        "Macro/micro summary, enrichment tables, and per-macro diff plots must exist.",
+        PASS if "macro_micro" not in str(summary.get("selection_mode", selection.get("selection_mode", ""))) or _macro_micro_artifacts_present(root) else FAIL,
+        "Macro/micro artifacts are required only for macro_micro main-result runs.",
     )
-    gates["split_semantic_consistency_quantified"] = _split_semantic_consistency(root)
+    gates["split_semantic_consistency_quantified"] = (
+        _split_semantic_consistency(root)
+        if "macro_micro" in selection_mode
+        else _gate(PASS, "Split semantic consistency is not required for flat affect-first runs.")
+    )
+    gates["affect_purity_gate"] = _affect_purity_gate(root, selection, metrics, int(summary.get("selected_k", selection.get("selected_k", -1))))
     gates["required_ablations_present"] = _required_ablations_gate(root)
-    gates["cluster_aware_finetune_enabled"] = _gate(
-        PASS if bool(summary.get("cluster_aware_finetune", False) or selection.get("cluster_aware_finetune", False)) else FAIL,
-        "Main result must include cluster-aware fine-tuning evidence.",
+    cluster_head_k = int(summary.get("cluster_head_k", selection.get("cluster_head_k", 0)) or 0)
+    gates["random_cluster_head_disabled"] = _gate(
+        PASS if cluster_head_k == 0 else FAIL,
+        "Affect-first main runs must not use a random DEC/CVCL cluster head during representation training.",
+        cluster_head_k,
     )
     gates["metadata_policy_declared"] = _gate(
         PASS if bool(summary.get("metadata_policy") or selection.get("metadata_policy")) else FAIL,

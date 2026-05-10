@@ -44,6 +44,34 @@ def test_ablation_suite_builds_report_only_proposed_command(tmp_path):
     assert command[command.index("--k_strategy") + 1] == "macro_micro"
     assert command[command.index("--total_k_min") + 1] == "8"
     assert command[command.index("--total_k_max") + 1] == "16"
+    assert command[command.index("--affect_gate") + 1] == "true"
+
+
+def test_ablation_suite_uses_balanced_va_diff_as_proposed_full(tmp_path):
+    module = _load_ablation_suite_module()
+    args = module.SuiteArgs(
+        processed_dir="processed",
+        base_run_dir="base",
+        out_dir=str(tmp_path),
+        gpu="0",
+        batch_size=512,
+        stability_runs=80,
+        k_min=4,
+        k_max=12,
+        macro_k_min=3,
+        macro_k_max=6,
+        micro_k_min=1,
+        micro_k_max=5,
+        min_cluster_size_abs=40,
+        metadata_policy="report_only",
+        require_both_va=True,
+    )
+
+    command = module.build_rerun_command(args, "proposed_full", tmp_path / "proposed_full")
+
+    assert "--run_dir" not in command
+    assert command[command.index("--cluster_feature_strategy") + 1] == "balanced_va_diff"
+    assert command[command.index("--k_strategy") + 1] == "composite"
 
 
 def test_ablation_suite_writes_required_comparison_reports(tmp_path):

@@ -32,6 +32,17 @@ VA_GEOMETRY_FEATURE_NAMES = VA_GEOMETRY_OBSERVED_NAMES + VA_GEOMETRY_MASK_NAMES
 
 VA_GEOMETRY_OBSERVED_DIM = len(VA_GEOMETRY_OBSERVED_NAMES)
 
+BALANCED_VA_DIFF_FEATURE_NAMES = [
+    "consensus_valence",
+    "consensus_arousal",
+    "audio_valence",
+    "audio_arousal",
+    "lyrics_valence",
+    "lyrics_arousal",
+    *VA_GEOMETRY_OBSERVED_NAMES[2:],
+]
+BALANCED_VA_DIFF_DIM = len(BALANCED_VA_DIFF_FEATURE_NAMES)
+
 
 def _as_va_matrix(name: str, values: np.ndarray) -> np.ndarray:
     matrix = np.asarray(values, dtype=np.float32)
@@ -254,3 +265,50 @@ def build_va_geometry_features(
         neutral_point=neutral_point, consistency_sigma=consistency_sigma, eps=eps,
     )
     return np.concatenate([observed, mask_feat], axis=1).astype(np.float32)
+
+
+def build_balanced_va_diff_features(
+    audio_va: np.ndarray,
+    lyrics_va: np.ndarray,
+    view_mask: np.ndarray,
+    *,
+    neutral_point: Sequence[float] = (0.5, 0.5),
+    consistency_sigma: float = 0.35,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Build an explicit affect-first encoding for audio/lyrics VA clustering.
+
+    Columns are consensus VA, audio VA, lyrics VA, then pairwise disagreement
+    descriptors. Missing single-view coordinates are replaced with consensus
+    coordinates so missingness does not become a cluster feature.
+    """
+    audio = _as_va_matrix("audio_va", audio_va)
+    lyrics = _as_va_matrix("lyrics_va", lyrics_va)
+    if lyrics.shape[0] != audio.shape[0]:
+        raise ValueError(f"audio_va and lyrics_va must have same N, got {audio.shape[0]} and {lyrics.shape[0]}.")
+    mask = _as_view_mask(view_mask, audio.shape[0])
+
+    has_audio = (mask[:, 0:1] > 0.0).astype(np.float32)
+    has_lyrics = (mask[:, 1:2] > 0.0).astype(np.float32)
+    has_both = has_audio * has_lyrics
+    observed, _, consensus = _compute_geometry_core(
+        audio,
+        lyrics,
+        has_audio,
+        has_lyrics,
+        has_both,
+        neutral_point=neutral_point,
+        consistency_sigma=consistency_sigma,
+        eps=eps,
+    )
+    audio_safe = np.where(has_audio > 0.0, audio, consensus).astype(np.float32)
+    lyrics_safe = np.where(has_lyrics > 0.0, lyrics, consensus).astype(np.float32)
+    return np.concatenate(
+        [
+            consensus.astype(np.float32),
+            audio_safe,
+            lyrics_safe,
+            observed[:, 2:VA_GEOMETRY_OBSERVED_DIM],
+        ],
+        axis=1,
+    ).astype(np.float32)
