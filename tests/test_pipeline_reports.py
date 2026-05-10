@@ -8,6 +8,7 @@ from cluster.pipeline.train import (
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
     _cluster_summary,
+    _va_quadrant_labels,
     _write_split_outputs,
     build_parser,
     apply_metadata_policy_to_block_mask,
@@ -59,6 +60,22 @@ def test_quadrant_heatmap_matrix_uses_only_valid_labels():
             dtype=np.float32,
         ),
     )
+
+
+def test_va_quadrant_labels_are_derived_from_plot_coordinates():
+    labels = _va_quadrant_labels(
+        np.asarray(
+            [
+                [0.6, 0.7],
+                [0.4, 0.7],
+                [0.4, 0.3],
+                [0.6, 0.3],
+            ],
+            dtype=np.float32,
+        )
+    )
+
+    np.testing.assert_array_equal(labels, np.asarray([0, 1, 2, 3], dtype=np.int64))
 
 
 def test_original_va_cluster_feature_strategy_uses_original_va_only():
@@ -744,6 +761,28 @@ def test_cluster_summary_filters_low_support_metadata_tokens_with_fdr():
     assert bright["global_support"] == 10
     assert 0.0 <= bright["p_value"] <= bright["q_value"] <= 1.0
     assert all(item["support"] >= 5 and item["global_support"] >= 10 for item in cluster_zero_tokens)
+
+
+def test_cluster_summary_uses_va_plane_quadrants_not_raw_labels():
+    class Dataset:
+        raw_audio = np.asarray([[0.8, 0.8], [0.7, 0.7], [0.2, 0.2], [0.3, 0.3]], dtype=np.float32)
+        raw_lyrics = raw_audio.copy()
+        view_mask = np.ones((4, 3), dtype=np.float32)
+        labels = np.asarray([2, 2, 0, 0], dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(4)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(4)])
+        raw_metadata = np.zeros((4, 1), dtype=np.float32)
+        raw_metadata_report = raw_metadata
+        canonical_metadata = pd.DataFrame()
+
+    summary = _cluster_summary(
+        assignments=np.asarray([0, 0, 1, 1], dtype=np.int64),
+        dataset=Dataset(),
+        metadata_feature_names=["numeric::zero"],
+    )
+
+    assert summary[0]["dominant_quadrant"] == "Q1"
+    assert summary[1]["dominant_quadrant"] == "Q3"
 
 
 def test_write_split_outputs_writes_macro_micro_artifacts(tmp_path):

@@ -1454,6 +1454,21 @@ def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
     return _dataset_mean_va(dataset)
 
 
+def _va_quadrant_labels(va: np.ndarray) -> np.ndarray:
+    """Derive Q1/Q2/Q3/Q4 labels from VA-plane coordinates using 0.5 as the axes."""
+    coords = np.asarray(va, dtype=np.float32)
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError(f"VA coordinates must have shape [N, 2], got {coords.shape}.")
+    valence_high = coords[:, 0] >= 0.5
+    arousal_high = coords[:, 1] >= 0.5
+    labels = np.full(coords.shape[0], -1, dtype=np.int64)
+    labels[valence_high & arousal_high] = 0
+    labels[~valence_high & arousal_high] = 1
+    labels[~valence_high & ~arousal_high] = 2
+    labels[valence_high & ~arousal_high] = 3
+    return labels
+
+
 METADATA_MIN_GLOBAL_SUPPORT = 10
 METADATA_MIN_CLUSTER_SUPPORT = 5
 
@@ -1494,6 +1509,7 @@ def _cluster_summary(
         raw_metadata = dataset.raw_metadata
     view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32)).astype(np.float32)
     mean_va = _dataset_plot_va(dataset, plot_va_source)
+    va_quadrants = _va_quadrant_labels(mean_va)
     numeric_indices = [idx for idx, name in enumerate(metadata_feature_names) if str(name).startswith("numeric::")]
     token_indices = [idx for idx, name in enumerate(metadata_feature_names) if not str(name).startswith("numeric::")]
     token_global_rates = {}
@@ -1515,7 +1531,7 @@ def _cluster_summary(
     for cluster_id in sorted(np.unique(assignments).tolist()):
         mask = assignments == cluster_id
         cluster_size = int(np.sum(mask))
-        valid_labels = dataset.labels[mask].astype(np.int64)
+        valid_labels = va_quadrants[mask].astype(np.int64)
         valid_labels = valid_labels[(valid_labels >= 0) & (valid_labels < 4)]
         label_counts = np.bincount(valid_labels, minlength=4)
         total = max(cluster_size, 1)
@@ -1963,7 +1979,7 @@ def _write_split_outputs(
     if cluster_features is not None:
         feature_pca_written = _plot_cluster_feature_pca(cluster_features, assignments, feature_pca_path, palette)
     _plot_cluster_size_bar(assignments, size_bar_path, palette)
-    _plot_quadrant_heatmap(assignments, dataset.labels, quadrant_heatmap_path)
+    _plot_quadrant_heatmap(assignments, _va_quadrant_labels(mean_va), quadrant_heatmap_path)
     _plot_gate_profiles(assignments, embeddings["gate_weights"], gate_profile_path)
     _dataset_view_mask = dataset.view_mask if hasattr(dataset, "view_mask") else np.ones((len(assignments), 3), dtype=np.float32)
     _plot_diff_scatter(dataset.raw_audio if hasattr(dataset, "raw_audio") else np.zeros((len(assignments), 2)),
@@ -2472,7 +2488,7 @@ def main() -> None:
         macro_k_max=int(args.macro_k_max),
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
-        affect_labels=getattr(eval_datasets[search_split], "labels", None),
+        affect_labels=_va_quadrant_labels(_dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))),
         affect_gate_enabled=parse_bool_text(args.affect_gate),
         min_affect_dominant_ratio=float(args.min_affect_dominant_ratio),
         max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
