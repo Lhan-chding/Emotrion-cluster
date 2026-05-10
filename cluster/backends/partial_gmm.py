@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
-from sklearn.mixture import GaussianMixture
+
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 
 
 BlockSlice = Tuple[int, int]
@@ -59,13 +60,17 @@ class PartialGaussianMixture:
             fit_matrix[~observed, start:stop] = fill
             self.block_fill_values_.append(fill)
 
-        self.model_ = GaussianMixture(
+        self.model_ = fit_gaussian_mixture_robust(
+            fit_matrix,
             n_components=int(self.n_components),
             covariance_type="diag",
             reg_covar=float(self.reg_covar),
             n_init=int(self.n_init),
+            max_iter=300,
             random_state=int(self.random_state),
-        ).fit(fit_matrix)
+            require_converged=True,
+            context="partial Gaussian mixture",
+        )
         self.means_ = self.model_.means_.astype(np.float64)
         self.covariances_ = np.maximum(self.model_.covariances_.astype(np.float64), float(self.reg_covar))
         self.weights_ = np.maximum(self.model_.weights_.astype(np.float64), 1e-12)

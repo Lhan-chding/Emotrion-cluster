@@ -21,6 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.features.block_scaler import BlockwiseObservedScaler
 from cluster.features.va_geometry import VA_GEOMETRY_FEATURE_NAMES, VA_GEOMETRY_OBSERVED_NAMES, VA_GEOMETRY_OBSERVED_DIM, impute_unobserved_pairwise
 from cluster.pipeline.k_selection import (
@@ -2433,15 +2434,17 @@ def main() -> None:
                 f"cluster_assignment_mode='joint'."
             )
         if both_mask.any() and not both_mask.all():
-            from sklearn.mixture import GaussianMixture
-            refitted = GaussianMixture(
+            refitted = fit_gaussian_mixture_robust(
+                search_features[both_mask],
                 n_components=selected_k,
                 covariance_type=str(args.covariance_type),
                 reg_covar=1e-5,
                 n_init=10,
+                max_iter=300,
                 random_state=int(args.random_state),
+                require_converged=True,
+                context="complete_first refit GMM",
             )
-            refitted.fit(search_features[both_mask])
             gmm_model = refitted
             selection_info["complete_first_refit"] = True
             selection_info["complete_pair_samples"] = int(both_mask.sum())

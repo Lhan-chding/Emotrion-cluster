@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from sklearn.metrics import silhouette_score
-from sklearn.mixture import GaussianMixture
 
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
 from cluster.evaluation.metrics import masked_silhouette_score
 
@@ -39,15 +38,6 @@ def _normalize_block_mask(block_mask: Optional[np.ndarray], n_samples: int, n_bl
     return fixed
 
 
-def _safe_silhouette(features: np.ndarray, labels: np.ndarray) -> float:
-    if len(np.unique(labels)) < 2:
-        return 0.0
-    try:
-        return float(silhouette_score(features, labels))
-    except Exception:
-        return 0.0
-
-
 @dataclass
 class MacroMicroClusterer:
     """Two-stage macro/micro clusterer for diff-aware three-block features.
@@ -76,14 +66,17 @@ class MacroMicroClusterer:
         mask = _normalize_block_mask(block_mask, matrix.shape[0], len(self.block_slices_))
         consensus, _tension, metadata = self._split_blocks(matrix)
 
-        self.macro_model_ = GaussianMixture(
+        self.macro_model_ = fit_gaussian_mixture_robust(
+            consensus,
             n_components=int(self.macro_k),
             covariance_type=str(self.covariance_type),
             reg_covar=float(self.reg_covar),
             n_init=int(self.n_init),
             max_iter=max(20, int(self.max_iter)),
             random_state=int(self.random_state),
-        ).fit(consensus)
+            require_converged=True,
+            context=f"macro GMM macro_k={int(self.macro_k)}",
+        )
         macro_labels = self.macro_model_.predict(consensus).astype(np.int64)
         self.macro_labels_ = macro_labels
 

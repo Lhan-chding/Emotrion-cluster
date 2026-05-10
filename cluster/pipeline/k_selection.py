@@ -16,6 +16,7 @@ from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalize
 from sklearn.mixture import GaussianMixture
 
 from cluster.backends import resolve_cluster_backend
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
 from cluster.evaluation.metrics import masked_silhouette_score
 from cluster.pipeline.macro_micro import MacroMicroClusterer
@@ -1105,14 +1106,18 @@ def hierarchical_cluster(
     best_macro_labels: Optional[np.ndarray] = None
 
     for mk in range(macro_lo, macro_hi + 1):
-        gmm = GaussianMixture(
+        gmm = fit_gaussian_mixture_robust(
+            features,
             n_components=mk,
             covariance_type=config.covariance_type,
             reg_covar=1e-5,
             n_init=config.n_init,
+            max_iter=300,
             random_state=config.random_state,
+            require_converged=True,
+            context=f"hierarchical macro GMM k={mk}",
         )
-        labels = gmm.fit_predict(features)
+        labels = gmm.predict(features)
         if len(np.unique(labels)) > 1:
             sil = _safe_metric(silhouette_score, dist_matrix, labels, metric="precomputed")
             if sil > best_macro_sil:
@@ -1153,14 +1158,18 @@ def hierarchical_cluster(
         micro_dist = pairwise_distances(cluster_features, metric="euclidean")
 
         for micro_k in range(config.micro_k_min, min(config.micro_k_max + 1, cluster_size // 2 + 1)):
-            gmm = GaussianMixture(
+            gmm = fit_gaussian_mixture_robust(
+                cluster_features,
                 n_components=micro_k,
                 covariance_type=config.covariance_type,
                 reg_covar=1e-5,
                 n_init=config.n_init,
+                max_iter=300,
                 random_state=config.random_state,
+                require_converged=True,
+                context=f"hierarchical micro GMM macro={macro_id} k={micro_k}",
             )
-            micro_labels = gmm.fit_predict(cluster_features)
+            micro_labels = gmm.predict(cluster_features)
             if len(np.unique(micro_labels)) > 1:
                 sil = _safe_metric(silhouette_score, micro_dist, micro_labels, metric="precomputed")
                 if sil > best_micro_sil:

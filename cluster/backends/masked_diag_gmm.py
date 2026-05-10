@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
-from sklearn.mixture import GaussianMixture
+
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 
 
 BlockSlice = Tuple[int, int]
@@ -80,14 +81,17 @@ class MaskedDiagonalGMM:
             fill = init_matrix[observed, start:stop].mean(axis=0) if observed.any() else np.zeros(stop - start)
             init_matrix[~observed, start:stop] = fill
 
-        init = GaussianMixture(
+        init = fit_gaussian_mixture_robust(
+            init_matrix,
             n_components=int(self.n_components),
             covariance_type="diag",
             reg_covar=float(self.reg_covar),
             n_init=int(self.n_init),
             max_iter=max(20, int(self.max_iter)),
+            tol=float(self.tol),
             random_state=int(self.random_state),
-        ).fit(init_matrix)
+            context="masked diagonal GMM initializer",
+        )
         self.means_ = init.means_.astype(np.float64)
         self.covariances_ = np.maximum(init.covariances_.astype(np.float64), float(self.reg_covar))
         self.weights_ = np.maximum(init.weights_.astype(np.float64), 1e-12)

@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.config import parse_split_protocol
 from cluster.features.va_geometry import build_va_geometry_features
 from cluster.models.discovery_net import (
@@ -387,15 +388,17 @@ def main() -> None:
                 f"cluster_assignment_mode='joint'."
             )
         if both_mask.any() and not both_mask.all():
-            from sklearn.mixture import GaussianMixture
-            refitted = GaussianMixture(
+            refitted = fit_gaussian_mixture_robust(
+                search_features[both_mask],
                 n_components=selected_k,
                 covariance_type=str(args.covariance_type),
                 reg_covar=1e-5,
                 n_init=10,
+                max_iter=300,
                 random_state=int(args.random_state),
+                require_converged=True,
+                context="complete_first rerun refit GMM",
             )
-            refitted.fit(search_features[both_mask])
             gmm_model = refitted
             selection_info["complete_first_refit"] = True
             selection_info["complete_pair_samples"] = int(both_mask.sum())
