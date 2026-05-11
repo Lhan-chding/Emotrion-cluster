@@ -324,7 +324,7 @@ class ClusterFeatureStrategy(Enum):
     LYRICS_VA = "lyrics_va"           # raw lyrics VA baseline
     VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
-    BALANCED_VA_DIFF = "balanced_va_diff"  # consensus + audio/lyrics VA + disagreement encoding
+    BALANCED_VA_DIFF = "balanced_va_diff"  # consensus VA + compact disagreement encoding
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     METADATA_ONLY = "metadata_only"   # metadata-only leakage/upper-bound baseline
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
@@ -656,8 +656,7 @@ def cluster_feature_weights(
         weights[2:VA_GEOMETRY_OBSERVED_DIM] = float(conflict_cluster_weight)
     elif base_strategy == "balanced_va_diff" and int(feature_dim) == BALANCED_VA_DIFF_DIM:
         weights[0:2] = 2.5
-        weights[2:6] = 1.0
-        weights[6:BALANCED_VA_DIFF_DIM] = float(diff_cluster_weight)
+        weights[2:BALANCED_VA_DIFF_DIM] = float(diff_cluster_weight)
     elif base_strategy == "fused_va_geometry" and int(feature_dim) > VA_GEOMETRY_OBSERVED_DIM:
         latent_dim = int(feature_dim) - VA_GEOMETRY_OBSERVED_DIM
         weights[:latent_dim] = 0.5

@@ -179,7 +179,7 @@ def test_va_geometry_cluster_feature_strategy_uses_geometry_embedding_only():
     assert pca is None
 
 
-def test_balanced_va_diff_cluster_feature_strategy_uses_audio_lyrics_and_delta():
+def test_balanced_va_diff_cluster_feature_strategy_uses_consensus_and_compact_delta():
     embeddings = {
         "audio_va": np.asarray([[0.8, 0.6], [0.7, 0.4]], dtype=np.float32),
         "lyrics_va": np.asarray([[0.2, 0.7], [0.3, 0.2]], dtype=np.float32),
@@ -203,13 +203,42 @@ def test_balanced_va_diff_cluster_feature_strategy_uses_audio_lyrics_and_delta()
     )
 
     np.testing.assert_allclose(features[:, :2], embeddings["mean_va"])
-    np.testing.assert_allclose(features[:, 2:4], embeddings["audio_va"])
-    np.testing.assert_allclose(features[:, 4:6], embeddings["lyrics_va"])
-    np.testing.assert_allclose(features[:, 6:8], embeddings["audio_va"] - embeddings["lyrics_va"])
+    np.testing.assert_allclose(features[:, 2:4], embeddings["audio_va"] - embeddings["lyrics_va"])
+    reconstructed_audio = features[:, :2] + 0.5 * features[:, 2:4]
+    reconstructed_lyrics = features[:, :2] - 0.5 * features[:, 2:4]
+    np.testing.assert_allclose(reconstructed_audio, embeddings["audio_va"])
+    np.testing.assert_allclose(reconstructed_lyrics, embeddings["lyrics_va"])
     np.testing.assert_allclose(weights[:2], np.full(2, 2.5, dtype=np.float32))
-    np.testing.assert_allclose(weights[2:6], np.ones(4, dtype=np.float32))
-    np.testing.assert_allclose(weights[6:], np.full(12, 0.65, dtype=np.float32))
+    np.testing.assert_allclose(weights[2:], np.full(6, 0.65, dtype=np.float32))
     assert pca is None
+
+
+def test_balanced_va_diff_zero_weight_degenerates_to_weighted_mean_va():
+    embeddings = {
+        "audio_va": np.asarray([[0.8, 0.6], [0.7, 0.4]], dtype=np.float32),
+        "lyrics_va": np.asarray([[0.2, 0.7], [0.3, 0.2]], dtype=np.float32),
+        "mean_va": np.asarray([[0.5, 0.65], [0.5, 0.3]], dtype=np.float32),
+        "view_mask": np.ones((2, 3), dtype=np.float32),
+    }
+
+    features, _, _ = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.75,
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        strategy="balanced_va_diff",
+    )
+    weights = cluster_feature_weights(
+        "balanced_va_diff",
+        int(features.shape[1]),
+        conflict_cluster_weight=0.40,
+        gate_cluster_weight=0.20,
+        diff_cluster_weight=0.0,
+    )
+    weighted = apply_cluster_feature_weights(features, weights)
+
+    np.testing.assert_allclose(weighted[:, :2], embeddings["mean_va"] * 2.5)
+    np.testing.assert_allclose(weighted[:, 2:], np.zeros((2, 6), dtype=np.float32))
 
 
 def test_va_geometry_cluster_feature_strategy_accepts_minimal_raw_embeddings():

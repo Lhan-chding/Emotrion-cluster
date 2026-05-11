@@ -35,11 +35,12 @@ VA_GEOMETRY_OBSERVED_DIM = len(VA_GEOMETRY_OBSERVED_NAMES)
 BALANCED_VA_DIFF_FEATURE_NAMES = [
     "consensus_valence",
     "consensus_arousal",
-    "audio_valence",
-    "audio_arousal",
-    "lyrics_valence",
-    "lyrics_arousal",
-    *VA_GEOMETRY_OBSERVED_NAMES[2:],
+    "signed_delta_valence",
+    "signed_delta_arousal",
+    "euclidean_gap",
+    "signed_angular_gap",
+    "radial_gap",
+    "rbf_consistency",
 ]
 BALANCED_VA_DIFF_DIM = len(BALANCED_VA_DIFF_FEATURE_NAMES)
 
@@ -276,11 +277,13 @@ def build_balanced_va_diff_features(
     consistency_sigma: float = 0.35,
     eps: float = 1e-6,
 ) -> np.ndarray:
-    """Build an explicit affect-first encoding for audio/lyrics VA clustering.
+    """Build a compact affect-first encoding for audio/lyrics VA clustering.
 
-    Columns are consensus VA, audio VA, lyrics VA, then pairwise disagreement
-    descriptors. Missing single-view coordinates are replaced with consensus
-    coordinates so missingness does not become a cluster feature.
+    The first two columns are the consensus VA plane coordinates used as the
+    primary clustering geometry. The remaining columns encode audio-lyrics
+    disagreement. For complete pairs, consensus + signed delta can exactly
+    reconstruct both modal VA points, so raw audio/lyrics coordinates are not
+    duplicated as independent GMM axes.
     """
     audio = _as_va_matrix("audio_va", audio_va)
     lyrics = _as_va_matrix("lyrics_va", lyrics_va)
@@ -301,14 +304,14 @@ def build_balanced_va_diff_features(
         consistency_sigma=consistency_sigma,
         eps=eps,
     )
-    audio_safe = np.where(has_audio > 0.0, audio, consensus).astype(np.float32)
-    lyrics_safe = np.where(has_lyrics > 0.0, lyrics, consensus).astype(np.float32)
     return np.concatenate(
         [
             consensus.astype(np.float32),
-            audio_safe,
-            lyrics_safe,
-            observed[:, 2:VA_GEOMETRY_OBSERVED_DIM],
+            observed[:, 2:4].astype(np.float32),  # signed VA delta
+            observed[:, 6:7].astype(np.float32),  # normalized Euclidean gap
+            observed[:, 9:10].astype(np.float32),  # signed angular gap
+            observed[:, 12:13].astype(np.float32),  # radial gap
+            observed[:, 13:14].astype(np.float32),  # RBF consistency
         ],
         axis=1,
     ).astype(np.float32)

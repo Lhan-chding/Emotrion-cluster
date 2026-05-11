@@ -49,6 +49,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
         "k_strategy": "composite",
         "requires_run_dir": False,
         "metadata_policy": "report_only",
+        "diff_cluster_weight": 0.2,
     },
 }
 

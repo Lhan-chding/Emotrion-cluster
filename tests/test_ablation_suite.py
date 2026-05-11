@@ -72,6 +72,7 @@ def test_ablation_suite_uses_balanced_va_diff_as_proposed_full(tmp_path):
     assert "--run_dir" not in command
     assert command[command.index("--cluster_feature_strategy") + 1] == "balanced_va_diff"
     assert command[command.index("--k_strategy") + 1] == "composite"
+    assert command[command.index("--diff_cluster_weight") + 1] == "0.2"
 
 
 def test_ablation_suite_writes_required_comparison_reports(tmp_path):
