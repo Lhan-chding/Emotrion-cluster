@@ -2438,6 +2438,21 @@ def _tension_micro_effect_size(matrix: np.ndarray, labels: np.ndarray) -> float:
     return float(np.sqrt(between / max(within, 1e-8)))
 
 
+def _canonical_tension_labels(tension: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    unique = sorted(np.unique(labels).astype(int).tolist())
+    if len(unique) <= 1:
+        return np.zeros_like(labels, dtype=np.int64)
+    ordering: List[Tuple[float, float, int]] = []
+    for label in unique:
+        group = tension[labels == label]
+        mean_delta = group[:, :2].mean(axis=0)
+        mean_norm = float(group[:, 2].mean())
+        mean_angle = float(np.arctan2(mean_delta[1], mean_delta[0]))
+        ordering.append((mean_norm, mean_angle, int(label)))
+    remap = {old_label: new_label for new_label, (_norm, _angle, old_label) in enumerate(sorted(ordering))}
+    return np.asarray([remap[int(label)] for label in labels.tolist()], dtype=np.int64)
+
+
 def _tension_seed_ari(
     matrix: np.ndarray,
     base_labels: np.ndarray,
@@ -2530,6 +2545,7 @@ def _probe_one_cluster_tension_micro(
             max_iter=300,
             random_state=int(config["random_state"]) + int(cluster_id) * 4099 + k,
         ).fit_predict(scaled)
+        labels = _canonical_tension_labels(tension, labels)
         sizes = np.bincount(labels, minlength=k)
         min_micro_size = int(sizes.min()) if sizes.size else 0
         if min_micro_size < min_size:

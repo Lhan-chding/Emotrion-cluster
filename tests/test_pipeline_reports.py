@@ -3,6 +3,7 @@ import pandas as pd
 
 from cluster.pipeline.rerun import build_parser as build_rerun_parser
 from cluster.pipeline.train import (
+    _canonical_tension_labels,
     _cluster_label_names_for_outputs,
     _dataset_plot_va,
     _plot_cluster_feature_pca,
@@ -880,6 +881,24 @@ def test_cluster_feature_pca_plot_writes_actual_gmm_feature_projection(tmp_path)
 
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def test_canonical_tension_labels_order_micro_ids_by_mean_norm():
+    tension = np.asarray(
+        [
+            [0.40, 0.02, 0.401],
+            [0.42, 0.03, 0.421],
+            [0.04, 0.01, 0.041],
+            [0.05, 0.02, 0.054],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.asarray([0, 0, 1, 1], dtype=np.int64)
+
+    relabeled = _canonical_tension_labels(tension, labels)
+
+    assert relabeled[:2].tolist() == [1, 1]
+    assert relabeled[2:].tolist() == [0, 0]
 
 
 def test_cluster_summary_filters_low_support_metadata_tokens_with_fdr():
