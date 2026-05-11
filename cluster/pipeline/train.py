@@ -459,6 +459,9 @@ def _calibrated_va_tension_features(
         raise ValueError("cluster_feature_strategy='calibrated_va_tension' requires audio_va and lyrics_va embeddings.")
     calibrator = fitted_state.get("calibrator") if isinstance(fitted_state, dict) else None
     residualizer = fitted_state.get("residualizer") if isinstance(fitted_state, dict) else None
+    fitted_sigma = None
+    if isinstance(fitted_state, dict) and "sigma_v" in fitted_state and "sigma_a" in fitted_state:
+        fitted_sigma = (float(fitted_state["sigma_v"]), float(fitted_state["sigma_a"]))
     fit = calibrator is None
     features, state = build_calibrated_va_tension_features(
         np.asarray(audio, dtype=np.float32),
@@ -472,6 +475,7 @@ def _calibrated_va_tension_features(
         diff_residual_mode=diff_residual_mode,
         diff_residual_neighbors=diff_residual_neighbors,
         tension_encoding=tension_encoding,
+        fitted_sigma=fitted_sigma,
     )
     return features, state
 

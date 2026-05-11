@@ -64,7 +64,11 @@ class MicroSplitValidator:
             return 0.0
         groups = [features[labels == lbl] for lbl in unique]
         means = [g.mean(axis=0) for g in groups]
-        mean_diff = np.linalg.norm(means[0] - means[1])
+        mean_diff = max(
+            float(np.linalg.norm(means[i] - means[j]))
+            for i in range(len(means))
+            for j in range(i + 1, len(means))
+        )
         pooled_var = sum(g.var(axis=0).sum() * (len(g) - 1) for g in groups) / max(features.shape[0] - len(unique), 1)
         pooled_std = float(np.sqrt(pooled_var / max(features.shape[1], 1)))
         return float(mean_diff / max(pooled_std, 1e-8))

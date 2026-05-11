@@ -348,6 +348,7 @@ def build_calibrated_va_tension_features(
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
     tension_encoding: str = "residual_3d",
+    fitted_sigma: Optional[Tuple[float, float]] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Build 5-dim calibrated consensus + residual tension features.
 
@@ -391,7 +392,10 @@ def build_calibrated_va_tension_features(
         residualizer.fit(consensus, raw_delta, mask)
     d_res = residualizer.transform(consensus, raw_delta, mask)
 
-    if has_both.sum() > 2:
+    if fitted_sigma is not None:
+        sigma_v = float(max(float(fitted_sigma[0]), 1e-6))
+        sigma_a = float(max(float(fitted_sigma[1]), 1e-6))
+    elif has_both.sum() > 2:
         obs_res = d_res[has_both]
         sigma_v = float(np.maximum(_robust_std(obs_res[:, 0]), 1e-6))
         sigma_a = float(np.maximum(_robust_std(obs_res[:, 1]), 1e-6))

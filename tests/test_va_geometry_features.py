@@ -5,10 +5,13 @@ import numpy as np
 from cluster.features.va_geometry import (
     BALANCED_VA_DIFF_DIM,
     BALANCED_VA_DIFF_FEATURE_NAMES,
+    CALIBRATED_VA_TENSION_DIM,
+    CALIBRATED_VA_TENSION_FEATURE_NAMES,
     VA_GEOMETRY_FEATURE_NAMES,
     VA_GEOMETRY_OBSERVED_NAMES,
     VA_GEOMETRY_OBSERVED_DIM,
     build_balanced_va_diff_features,
+    build_calibrated_va_tension_features,
     build_va_geometry_features,
     build_va_geometry_observed_features,
     build_va_geometry_mask,
@@ -105,6 +108,66 @@ def test_balanced_va_diff_features_encode_modal_va_without_raw_duplication():
     reconstructed_lyrics = features[:, :2] - 0.5 * features[:, 2:4]
     np.testing.assert_allclose(reconstructed_audio, audio, atol=1e-6)
     np.testing.assert_allclose(reconstructed_lyrics, lyrics, atol=1e-6)
+
+
+def test_calibrated_va_tension_features_reuse_fit_sigma_on_transform():
+    train_audio = np.asarray(
+        [
+            [0.2, 0.2],
+            [0.4, 0.4],
+            [0.6, 0.6],
+            [0.8, 0.8],
+        ],
+        dtype=np.float32,
+    )
+    train_lyrics = train_audio + np.asarray(
+        [
+            [0.02, 0.01],
+            [0.04, 0.02],
+            [0.08, 0.04],
+            [0.16, 0.08],
+        ],
+        dtype=np.float32,
+    )
+    train_mask = np.ones((4, 3), dtype=np.float32)
+
+    train_features, state = build_calibrated_va_tension_features(
+        train_audio,
+        train_lyrics,
+        train_mask,
+        fit=True,
+        calibration_mode="identity",
+        diff_residual_mode="identity",
+    )
+
+    eval_audio = np.asarray([[0.5, 0.5], [0.6, 0.6]], dtype=np.float32)
+    eval_lyrics = eval_audio + np.asarray([[0.05, 0.025], [0.06, 0.03]], dtype=np.float32)
+    eval_mask = np.ones((2, 3), dtype=np.float32)
+    eval_features, reused_state = build_calibrated_va_tension_features(
+        eval_audio,
+        eval_lyrics,
+        eval_mask,
+        calibrator=state["calibrator"],
+        residualizer=state["residualizer"],
+        fit=False,
+        calibration_mode="identity",
+        diff_residual_mode="identity",
+        fitted_sigma=(state["sigma_v"], state["sigma_a"]),
+    )
+
+    assert CALIBRATED_VA_TENSION_DIM == 5
+    assert CALIBRATED_VA_TENSION_FEATURE_NAMES == [
+        "consensus_valence",
+        "consensus_arousal",
+        "tension_dv",
+        "tension_da",
+        "tension_r",
+    ]
+    np.testing.assert_allclose(eval_features[:, 2], (eval_lyrics[:, 0] - eval_audio[:, 0]) / state["sigma_v"])
+    np.testing.assert_allclose(eval_features[:, 3], (eval_lyrics[:, 1] - eval_audio[:, 1]) / state["sigma_a"])
+    assert reused_state["sigma_v"] == state["sigma_v"]
+    assert reused_state["sigma_a"] == state["sigma_a"]
+    assert not np.allclose(train_features[:, 2:].std(axis=0), eval_features[:, 2:].std(axis=0))
 
 
 def test_va_geometry_features_treat_missing_pair_conflict_as_unknown_not_agreement():

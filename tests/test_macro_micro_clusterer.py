@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from cluster.pipeline.k_selection import _select_best_index, compute_affect_purity_metrics, KSelectionConfig
+from cluster.pipeline.macro_micro import MicroSplitValidator
 from cluster.pipeline.train import run_k_selection
 
 
@@ -147,6 +148,7 @@ def test_macro_micro_affect_gate_applies_to_macro_regions_not_diff_subclusters()
         min_affect_dominant_ratio=0.70,
         min_affect_weighted_purity=0.80,
         max_affect_mixed_cluster_fraction=0.15,
+        affect_gate_level="macro",
     )
 
     assert model.n_components == 4
@@ -191,6 +193,26 @@ def test_macro_micro_affect_gate_error_reports_valid_fraction():
             max_affect_mixed_cluster_fraction=0.15,
             min_affect_valid_fraction=0.90,
         )
+
+
+def test_micro_split_validator_uses_all_micro_labels_for_effect_size():
+    validator = MicroSplitValidator()
+    features = np.asarray(
+        [
+            [0.0],
+            [0.1],
+            [0.0],
+            [0.1],
+            [6.0],
+            [6.1],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
+
+    effect = validator._effect_size(features, labels)
+
+    assert effect > 50.0
 
 
 def test_macro_micro_k_strategy_supports_two_block_va_diff_features():
