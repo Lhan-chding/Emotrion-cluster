@@ -25,10 +25,13 @@ from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.features.block_scaler import BlockwiseObservedScaler
 from cluster.features.va_geometry import (
     BALANCED_VA_DIFF_DIM,
+    CALIBRATED_VA_TENSION_DIM,
+    CALIBRATED_VA_TENSION_FEATURE_NAMES,
     VA_GEOMETRY_FEATURE_NAMES,
     VA_GEOMETRY_OBSERVED_NAMES,
     VA_GEOMETRY_OBSERVED_DIM,
     build_balanced_va_diff_features,
+    build_calibrated_va_tension_features,
     impute_unobserved_pairwise,
 )
 from cluster.pipeline.k_selection import (
@@ -159,8 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_input_dim", type=int, default=26,
                         help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "macro_micro", "bic_only", "hierarchical"],
-                        help="K-selection strategy: composite, semantic_composite, macro_micro, bic_only, or hierarchical")
+                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "bic_only", "hierarchical"],
+                        help="K-selection strategy: composite, semantic_composite, macro_micro, constrained_macro_micro, macro_only, bic_only, or hierarchical")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
                         help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
@@ -190,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "audio_va",
                             "lyrics_va",
                             "balanced_va_diff",
+                            "calibrated_va_tension",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -254,6 +258,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_final_clusters", type=int, default=0)
     parser.add_argument("--micro_min_cluster_size_abs", type=int, default=0)
     parser.add_argument("--micro_min_cluster_size_ratio", type=float, default=0.0)
+    # V16 calibrated tension parameters
+    parser.add_argument("--consensus_mode", type=str, default="calibrated_mean",
+                        choices=["mean", "calibrated_mean"],
+                        help="How to compute consensus VA from audio/lyrics")
+    parser.add_argument("--calibration_mode", type=str, default="global_median_shift",
+                        choices=["identity", "global_median_shift"],
+                        help="Modality calibration mode")
+    parser.add_argument("--diff_residual_mode", type=str, default="knn",
+                        choices=["identity", "knn"],
+                        help="Residualization mode for raw diff")
+    parser.add_argument("--diff_residual_neighbors", type=int, default=101,
+                        help="KNN neighbors for diff residualization")
+    parser.add_argument("--tension_encoding", type=str, default="residual_3d",
+                        choices=["residual_3d"],
+                        help="Tension feature encoding")
+    parser.add_argument("--micro_feature_mode", type=str, default="tension_local_consensus",
+                        choices=["tension_only", "tension_plus_small_consensus", "tension_local_consensus"],
+                        help="What features to use for micro splitting")
+    parser.add_argument("--micro_tension_weight", type=float, default=1.0)
+    parser.add_argument("--micro_consensus_residual_weight", type=float, default=0.05)
+    parser.add_argument("--micro_min_silhouette", type=float, default=0.0,
+                        help="Minimum tension silhouette to accept a micro split (V16: 0.20)")
+    parser.add_argument("--micro_min_stability", type=float, default=0.0)
+    parser.add_argument("--micro_min_jaccard", type=float, default=0.0)
+    parser.add_argument("--micro_min_tension_effect", type=float, default=0.0,
+                        help="Minimum tension effect size for micro split (V16: 0.35)")
+    parser.add_argument("--micro_max_consensus_effect_ratio", type=float, default=1.0,
+                        help="Max ratio of consensus effect to tension effect (V16: 0.50)")
+    parser.add_argument("--affect_gate_level", type=str, default="both",
+                        choices=["macro", "final", "both"],
+                        help="Which affect gate(s) to enforce as hard gates")
     return parser
 
 
@@ -331,6 +366,7 @@ class ClusterFeatureStrategy(Enum):
     VA_GEOMETRY = "va_geometry"       # mean VA + circumplex audio/lyrics disagreement geometry
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
     BALANCED_VA_DIFF = "balanced_va_diff"  # consensus VA + compact disagreement encoding
+    CALIBRATED_VA_TENSION = "calibrated_va_tension"  # V16: calibrated consensus + residual tension
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     METADATA_ONLY = "metadata_only"   # metadata-only leakage/upper-bound baseline
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
@@ -404,6 +440,40 @@ def _balanced_va_diff_features(embeddings: Dict[str, Any], view_mask: np.ndarray
         np.asarray(lyrics, dtype=np.float32),
         np.asarray(view_mask, dtype=np.float32),
     )
+
+
+def _calibrated_va_tension_features(
+    embeddings: Dict[str, Any],
+    view_mask: np.ndarray,
+    *,
+    fitted_state: Optional[Any] = None,
+    consensus_mode: str = "calibrated_mean",
+    calibration_mode: str = "global_median_shift",
+    diff_residual_mode: str = "knn",
+    diff_residual_neighbors: int = 101,
+    tension_encoding: str = "residual_3d",
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    audio = embeddings.get("audio_va")
+    lyrics = embeddings.get("lyrics_va")
+    if audio is None or lyrics is None:
+        raise ValueError("cluster_feature_strategy='calibrated_va_tension' requires audio_va and lyrics_va embeddings.")
+    calibrator = fitted_state.get("calibrator") if isinstance(fitted_state, dict) else None
+    residualizer = fitted_state.get("residualizer") if isinstance(fitted_state, dict) else None
+    fit = calibrator is None
+    features, state = build_calibrated_va_tension_features(
+        np.asarray(audio, dtype=np.float32),
+        np.asarray(lyrics, dtype=np.float32),
+        np.asarray(view_mask, dtype=np.float32),
+        calibrator=calibrator,
+        residualizer=residualizer,
+        fit=fit,
+        consensus_mode=consensus_mode,
+        calibration_mode=calibration_mode,
+        diff_residual_mode=diff_residual_mode,
+        diff_residual_neighbors=diff_residual_neighbors,
+        tension_encoding=tension_encoding,
+    )
+    return features, state
 
 
 def _metadata_only_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
@@ -514,6 +584,11 @@ def build_cluster_features(
     fitted_imputation: Optional[Any] = None,
     fit_mask: Optional[np.ndarray] = None,
     diff_cluster_weight: float = 0.35,
+    consensus_mode: str = "calibrated_mean",
+    calibration_mode: str = "global_median_shift",
+    diff_residual_mode: str = "knn",
+    diff_residual_neighbors: int = 101,
+    tension_encoding: str = "residual_3d",
 ) -> Tuple[np.ndarray, Optional[PCA], Optional[Any]]:
     """Build clustering features from embeddings using the specified strategy.
 
@@ -582,6 +657,17 @@ def build_cluster_features(
         features = _view_va_features(embeddings, "lyrics_va", 1)
     elif base_strategy == "balanced_va_diff":
         features = _balanced_va_diff_features(embeddings, view_mask)
+    elif base_strategy == "calibrated_va_tension":
+        features, imputation_fill = _calibrated_va_tension_features(
+            embeddings,
+            view_mask,
+            fitted_state=fitted_imputation,
+            consensus_mode=consensus_mode,
+            calibration_mode=calibration_mode,
+            diff_residual_mode=diff_residual_mode,
+            diff_residual_neighbors=diff_residual_neighbors,
+            tension_encoding=tension_encoding,
+        )
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
         raw_geom = _va_geometry_features(embeddings)
         features, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
@@ -663,6 +749,9 @@ def cluster_feature_weights(
     elif base_strategy == "balanced_va_diff" and int(feature_dim) == BALANCED_VA_DIFF_DIM:
         weights[0:2] = 2.5
         weights[2:BALANCED_VA_DIFF_DIM] = float(diff_cluster_weight)
+    elif base_strategy == "calibrated_va_tension" and int(feature_dim) == CALIBRATED_VA_TENSION_DIM:
+        weights[0:2] = 1.0
+        weights[2:CALIBRATED_VA_TENSION_DIM] = float(diff_cluster_weight)
     elif base_strategy == "fused_va_geometry" and int(feature_dim) > VA_GEOMETRY_OBSERVED_DIM:
         latent_dim = int(feature_dim) - VA_GEOMETRY_OBSERVED_DIM
         weights[:latent_dim] = 0.5
@@ -679,6 +768,8 @@ def cluster_feature_block_slices(strategy: str, feature_dim: int) -> List[Tuple[
     base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
     if base_strategy == "balanced_va_diff" and int(feature_dim) == BALANCED_VA_DIFF_DIM:
         return [(0, 2), (2, int(feature_dim))]
+    if base_strategy == "calibrated_va_tension" and int(feature_dim) == CALIBRATED_VA_TENSION_DIM:
+        return [(0, 2), (2, int(feature_dim))]
     if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and int(feature_dim) % 3 == 0:
         latent_dim = int(feature_dim) // 3
         return [(0, latent_dim), (latent_dim, 2 * latent_dim), (2 * latent_dim, 3 * latent_dim)]
@@ -690,7 +781,7 @@ def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n
     if view_mask is None:
         return np.ones((int(n_samples), len(cluster_feature_block_slices(base_strategy, 1))), dtype=bool)
     mask = np.asarray(view_mask, dtype=np.float32)
-    if base_strategy == "balanced_va_diff":
+    if base_strategy in {"balanced_va_diff", "calibrated_va_tension"}:
         has_audio = mask[:, 0] > 0.0
         has_lyrics = mask[:, 1] > 0.0
         has_consensus = has_audio | has_lyrics
@@ -898,6 +989,15 @@ def run_k_selection(
     max_affect_mixed_cluster_fraction: float = 0.15,
     min_affect_weighted_purity: float = 0.80,
     min_affect_valid_fraction: float = 0.95,
+    affect_gate_level: str = "both",
+    micro_feature_mode: str = "tension_local_consensus",
+    micro_tension_weight: float = 1.0,
+    micro_consensus_residual_weight: float = 1.0,
+    micro_min_silhouette: float = 0.0,
+    micro_min_stability: float = 0.0,
+    micro_min_jaccard: float = 0.0,
+    micro_min_tension_effect: float = 0.0,
+    micro_max_consensus_effect_ratio: float = 1.0,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -924,13 +1024,22 @@ def run_k_selection(
         micro_k_min=int(micro_k_min),
         micro_k_max=int(micro_k_max),
         affect_gate_enabled=bool(affect_gate_enabled),
+        affect_gate_level=str(affect_gate_level),
         min_affect_dominant_ratio=float(min_affect_dominant_ratio),
         max_affect_mixed_cluster_fraction=float(max_affect_mixed_cluster_fraction),
         min_affect_weighted_purity=float(min_affect_weighted_purity),
         min_affect_valid_fraction=float(min_affect_valid_fraction),
+        micro_feature_mode=str(micro_feature_mode),
+        micro_tension_weight=float(micro_tension_weight),
+        micro_consensus_residual_weight=float(micro_consensus_residual_weight),
+        micro_min_silhouette=float(micro_min_silhouette),
+        micro_min_stability=float(micro_min_stability),
+        micro_min_jaccard=float(micro_min_jaccard),
+        micro_min_tension_effect=float(micro_min_tension_effect),
+        micro_max_consensus_effect_ratio=float(micro_max_consensus_effect_ratio),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
-    if k_strategy == "macro_micro":
+    if k_strategy in {"macro_micro", "constrained_macro_micro"}:
         if assignment_mode == "complete_first":
             raise ValueError("macro_micro K search is incompatible with complete_first; use partial_likelihood or joint.")
         if block_mask is None or block_slices is None:
@@ -961,6 +1070,13 @@ def run_k_selection(
 
     if k_strategy == "composite":
         result = search_gmm_composite(features, config, view_mask=view_mask, affect_labels=affect_labels)
+        return result.best_model, result.metrics, result.selection_info
+    elif k_strategy == "macro_only":
+        macro_features = features
+        if block_slices is not None and len(block_slices) >= 2:
+            consensus_start, consensus_stop = int(block_slices[0][0]), int(block_slices[0][1])
+            macro_features = features[:, consensus_start:consensus_stop]
+        result = search_gmm_composite(macro_features, config, view_mask=view_mask, affect_labels=affect_labels)
         return result.best_model, result.metrics, result.selection_info
     elif k_strategy == "semantic_composite":
         result = search_gmm_semantic_composite(features, config, view_mask=view_mask, affect_labels=affect_labels)
@@ -2462,6 +2578,11 @@ def main() -> None:
         pca_target_dim=int(args.pca_target_dim),
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
+        consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+        calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
+        diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
+        diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+        tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
     )
     raw_block_slices = cluster_feature_block_slices(feature_strategy, int(search_features_raw.shape[1]))
     cluster_scaler = fit_cluster_scaler(
@@ -2520,6 +2641,15 @@ def main() -> None:
         max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
         min_affect_weighted_purity=float(args.min_affect_weighted_purity),
         min_affect_valid_fraction=float(args.min_affect_valid_fraction),
+        affect_gate_level=str(getattr(args, "affect_gate_level", "both")),
+        micro_feature_mode=str(getattr(args, "micro_feature_mode", "tension_local_consensus")),
+        micro_tension_weight=float(getattr(args, "micro_tension_weight", 1.0)),
+        micro_consensus_residual_weight=float(getattr(args, "micro_consensus_residual_weight", 0.05)),
+        micro_min_silhouette=float(getattr(args, "micro_min_silhouette", 0.0)),
+        micro_min_stability=float(getattr(args, "micro_min_stability", 0.0)),
+        micro_min_jaccard=float(getattr(args, "micro_min_jaccard", 0.0)),
+        micro_min_tension_effect=float(getattr(args, "micro_min_tension_effect", 0.0)),
+        micro_max_consensus_effect_ratio=float(getattr(args, "micro_max_consensus_effect_ratio", 1.0)),
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 
@@ -2641,6 +2771,11 @@ def main() -> None:
             fitted_pca=search_pca,
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
+            consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+            calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
+            diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
+            diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+            tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
         )
         split_block_mask = cluster_feature_block_mask(
             feature_strategy,

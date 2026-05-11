@@ -50,6 +50,7 @@ RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset(
         "audio_va",
         "lyrics_va",
         "balanced_va_diff",
+        "calibrated_va_tension",
         "va_geometry",
         "mean_va_diff",
         "original_va",
@@ -127,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "macro_micro", "bic_only", "hierarchical"],
+                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "bic_only", "hierarchical"],
                         help="K-selection strategy")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
@@ -153,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "audio_va",
                             "lyrics_va",
                             "balanced_va_diff",
+                            "calibrated_va_tension",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -205,6 +207,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Exclude VA points within this distance of the 0.5 valence/arousal axes from affect hard-gate purity.",
     )
+    # V16 calibrated tension parameters
+    parser.add_argument("--consensus_mode", type=str, default="calibrated_mean",
+                        choices=["mean", "calibrated_mean"])
+    parser.add_argument("--calibration_mode", type=str, default="global_median_shift",
+                        choices=["identity", "global_median_shift"])
+    parser.add_argument("--diff_residual_mode", type=str, default="knn",
+                        choices=["identity", "knn"])
+    parser.add_argument("--diff_residual_neighbors", type=int, default=101)
+    parser.add_argument("--tension_encoding", type=str, default="residual_3d",
+                        choices=["residual_3d"])
+    parser.add_argument("--micro_feature_mode", type=str, default="tension_local_consensus",
+                        choices=["tension_only", "tension_plus_small_consensus", "tension_local_consensus"])
+    parser.add_argument("--micro_tension_weight", type=float, default=1.0)
+    parser.add_argument("--micro_consensus_residual_weight", type=float, default=0.05)
+    parser.add_argument("--micro_min_silhouette", type=float, default=0.0)
+    parser.add_argument("--micro_min_stability", type=float, default=0.0)
+    parser.add_argument("--micro_min_jaccard", type=float, default=0.0)
+    parser.add_argument("--micro_min_tension_effect", type=float, default=0.0)
+    parser.add_argument("--micro_max_consensus_effect_ratio", type=float, default=1.0)
+    parser.add_argument("--affect_gate_level", type=str, default="both",
+                        choices=["macro", "final", "both"])
     return parser
 
 
@@ -339,6 +362,11 @@ def main() -> None:
         pca_target_dim=int(args.pca_target_dim),
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
+        consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+        calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
+        diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
+        diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+        tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
     )
     search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
     search_block_mask = apply_metadata_policy_to_block_mask(
@@ -402,6 +430,15 @@ def main() -> None:
         max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
         min_affect_weighted_purity=float(args.min_affect_weighted_purity),
         min_affect_valid_fraction=float(args.min_affect_valid_fraction),
+        affect_gate_level=str(getattr(args, "affect_gate_level", "both")),
+        micro_feature_mode=str(getattr(args, "micro_feature_mode", "tension_local_consensus")),
+        micro_tension_weight=float(getattr(args, "micro_tension_weight", 1.0)),
+        micro_consensus_residual_weight=float(getattr(args, "micro_consensus_residual_weight", 0.05)),
+        micro_min_silhouette=float(getattr(args, "micro_min_silhouette", 0.0)),
+        micro_min_stability=float(getattr(args, "micro_min_stability", 0.0)),
+        micro_min_jaccard=float(getattr(args, "micro_min_jaccard", 0.0)),
+        micro_min_tension_effect=float(getattr(args, "micro_min_tension_effect", 0.0)),
+        micro_max_consensus_effect_ratio=float(getattr(args, "micro_max_consensus_effect_ratio", 1.0)),
     )
     selection_info["metadata_policy"] = dict(metadata_policy_info)
 
@@ -523,6 +560,11 @@ def main() -> None:
             fitted_pca=search_pca,
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
+            consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+            calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
+            diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
+            diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+            tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
         )
         split_block_mask = cluster_feature_block_mask(
             feature_strategy,

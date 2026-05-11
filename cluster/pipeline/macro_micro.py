@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -11,6 +11,63 @@ from cluster.evaluation.metrics import masked_silhouette_score
 
 
 BlockSlice = Tuple[int, int]
+
+
+@dataclass
+class MicroSplitValidator:
+    """Validate whether a micro split is statistically justified by tension."""
+
+    min_silhouette: float = 0.20
+    min_stability_ari: float = 0.65
+    min_jaccard: float = 0.35
+    min_tension_effect: float = 0.35
+    max_consensus_effect_ratio: float = 0.50
+
+    def evaluate(
+        self,
+        features: np.ndarray,
+        labels: np.ndarray,
+        consensus: np.ndarray,
+        tension: np.ndarray,
+        silhouette: float,
+    ) -> Dict[str, Any]:
+        unique_labels = np.unique(labels)
+        if len(unique_labels) < 2:
+            return {"accepted": True, "rejection_reason": None}
+
+        tension_effect = self._effect_size(tension, labels)
+        consensus_effect = self._effect_size(consensus, labels)
+
+        reasons: List[str] = []
+        if silhouette < self.min_silhouette:
+            reasons.append(f"silhouette={silhouette:.3f}<{self.min_silhouette}")
+        if tension_effect < self.min_tension_effect:
+            reasons.append(f"tension_effect={tension_effect:.3f}<{self.min_tension_effect}")
+        if consensus_effect > self.max_consensus_effect_ratio * tension_effect and tension_effect > 0:
+            reasons.append(
+                f"consensus_effect={consensus_effect:.3f}>"
+                f"{self.max_consensus_effect_ratio}*tension_effect={tension_effect:.3f}"
+            )
+
+        accepted = len(reasons) == 0
+        return {
+            "accepted": accepted,
+            "rejection_reason": "; ".join(reasons) if reasons else None,
+            "tension_effect_size": float(tension_effect),
+            "consensus_effect_size": float(consensus_effect),
+            "micro_silhouette": float(silhouette),
+        }
+
+    def _effect_size(self, features: np.ndarray, labels: np.ndarray) -> float:
+        unique = np.unique(labels)
+        if len(unique) < 2 or features.shape[0] < 4:
+            return 0.0
+        groups = [features[labels == lbl] for lbl in unique]
+        means = [g.mean(axis=0) for g in groups]
+        mean_diff = np.linalg.norm(means[0] - means[1])
+        pooled_var = sum(g.var(axis=0).sum() * (len(g) - 1) for g in groups) / max(features.shape[0] - len(unique), 1)
+        pooled_std = float(np.sqrt(pooled_var / max(features.shape[1], 1)))
+        return float(mean_diff / max(pooled_std, 1e-8))
 
 
 def _as_block_slices(block_slices: Sequence[Sequence[int]], n_features: int) -> List[BlockSlice]:
@@ -57,6 +114,10 @@ class MacroMicroClusterer:
     micro_k_min: int = 1
     micro_k_max: int = 5
     min_cluster_size: int = 20
+    micro_feature_mode: str = "tension_local_consensus"
+    micro_tension_weight: float = 1.0
+    micro_consensus_residual_weight: float = 1.0
+    micro_split_validator: Optional[MicroSplitValidator] = None
 
     def fit(self, features: np.ndarray, block_mask: Optional[np.ndarray] = None) -> "MacroMicroClusterer":
         matrix = np.asarray(features, dtype=np.float32)
@@ -104,7 +165,13 @@ class MacroMicroClusterer:
 
             micro_features = self._micro_features_for_macro(matrix[macro_indices], macro_id)
             micro_mask = self._micro_block_mask(mask[macro_indices])
-            micro_k, micro_model, micro_labels, micro_sil = self._fit_micro(micro_features, micro_mask, macro_id)
+            consensus_sub = consensus[macro_indices]
+            tension_sub = matrix[macro_indices, self.block_slices_[1][0]:self.block_slices_[1][1]]
+            micro_k, micro_model, micro_labels, micro_sil = self._fit_micro(
+                micro_features, micro_mask, macro_id,
+                consensus_block=consensus_sub,
+                tension_block=tension_sub,
+            )
             self.micro_k_by_macro_[macro_id] = int(micro_k)
             offsets: Dict[int, int] = {}
             for micro_id in range(int(micro_k)):
@@ -182,9 +249,27 @@ class MacroMicroClusterer:
         consensus, tension, metadata = self._split_blocks(matrix)
         local_consensus = consensus - self.consensus_centroids_[int(macro_id)].reshape(1, -1)
         metadata_residual = metadata - self.metadata_centroids_[int(macro_id)].reshape(1, -1)
-        return np.concatenate([tension, metadata_residual, local_consensus], axis=1).astype(np.float32)
+
+        if self.micro_feature_mode == "tension_only":
+            return (float(self.micro_tension_weight) * tension).astype(np.float32)
+        elif self.micro_feature_mode == "tension_plus_small_consensus":
+            return np.concatenate([
+                float(self.micro_tension_weight) * tension,
+                float(self.micro_consensus_residual_weight) * local_consensus,
+            ], axis=1).astype(np.float32)
+        else:
+            return np.concatenate([tension, metadata_residual, local_consensus], axis=1).astype(np.float32)
 
     def _micro_block_mask(self, block_mask: np.ndarray) -> np.ndarray:
+        if self.micro_feature_mode == "tension_only":
+            return np.ones((block_mask.shape[0], 1), dtype=bool)
+        elif self.micro_feature_mode == "tension_plus_small_consensus":
+            micro_mask = np.stack([block_mask[:, 1], block_mask[:, 0]], axis=1).astype(bool)
+            empty_rows = ~micro_mask.any(axis=1)
+            if empty_rows.any():
+                micro_mask[empty_rows, 0] = True
+            return micro_mask
+
         if block_mask.shape[1] == 2:
             micro_mask = np.stack([block_mask[:, 1], block_mask[:, 0]], axis=1).astype(bool)
             empty_rows = ~micro_mask.any(axis=1)
@@ -202,6 +287,12 @@ class MacroMicroClusterer:
         tension_start, tension_stop = self.block_slices_[1]
         tension_dim = int(tension_stop - tension_start)
         consensus_dim = int(consensus_stop - consensus_start)
+
+        if self.micro_feature_mode == "tension_only":
+            return [(0, tension_dim)]
+        elif self.micro_feature_mode == "tension_plus_small_consensus":
+            return [(0, tension_dim), (tension_dim, tension_dim + consensus_dim)]
+
         if len(self.block_slices_) == 2:
             return [
                 (0, tension_dim),
@@ -220,6 +311,8 @@ class MacroMicroClusterer:
         micro_features: np.ndarray,
         micro_mask: np.ndarray,
         macro_id: int,
+        consensus_block: Optional[np.ndarray] = None,
+        tension_block: Optional[np.ndarray] = None,
     ) -> Tuple[int, Optional[MaskedDiagonalGMM], np.ndarray, float]:
         n_samples = int(micro_features.shape[0])
         min_size = max(int(self.min_cluster_size), 1)
@@ -256,6 +349,16 @@ class MacroMicroClusterer:
                 block_mask=micro_mask,
                 block_slices=self._micro_block_slices(),
             )
+            if self.micro_split_validator is not None and consensus_block is not None and tension_block is not None:
+                validation = self.micro_split_validator.evaluate(
+                    features=micro_features,
+                    labels=labels,
+                    consensus=consensus_block,
+                    tension=tension_block,
+                    silhouette=score,
+                )
+                if not validation["accepted"]:
+                    continue
             if score > best_score:
                 best_k = int(k)
                 best_model = model

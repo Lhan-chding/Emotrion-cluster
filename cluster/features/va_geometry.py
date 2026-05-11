@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
+
+from cluster.features.affect_calibration import AffectCalibrator, DiffResidualizer
 
 VA_GEOMETRY_OBSERVED_NAMES = [
     "mean_valence",
@@ -315,3 +317,108 @@ def build_balanced_va_diff_features(
         ],
         axis=1,
     ).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# V16: Calibrated VA + Conditional Residual Tension
+# ---------------------------------------------------------------------------
+
+CALIBRATED_VA_TENSION_FEATURE_NAMES = [
+    "consensus_valence",
+    "consensus_arousal",
+    "tension_dv",
+    "tension_da",
+    "tension_r",
+]
+CALIBRATED_VA_TENSION_DIM = len(CALIBRATED_VA_TENSION_FEATURE_NAMES)
+CALIBRATED_VA_TENSION_CONSENSUS_SLICE = (0, 2)
+CALIBRATED_VA_TENSION_TENSION_SLICE = (2, 5)
+
+
+def build_calibrated_va_tension_features(
+    audio_va: np.ndarray,
+    lyrics_va: np.ndarray,
+    view_mask: np.ndarray,
+    *,
+    calibrator: Optional[AffectCalibrator] = None,
+    residualizer: Optional[DiffResidualizer] = None,
+    fit: bool = False,
+    consensus_mode: str = "calibrated_mean",
+    calibration_mode: str = "global_median_shift",
+    diff_residual_mode: str = "knn",
+    diff_residual_neighbors: int = 101,
+    tension_encoding: str = "residual_3d",
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Build 5-dim calibrated consensus + residual tension features.
+
+    Returns (features[N, 5], state_dict) where state_dict contains fitted
+    calibrator/residualizer for reuse on eval splits.
+    """
+    audio = _as_va_matrix("audio_va", audio_va)
+    lyrics = _as_va_matrix("lyrics_va", lyrics_va)
+    mask = _as_view_mask(view_mask, audio.shape[0])
+    n = audio.shape[0]
+
+    has_audio = (mask[:, 0] > 0.0)
+    has_lyrics = (mask[:, 1] > 0.0)
+    has_both = has_audio & has_lyrics
+
+    if calibrator is None:
+        calibrator = AffectCalibrator(mode=calibration_mode)
+    if fit:
+        calibrator.fit(audio, lyrics, mask)
+    audio_cal, lyrics_cal = calibrator.transform(audio, lyrics, mask)
+
+    if consensus_mode == "calibrated_mean":
+        consensus = 0.5 * audio_cal + 0.5 * lyrics_cal
+    elif consensus_mode == "mean":
+        consensus = 0.5 * audio + 0.5 * lyrics
+    else:
+        consensus = 0.5 * audio_cal + 0.5 * lyrics_cal
+
+    audio_only = has_audio & ~has_lyrics
+    lyrics_only = has_lyrics & ~has_audio
+    if audio_only.any():
+        consensus[audio_only] = audio_cal[audio_only]
+    if lyrics_only.any():
+        consensus[lyrics_only] = lyrics_cal[lyrics_only]
+
+    raw_delta = (lyrics_cal - audio_cal) * has_both.reshape(-1, 1).astype(np.float32)
+
+    if residualizer is None:
+        residualizer = DiffResidualizer(mode=diff_residual_mode, n_neighbors=diff_residual_neighbors)
+    if fit:
+        residualizer.fit(consensus, raw_delta, mask)
+    d_res = residualizer.transform(consensus, raw_delta, mask)
+
+    if has_both.sum() > 2:
+        obs_res = d_res[has_both]
+        sigma_v = float(np.maximum(_robust_std(obs_res[:, 0]), 1e-6))
+        sigma_a = float(np.maximum(_robust_std(obs_res[:, 1]), 1e-6))
+    else:
+        sigma_v = 1.0
+        sigma_a = 1.0
+
+    dv = np.clip(d_res[:, 0] / sigma_v, -3.0, 3.0).astype(np.float32)
+    da = np.clip(d_res[:, 1] / sigma_a, -3.0, 3.0).astype(np.float32)
+    r = np.sqrt(dv ** 2 + da ** 2).astype(np.float32)
+
+    features = np.column_stack([
+        consensus.astype(np.float32),
+        dv,
+        da,
+        r,
+    ]).astype(np.float32)
+
+    state = {
+        "calibrator": calibrator,
+        "residualizer": residualizer,
+        "sigma_v": sigma_v,
+        "sigma_a": sigma_a,
+    }
+    return features, state
+
+
+def _robust_std(x: np.ndarray) -> float:
+    q75, q25 = np.percentile(x, [75, 25])
+    return float((q75 - q25) / 1.349)

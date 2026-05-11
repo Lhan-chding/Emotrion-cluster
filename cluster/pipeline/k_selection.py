@@ -19,7 +19,7 @@ from cluster.backends import resolve_cluster_backend
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
 from cluster.evaluation.metrics import masked_silhouette_score
-from cluster.pipeline.macro_micro import MacroMicroClusterer
+from cluster.pipeline.macro_micro import MacroMicroClusterer, MicroSplitValidator
 
 
 @dataclass(frozen=True)
@@ -53,10 +53,20 @@ class KSelectionConfig:
     micro_k_max: int = 5
     # Affect-first hard gates
     affect_gate_enabled: bool = False
+    affect_gate_level: str = "both"  # "macro" | "final" | "both"
     min_affect_dominant_ratio: float = 0.70
     max_affect_mixed_cluster_fraction: float = 0.15
     min_affect_weighted_purity: float = 0.80
     min_affect_valid_fraction: float = 0.95
+    # V16 micro split validation
+    micro_feature_mode: str = "tension_local_consensus"
+    micro_tension_weight: float = 1.0
+    micro_consensus_residual_weight: float = 1.0
+    micro_min_silhouette: float = 0.0
+    micro_min_stability: float = 0.0
+    micro_min_jaccard: float = 0.0
+    micro_min_tension_effect: float = 0.0
+    micro_max_consensus_effect_ratio: float = 1.0
 
 
 @dataclass
@@ -1043,6 +1053,15 @@ def search_macro_micro_diffaware(
     consensus = matrix[:, consensus_start:consensus_stop]
 
     for macro_k in range(int(config.macro_k_min), int(config.macro_k_max) + 1):
+        validator = None
+        if config.micro_min_silhouette > 0 or config.micro_min_tension_effect > 0:
+            validator = MicroSplitValidator(
+                min_silhouette=float(config.micro_min_silhouette),
+                min_stability_ari=float(config.micro_min_stability),
+                min_jaccard=float(config.micro_min_jaccard),
+                min_tension_effect=float(config.micro_min_tension_effect),
+                max_consensus_effect_ratio=float(config.micro_max_consensus_effect_ratio),
+            )
         model = MacroMicroClusterer(
             macro_k=int(macro_k),
             block_slices=block_slices,
@@ -1053,6 +1072,10 @@ def search_macro_micro_diffaware(
             micro_k_min=int(config.micro_k_min),
             micro_k_max=int(config.micro_k_max),
             min_cluster_size=int(min_size_threshold),
+            micro_feature_mode=str(config.micro_feature_mode),
+            micro_tension_weight=float(config.micro_tension_weight),
+            micro_consensus_residual_weight=float(config.micro_consensus_residual_weight),
+            micro_split_validator=validator,
         ).fit(matrix, block_mask=mask)
         labels = model.labels_.astype(np.int64)
         macro_labels = model.macro_labels_.astype(np.int64)
@@ -1089,10 +1112,18 @@ def search_macro_micro_diffaware(
                 min_weighted_purity=float(config.min_affect_weighted_purity),
                 min_valid_fraction=float(config.min_affect_valid_fraction),
             )
+            gate_level = str(config.affect_gate_level).lower()
+            if gate_level == "macro":
+                combined_gate_ok = bool(macro_affect_metrics["affect_gate_ok"])
+            elif gate_level == "final":
+                combined_gate_ok = bool(final_affect_metrics["affect_gate_ok"])
+            else:
+                combined_gate_ok = bool(macro_affect_metrics["affect_gate_ok"]) and bool(final_affect_metrics["affect_gate_ok"])
             affect_metrics = {
                 **macro_affect_metrics,
                 **_prefix_affect_metrics(final_affect_metrics, "final"),
-                "affect_gate_level": "macro",
+                "affect_gate_level": gate_level,
+                "affect_gate_ok": combined_gate_ok,
             }
         score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
         if np.isfinite(mask_nmi):
