@@ -8,7 +8,7 @@ from cluster.pipeline.k_selection import (
     compute_overlap_gate_metrics,
     KSelectionConfig,
 )
-from cluster.pipeline.macro_micro import MicroSplitValidator
+from cluster.pipeline.macro_micro import MacroMicroClusterer, MicroSplitValidator
 from cluster.pipeline.train import run_k_selection
 
 
@@ -443,6 +443,42 @@ def test_macro_micro_overlap_gate_rejects_hidden_tension_subclusters():
             min_va_center_sep=0.60,
             max_va_negative_silhouette_fraction=0.10,
         )
+
+
+def test_macro_micro_records_rejected_micro_candidate_diagnostics():
+    features, block_mask, block_slices = _two_block_va_diff_fixture()
+    validator = MicroSplitValidator(
+        consensus_role="visible_separator",
+        min_silhouette=0.0,
+        min_tension_effect=0.0,
+        min_consensus_knn_purity=0.85,
+        min_consensus_center_sep=0.60,
+        min_consensus_silhouette=0.10,
+    )
+
+    model = MacroMicroClusterer(
+        macro_k=2,
+        block_slices=block_slices,
+        covariance_type="diag",
+        random_state=11,
+        n_init=2,
+        max_iter=50,
+        min_cluster_size=5,
+        micro_k_min=1,
+        micro_k_max=2,
+        micro_feature_mode="tension_only",
+        micro_split_validator=validator,
+    ).fit(features, block_mask=block_mask)
+
+    macro_0 = model.info["micro_details"]["macro_0"]
+
+    assert macro_0["micro_k"] == 1
+    rejected = [
+        item for item in macro_0["candidate_diagnostics"]
+        if item["k"] == 2 and item["status"] == "rejected_validator"
+    ]
+    assert rejected
+    assert "consensus_center_sep" in rejected[0]["validation"]["rejection_reason"]
 
 
 def test_macro_micro_honors_total_k_constraints():

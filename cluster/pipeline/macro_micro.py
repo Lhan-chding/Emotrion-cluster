@@ -323,7 +323,7 @@ class MacroMicroClusterer:
             consensus_sub = consensus[macro_indices]
             tension_sub = matrix[macro_indices, self.block_slices_[1][0]:self.block_slices_[1][1]]
             affect_sub = affect[macro_indices] if affect is not None else None
-            micro_k, micro_model, micro_labels, micro_sil = self._fit_micro(
+            micro_k, micro_model, micro_labels, micro_sil, candidate_diagnostics = self._fit_micro(
                 micro_features, micro_mask, macro_id,
                 consensus_block=consensus_sub,
                 tension_block=tension_sub,
@@ -349,6 +349,7 @@ class MacroMicroClusterer:
                 "micro_k": int(micro_k),
                 "micro_silhouette": float(micro_sil),
                 "sizes": [int((micro_labels == item).sum()) for item in range(int(micro_k))],
+                "candidate_diagnostics": candidate_diagnostics,
             }
 
         if np.any(labels < 0):
@@ -471,7 +472,7 @@ class MacroMicroClusterer:
         consensus_block: Optional[np.ndarray] = None,
         tension_block: Optional[np.ndarray] = None,
         affect_labels: Optional[np.ndarray] = None,
-    ) -> Tuple[int, Optional[MaskedDiagonalGMM], np.ndarray, float]:
+    ) -> Tuple[int, Optional[MaskedDiagonalGMM], np.ndarray, float, List[Dict[str, Any]]]:
         n_samples = int(micro_features.shape[0])
         min_size = max(int(self.min_cluster_size), 1)
         max_k_by_size = max(1, n_samples // min_size)
@@ -485,6 +486,28 @@ class MacroMicroClusterer:
         best_model: Optional[MaskedDiagonalGMM] = None
         best_labels = np.zeros(n_samples, dtype=np.int64)
         best_score = 0.0
+        best_diagnostic_index: Optional[int] = None
+        candidate_diagnostics: List[Dict[str, Any]] = [
+            {
+                "k": 1,
+                "status": "fallback",
+                "sizes": [int(n_samples)],
+                "silhouette": 0.0,
+                "min_size_threshold": int(min_size),
+            }
+        ]
+        if upper < lower:
+            candidate_diagnostics.append(
+                {
+                    "k": int(lower),
+                    "status": "not_evaluated_size_cap",
+                    "sizes": [],
+                    "silhouette": float("nan"),
+                    "min_size_threshold": int(min_size),
+                    "max_k_by_size": int(max_k_by_size),
+                    "upper": int(upper),
+                }
+            )
         for k in candidate_ks:
             if k == 1:
                 continue
@@ -499,7 +522,16 @@ class MacroMicroClusterer:
             ).fit(micro_features, block_mask=micro_mask)
             labels = model.predict(micro_features, block_mask=micro_mask).astype(np.int64)
             sizes = np.bincount(labels, minlength=int(k))
+            diagnostic: Dict[str, Any] = {
+                "k": int(k),
+                "status": "evaluated",
+                "sizes": [int(item) for item in sizes.tolist()],
+                "min_size_threshold": int(min_size),
+            }
             if sizes.min() < min_size:
+                diagnostic["status"] = "rejected_min_size"
+                diagnostic["silhouette"] = float("nan")
+                candidate_diagnostics.append(diagnostic)
                 continue
             score = masked_silhouette_score(
                 micro_features,
@@ -507,6 +539,7 @@ class MacroMicroClusterer:
                 block_mask=micro_mask,
                 block_slices=self._micro_block_slices(),
             )
+            diagnostic["silhouette"] = float(score)
             if self.micro_split_validator is not None and consensus_block is not None and tension_block is not None:
                 validation = self.micro_split_validator.evaluate(
                     features=micro_features,
@@ -517,10 +550,41 @@ class MacroMicroClusterer:
                     affect_labels=affect_labels,
                 )
                 if not validation["accepted"]:
+                    diagnostic["status"] = "rejected_validator"
+                    diagnostic["validation"] = _jsonable_micro_diagnostic(validation)
+                    candidate_diagnostics.append(diagnostic)
                     continue
+                diagnostic["validation"] = _jsonable_micro_diagnostic(validation)
             if score > best_score:
+                if best_diagnostic_index is not None:
+                    candidate_diagnostics[best_diagnostic_index]["status"] = "accepted_not_best"
+                diagnostic["status"] = "selected"
                 best_k = int(k)
                 best_model = model
                 best_labels = labels
                 best_score = float(score)
-        return best_k, best_model, best_labels, best_score
+            else:
+                diagnostic["status"] = "accepted_not_best"
+            candidate_diagnostics.append(diagnostic)
+            if diagnostic["status"] == "selected":
+                best_diagnostic_index = len(candidate_diagnostics) - 1
+        return best_k, best_model, best_labels, best_score, candidate_diagnostics
+
+
+def _jsonable_micro_diagnostic(value: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, np.generic):
+            result[key] = item.item()
+        elif isinstance(item, np.ndarray):
+            result[key] = item.tolist()
+        elif isinstance(item, dict):
+            result[key] = _jsonable_micro_diagnostic(item)
+        elif isinstance(item, (list, tuple)):
+            result[key] = [
+                sub_item.item() if isinstance(sub_item, np.generic) else sub_item
+                for sub_item in item
+            ]
+        else:
+            result[key] = item
+    return result
