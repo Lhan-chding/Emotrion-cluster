@@ -56,12 +56,9 @@ class MicroSplitValidator:
         if affect_labels is not None and self.min_affect_dominant_ratio is not None:
             affect_metrics = self._affect_metrics(labels, affect_labels)
             weighted = affect_metrics["affect_weighted_dominant_ratio"]
-            min_ratio = affect_metrics["affect_min_dominant_ratio"]
             mixed = affect_metrics["affect_mixed_cluster_fraction"]
             if self.min_affect_weighted_purity is not None and weighted < self.min_affect_weighted_purity:
                 reasons.append(f"affect_weighted={weighted:.3f}<{self.min_affect_weighted_purity}")
-            if min_ratio < self.min_affect_dominant_ratio:
-                reasons.append(f"affect_min={min_ratio:.3f}<{self.min_affect_dominant_ratio}")
             if (
                 self.max_affect_mixed_cluster_fraction is not None
                 and mixed > self.max_affect_mixed_cluster_fraction

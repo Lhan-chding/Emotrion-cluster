@@ -386,6 +386,62 @@ def test_affect_purity_metrics_flag_large_mixed_va_clusters():
     assert metrics["affect_gate_ok"] is False
 
 
+def test_affect_gate_allows_limited_boundary_cluster_when_global_purity_ok():
+    cluster_labels = np.asarray(
+        [0] * 60 + [1] * 100 + [2] * 100 + [3] * 100 + [4] * 100,
+        dtype=np.int64,
+    )
+    quadrant_labels = np.asarray(
+        [0] * 31 + [1] * 29 + [1] * 100 + [2] * 100 + [3] * 100 + [0] * 100,
+        dtype=np.int64,
+    )
+
+    metrics = compute_affect_purity_metrics(
+        cluster_labels,
+        quadrant_labels,
+        min_dominant_ratio=0.55,
+        min_weighted_purity=0.75,
+        max_mixed_cluster_fraction=0.20,
+        min_valid_fraction=0.85,
+    )
+
+    assert metrics["affect_valid_fraction"] == 1.0
+    assert metrics["affect_min_dominant_ratio"] == pytest.approx(31 / 60)
+    assert metrics["affect_min_dominant_gate_ok"] is False
+    assert metrics["affect_mixed_cluster_fraction"] == pytest.approx(60 / 460)
+    assert metrics["affect_gate_ok"] is True
+    assert metrics["affect_worst_cluster_id"] == 0
+    assert metrics["affect_worst_cluster_size"] == 60
+
+
+def test_micro_split_validator_allows_small_boundary_split_mass():
+    validator = MicroSplitValidator(
+        min_silhouette=0.0,
+        min_tension_effect=0.0,
+        max_consensus_effect_ratio=999.0,
+        min_affect_dominant_ratio=0.55,
+        min_affect_weighted_purity=0.75,
+        max_affect_mixed_cluster_fraction=0.20,
+    )
+    labels = np.asarray([0, 0, 0, 0] + [1] * 16, dtype=np.int64)
+    affect_labels = np.asarray([0, 0, 1, 1] + [2] * 16, dtype=np.int64)
+    tension = np.asarray([[0.0], [0.1], [0.0], [0.1]] + [[4.0]] * 16, dtype=np.float32)
+    consensus = np.zeros((20, 1), dtype=np.float32)
+
+    result = validator.evaluate(
+        features=tension,
+        labels=labels,
+        consensus=consensus,
+        tension=tension,
+        silhouette=0.5,
+        affect_labels=affect_labels,
+    )
+
+    assert result["accepted"] is True
+    assert result["affect_min_dominant_ratio"] == 0.5
+    assert result["affect_mixed_cluster_fraction"] == 0.2
+
+
 def test_affect_gate_filters_higher_scoring_but_mixed_candidate():
     metrics = pd.DataFrame(
         [

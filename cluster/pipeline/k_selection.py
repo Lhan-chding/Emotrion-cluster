@@ -166,6 +166,9 @@ def compute_affect_purity_metrics(
             "affect_min_dominant_ratio": float("nan"),
             "affect_mixed_cluster_fraction": float("nan"),
             "affect_nmi": float("nan"),
+            "affect_min_dominant_gate_ok": False,
+            "affect_worst_cluster_id": -1,
+            "affect_worst_cluster_size": 0,
             "affect_gate_ok": False,
         }
 
@@ -185,12 +188,18 @@ def compute_affect_purity_metrics(
             "affect_min_dominant_ratio": float("nan"),
             "affect_mixed_cluster_fraction": float("nan"),
             "affect_nmi": float("nan"),
+            "affect_min_dominant_gate_ok": False,
+            "affect_worst_cluster_id": -1,
+            "affect_worst_cluster_size": 0,
             "affect_gate_ok": False,
         }
 
     weighted_dominant = 0.0
     mixed_count = 0
     dominant_ratios: List[float] = []
+    worst_cluster_id = -1
+    worst_cluster_size = 0
+    worst_ratio = float("inf")
     for cluster_id in np.unique(clusters[valid]):
         cluster_mask = valid & (clusters == int(cluster_id))
         cluster_size = int(cluster_mask.sum())
@@ -199,6 +208,10 @@ def compute_affect_purity_metrics(
         counts = np.bincount(labels[cluster_mask], minlength=4).astype(np.float64)
         dominant = float(counts.max() / max(cluster_size, 1))
         dominant_ratios.append(dominant)
+        if dominant < worst_ratio:
+            worst_ratio = dominant
+            worst_cluster_id = int(cluster_id)
+            worst_cluster_size = int(cluster_size)
         weighted_dominant += float(counts.max())
         if dominant < float(min_dominant_ratio):
             mixed_count += cluster_size
@@ -207,10 +220,10 @@ def compute_affect_purity_metrics(
     min_ratio = float(min(dominant_ratios)) if dominant_ratios else float("nan")
     mixed_fraction = float(mixed_count / max(valid_count, 1))
     affect_nmi = float(normalized_mutual_info_score(clusters[valid], labels[valid]))
+    min_dominant_gate_ok = bool(min_ratio >= float(min_dominant_ratio))
     gate_ok = (
         valid_fraction >= float(min_valid_fraction)
         and weighted_ratio >= float(min_weighted_purity)
-        and min_ratio >= float(min_dominant_ratio)
         and mixed_fraction <= float(max_mixed_cluster_fraction)
     )
     return {
@@ -219,6 +232,9 @@ def compute_affect_purity_metrics(
         "affect_min_dominant_ratio": min_ratio,
         "affect_mixed_cluster_fraction": mixed_fraction,
         "affect_nmi": affect_nmi,
+        "affect_min_dominant_gate_ok": min_dominant_gate_ok,
+        "affect_worst_cluster_id": int(worst_cluster_id),
+        "affect_worst_cluster_size": int(worst_cluster_size),
         "affect_gate_ok": bool(gate_ok),
     }
 
@@ -242,9 +258,17 @@ def _add_affect_selection_info(
         "affect_min_dominant_ratio",
         "affect_mixed_cluster_fraction",
         "affect_nmi",
+        "affect_min_dominant_gate_ok",
+        "affect_worst_cluster_id",
+        "affect_worst_cluster_size",
     ):
         value = row.get(field, float("nan"))
-        info[field] = float(value) if pd.notna(value) else float("nan")
+        if field in {"affect_min_dominant_gate_ok"}:
+            info[field] = bool(value)
+        elif field in {"affect_worst_cluster_id", "affect_worst_cluster_size"}:
+            info[field] = int(value) if pd.notna(value) else -1
+        else:
+            info[field] = float(value) if pd.notna(value) else float("nan")
 
 
 def _prefix_affect_metrics(metrics: Dict[str, Any], prefix: str) -> Dict[str, Any]:
@@ -1175,11 +1199,15 @@ def search_macro_micro_diffaware(
                 f"macro_weighted={float(getattr(row, 'affect_weighted_dominant_ratio', float('nan'))):.3f},"
                 f"macro_min={float(getattr(row, 'affect_min_dominant_ratio', float('nan'))):.3f},"
                 f"macro_mixed={float(getattr(row, 'affect_mixed_cluster_fraction', float('nan'))):.3f},"
+                f"macro_worst={int(getattr(row, 'affect_worst_cluster_id', -1))}"
+                f"/{int(getattr(row, 'affect_worst_cluster_size', 0))},"
                 f"final_ok={bool(getattr(row, 'final_affect_gate_ok', getattr(row, 'affect_gate_ok', True)))},"
                 f"final_valid={float(getattr(row, 'final_affect_valid_fraction', float('nan'))):.3f},"
                 f"final_weighted={float(getattr(row, 'final_affect_weighted_dominant_ratio', float('nan'))):.3f},"
                 f"final_min={float(getattr(row, 'final_affect_min_dominant_ratio', float('nan'))):.3f},"
-                f"final_mixed={float(getattr(row, 'final_affect_mixed_cluster_fraction', float('nan'))):.3f}"
+                f"final_mixed={float(getattr(row, 'final_affect_mixed_cluster_fraction', float('nan'))):.3f},"
+                f"final_worst={int(getattr(row, 'final_affect_worst_cluster_id', -1))}"
+                f"/{int(getattr(row, 'final_affect_worst_cluster_size', 0))}"
             )
             for row in metrics.itertuples(index=False)
         )
@@ -1230,9 +1258,17 @@ def search_macro_micro_diffaware(
             "final_affect_min_dominant_ratio",
             "final_affect_mixed_cluster_fraction",
             "final_affect_nmi",
+            "final_affect_min_dominant_gate_ok",
+            "final_affect_worst_cluster_id",
+            "final_affect_worst_cluster_size",
         ):
             value = selected_row.get(field, float("nan"))
-            selection_info[field] = float(value) if pd.notna(value) else float("nan")
+            if field.endswith("_gate_ok"):
+                selection_info[field] = bool(value)
+            elif field.endswith("_cluster_id") or field.endswith("_cluster_size"):
+                selection_info[field] = int(value) if pd.notna(value) else -1
+            else:
+                selection_info[field] = float(value) if pd.notna(value) else float("nan")
         selection_info["final_affect_gate_ok"] = bool(selected_row.get("final_affect_gate_ok", False))
         selection_info["macro_affect_gate_ok"] = bool(selected_row.get("macro_affect_gate_ok", selected_row.get("affect_gate_ok", False)))
     return KSearchResult(
