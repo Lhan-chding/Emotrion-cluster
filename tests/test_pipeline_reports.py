@@ -723,6 +723,10 @@ def test_parsers_accept_v17_adaptive_balance_flags():
             "0.10",
             "--plot_va_source",
             "cluster_consensus",
+            "--run_tension_micro_probe",
+            "true",
+            "--tension_micro_k_max",
+            "4",
         ]
     )
     rerun_args = build_rerun_parser().parse_args(
@@ -737,6 +741,8 @@ def test_parsers_accept_v17_adaptive_balance_flags():
             "true",
             "--plot_va_source",
             "cluster_consensus",
+            "--run_tension_micro_probe",
+            "false",
         ]
     )
 
@@ -745,8 +751,11 @@ def test_parsers_accept_v17_adaptive_balance_flags():
     assert train_args.micro_consensus_role == "visible_separator"
     assert train_args.overlap_gate == "true"
     assert train_args.plot_va_source == "cluster_consensus"
+    assert train_args.run_tension_micro_probe == "true"
+    assert train_args.tension_micro_k_max == 4
     assert rerun_args.consensus_mode == "bias_neutral_mean"
     assert rerun_args.overlap_gate == "true"
+    assert rerun_args.run_tension_micro_probe == "false"
 
 
 def test_rerun_parser_accepts_complete_pair_filter_flag():
@@ -1066,6 +1075,87 @@ def test_write_split_outputs_uses_cluster_consensus_as_balanced_va(tmp_path):
     assert (tmp_path / "cluster_scatter_lyrics_va.png").exists()
     assert payload["plot_va_source"] == "cluster_consensus"
     assert payload["output_files"]["cluster_scatter"].endswith("cluster_scatter_balanced_va.png")
+
+
+def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
+    rng = np.random.default_rng(31)
+    consensus = np.vstack(
+        [
+            np.tile(np.asarray([[0.30, 0.70]], dtype=np.float32), (12, 1)),
+            np.tile(np.asarray([[0.75, 0.30]], dtype=np.float32), (12, 1)),
+        ]
+    )
+    tension = np.vstack(
+        [
+            np.tile(np.asarray([[0.16, 0.02]], dtype=np.float32), (6, 1)),
+            np.tile(np.asarray([[-0.16, -0.02]], dtype=np.float32), (6, 1)),
+            np.tile(np.asarray([[0.02, 0.14]], dtype=np.float32), (6, 1)),
+            np.tile(np.asarray([[-0.02, -0.14]], dtype=np.float32), (6, 1)),
+        ]
+    )
+    tension += rng.normal(0.0, 0.005, tension.shape).astype(np.float32)
+
+    class Dataset:
+        raw_audio = np.clip(consensus - 0.5 * tension, 0.0, 1.0).astype(np.float32)
+        raw_lyrics = np.clip(consensus + 0.5 * tension, 0.0, 1.0).astype(np.float32)
+        view_mask = np.ones((24, 3), dtype=np.float32)
+        labels = np.asarray([1] * 12 + [3] * 12, dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(24)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(24)])
+        consistency = np.ones(24, dtype=np.float32)
+        va_diff = raw_audio - raw_lyrics
+        canonical_metadata = pd.DataFrame()
+        raw_metadata = np.zeros((24, 1), dtype=np.float32)
+        raw_metadata_report = raw_metadata
+
+    assignments = np.asarray([0] * 12 + [1] * 12, dtype=np.int64)
+    embeddings = {
+        "gate_weights": np.full((24, 3), 1.0 / 3.0, dtype=np.float32),
+        "z_fused": rng.standard_normal((24, 4)).astype(np.float32),
+    }
+
+    payload = _write_split_outputs(
+        out_dir=str(tmp_path),
+        split="all",
+        dataset=Dataset(),
+        embeddings=embeddings,
+        assignments=assignments,
+        metadata_feature_names=["numeric::zero"],
+        selected_k=2,
+        feature_dim=2,
+        cluster_features=consensus,
+        plot_va_source="cluster_consensus",
+        plot_va_override=consensus,
+        feature_state={
+            "tension_micro_probe_config": {
+                "enabled": True,
+                "k_max": 2,
+                "min_cluster_size": 4,
+                "min_silhouette": -1.0,
+                "min_effect": 0.0,
+                "stability_runs": 3,
+                "random_state": 13,
+            }
+        },
+    )
+
+    probe_path = tmp_path / "tension_micro_probe" / "tension_micro_probe.csv"
+    assignment_path = tmp_path / "tension_micro_probe" / "tension_micro_assignments.csv"
+    probe = pd.read_csv(probe_path)
+    tension_assignments = pd.read_csv(assignment_path)
+    final_assignments = pd.read_csv(tmp_path / "cluster_assignments.csv")
+
+    assert probe_path.exists()
+    assert assignment_path.exists()
+    assert (tmp_path / "tension_micro_probe" / "cluster_0_tension_micro.png").exists()
+    assert payload["output_files"]["tension_micro_probe"] == str(probe_path)
+    assert payload["output_files"]["tension_micro_assignments"] == str(assignment_path)
+    assert "tension_micro_probe" in payload
+    assert set(probe["cluster_id"].tolist()) == {0, 1}
+    assert set(probe["selected_micro_k"].tolist()) == {2}
+    assert {"tension_silhouette", "tension_effect_size", "seed_ari_mean"}.issubset(probe.columns)
+    assert set(tension_assignments["tension_micro_id"].tolist()) == {0, 1}
+    assert "tension_micro_id" not in final_assignments.columns
 
 
 def test_calibrated_va_tension_feature_state_exposes_alpha_audit():

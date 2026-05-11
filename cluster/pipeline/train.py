@@ -17,7 +17,9 @@ import pandas as pd
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from scipy.stats import hypergeom
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
@@ -324,6 +326,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="V19 latent_va_gmm EM iterations.")
     parser.add_argument("--region_max_iter", type=int, default=100,
                         help="V20 balanced_va_regions constrained assignment iterations.")
+    parser.add_argument("--run_tension_micro_probe", type=str, default="true",
+                        help="Write report-only within-region tension micro-split diagnostics.")
+    parser.add_argument("--tension_micro_k_max", type=int, default=3)
+    parser.add_argument("--tension_micro_min_cluster_size_abs", type=int, default=30)
+    parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
+    parser.add_argument("--tension_micro_min_effect", type=float, default=0.25)
+    parser.add_argument("--tension_micro_stability_runs", type=int, default=5)
     return parser
 
 
@@ -1071,6 +1080,27 @@ def _parse_eval_splits(text: str, search_split: str) -> List[str]:
 
 def parse_bool_text(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _tension_micro_probe_config_from_args(args: Any) -> Dict[str, Any]:
+    return {
+        "enabled": parse_bool_text(getattr(args, "run_tension_micro_probe", "true")),
+        "k_max": int(getattr(args, "tension_micro_k_max", 3)),
+        "min_cluster_size": int(getattr(args, "tension_micro_min_cluster_size_abs", 30)),
+        "min_silhouette": float(getattr(args, "tension_micro_min_silhouette", 0.10)),
+        "min_effect": float(getattr(args, "tension_micro_min_effect", 0.25)),
+        "stability_runs": int(getattr(args, "tension_micro_stability_runs", 5)),
+        "random_state": int(getattr(args, "random_state", getattr(args, "seed", 42))),
+    }
+
+
+def _feature_state_with_tension_micro_probe_config(
+    feature_state: Optional[Dict[str, Any]],
+    args: Any,
+) -> Dict[str, Any]:
+    state = dict(feature_state) if isinstance(feature_state, dict) else {}
+    state["tension_micro_probe_config"] = _tension_micro_probe_config_from_args(args)
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -2331,6 +2361,336 @@ def _write_macro_micro_artifacts(
     }
 
 
+TENSION_MICRO_PROBE_COLUMNS = [
+    "cluster_id",
+    "total_cluster_samples",
+    "observed_pair_samples",
+    "selected_micro_k",
+    "status",
+    "tension_silhouette",
+    "tension_effect_size",
+    "seed_ari_mean",
+    "min_micro_size",
+    "accepted_candidate_count",
+    "mean_tension_dv",
+    "mean_tension_da",
+    "mean_tension_norm",
+]
+
+
+TENSION_MICRO_CANDIDATE_COLUMNS = [
+    "cluster_id",
+    "candidate_k",
+    "status",
+    "reason",
+    "min_micro_size",
+    "tension_silhouette",
+    "tension_effect_size",
+    "seed_ari_mean",
+]
+
+
+def _tension_micro_probe_config(feature_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(feature_state, dict):
+        return None
+    config = feature_state.get("tension_micro_probe_config")
+    if not isinstance(config, dict) or not parse_bool_text(config.get("enabled", False)):
+        return None
+    return {
+        "k_max": max(1, int(config.get("k_max", 3))),
+        "min_cluster_size": max(1, int(config.get("min_cluster_size", 30))),
+        "min_silhouette": float(config.get("min_silhouette", 0.10)),
+        "min_effect": float(config.get("min_effect", 0.25)),
+        "stability_runs": max(1, int(config.get("stability_runs", 5))),
+        "random_state": int(config.get("random_state", 42)),
+    }
+
+
+def _dataset_tension_matrix(dataset) -> Tuple[np.ndarray, np.ndarray]:
+    raw_audio = np.asarray(dataset.raw_audio, dtype=np.float32)
+    raw_lyrics = np.asarray(dataset.raw_lyrics, dtype=np.float32)
+    if raw_audio.shape != raw_lyrics.shape or raw_audio.ndim != 2 or raw_audio.shape[1] < 2:
+        raise ValueError("raw_audio and raw_lyrics must both have shape [N, >=2].")
+    view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32))
+    view_mask = np.asarray(view_mask, dtype=np.float32)
+    observed = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+    delta = raw_lyrics[:, :2] - raw_audio[:, :2]
+    norm = np.linalg.norm(delta, axis=1, keepdims=True)
+    matrix = np.concatenate([delta, norm], axis=1).astype(np.float32)
+    matrix[~observed] = 0.0
+    return matrix, observed
+
+
+def _tension_micro_effect_size(matrix: np.ndarray, labels: np.ndarray) -> float:
+    unique = np.unique(labels)
+    if unique.size <= 1:
+        return 0.0
+    center = matrix.mean(axis=0)
+    between = 0.0
+    within = 0.0
+    for label in unique.tolist():
+        group = matrix[labels == label]
+        group_center = group.mean(axis=0)
+        between += float(group.shape[0]) * float(np.sum((group_center - center) ** 2))
+        within += float(np.sum((group - group_center) ** 2))
+    between /= max(int(unique.size) - 1, 1)
+    within /= max(int(matrix.shape[0]) - int(unique.size), 1)
+    return float(np.sqrt(between / max(within, 1e-8)))
+
+
+def _tension_seed_ari(
+    matrix: np.ndarray,
+    base_labels: np.ndarray,
+    k: int,
+    stability_runs: int,
+    random_state: int,
+) -> float:
+    if stability_runs <= 1:
+        return float("nan")
+    scores: List[float] = []
+    for run_idx in range(1, stability_runs):
+        labels = KMeans(
+            n_clusters=k,
+            n_init=10,
+            max_iter=300,
+            random_state=int(random_state) + run_idx * 1009,
+        ).fit_predict(matrix)
+        if np.unique(labels).size == k:
+            scores.append(float(adjusted_rand_score(base_labels, labels)))
+    return float(np.mean(scores)) if scores else float("nan")
+
+
+def _plot_tension_micro_scatter(
+    tension: np.ndarray,
+    labels: np.ndarray,
+    out_path: str,
+    title: str,
+) -> None:
+    _ensure_dir(os.path.dirname(out_path))
+    plt.figure(figsize=(7, 6))
+    unique = sorted(np.unique(labels).astype(int).tolist())
+    cmap = plt.get_cmap("tab10")
+    for color_idx, label in enumerate(unique):
+        mask = labels == label
+        plt.scatter(
+            tension[mask, 0],
+            tension[mask, 1],
+            s=34,
+            alpha=0.78,
+            color=cmap(color_idx % 10),
+            label=f"micro {label}",
+        )
+    plt.axhline(0.0, color="#999999", linewidth=1.0, linestyle="--", alpha=0.7)
+    plt.axvline(0.0, color="#999999", linewidth=1.0, linestyle="--", alpha=0.7)
+    plt.xlabel("Lyrics minus Audio Valence")
+    plt.ylabel("Lyrics minus Audio Arousal")
+    plt.title(title)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=180)
+    plt.close()
+
+
+def _probe_one_cluster_tension_micro(
+    tension: np.ndarray,
+    cluster_id: int,
+    total_cluster_samples: int,
+    config: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], np.ndarray]:
+    n = int(tension.shape[0])
+    selected_labels = np.zeros(n, dtype=np.int64)
+    base_row = {
+        "cluster_id": int(cluster_id),
+        "total_cluster_samples": int(total_cluster_samples),
+        "observed_pair_samples": n,
+        "selected_micro_k": 1,
+        "status": "fallback",
+        "tension_silhouette": 0.0,
+        "tension_effect_size": 0.0,
+        "seed_ari_mean": float("nan"),
+        "min_micro_size": n,
+        "accepted_candidate_count": 0,
+        "mean_tension_dv": float(tension[:, 0].mean()) if n else float("nan"),
+        "mean_tension_da": float(tension[:, 1].mean()) if n else float("nan"),
+        "mean_tension_norm": float(tension[:, 2].mean()) if n else float("nan"),
+    }
+    min_size = int(config["min_cluster_size"])
+    if n < max(2 * min_size, 2):
+        row = dict(base_row)
+        row["status"] = "not_enough_observed_pairs"
+        return row, [], selected_labels
+
+    scaled = StandardScaler().fit_transform(tension.astype(np.float64))
+    candidates: List[Dict[str, Any]] = []
+    accepted: List[Tuple[Dict[str, Any], np.ndarray]] = []
+    for k in range(2, min(int(config["k_max"]), n) + 1):
+        labels = KMeans(
+            n_clusters=k,
+            n_init=20,
+            max_iter=300,
+            random_state=int(config["random_state"]) + int(cluster_id) * 4099 + k,
+        ).fit_predict(scaled)
+        sizes = np.bincount(labels, minlength=k)
+        min_micro_size = int(sizes.min()) if sizes.size else 0
+        if min_micro_size < min_size:
+            candidates.append(
+                {
+                    "cluster_id": int(cluster_id),
+                    "candidate_k": int(k),
+                    "status": "rejected_min_size",
+                    "reason": f"min_micro_size={min_micro_size}<{min_size}",
+                    "min_micro_size": min_micro_size,
+                    "tension_silhouette": float("nan"),
+                    "tension_effect_size": float("nan"),
+                    "seed_ari_mean": float("nan"),
+                }
+            )
+            continue
+        silhouette = float(silhouette_score(scaled, labels)) if np.unique(labels).size > 1 else 0.0
+        effect = _tension_micro_effect_size(scaled, labels)
+        seed_ari = _tension_seed_ari(
+            scaled,
+            labels,
+            k,
+            int(config["stability_runs"]),
+            int(config["random_state"]) + int(cluster_id) * 4099,
+        )
+        reasons = []
+        if silhouette < float(config["min_silhouette"]):
+            reasons.append(f"silhouette={silhouette:.3f}<{float(config['min_silhouette']):.3f}")
+        if effect < float(config["min_effect"]):
+            reasons.append(f"effect={effect:.3f}<{float(config['min_effect']):.3f}")
+        candidate = {
+            "cluster_id": int(cluster_id),
+            "candidate_k": int(k),
+            "status": "accepted_candidate" if not reasons else "rejected_validator",
+            "reason": "; ".join(reasons),
+            "min_micro_size": min_micro_size,
+            "tension_silhouette": silhouette,
+            "tension_effect_size": effect,
+            "seed_ari_mean": seed_ari,
+        }
+        candidates.append(candidate)
+        if not reasons:
+            accepted.append((candidate, labels.astype(np.int64)))
+
+    if not accepted:
+        return base_row, candidates, selected_labels
+
+    best, selected_labels = max(
+        accepted,
+        key=lambda item: (
+            float(item[0]["tension_silhouette"]),
+            float(item[0]["tension_effect_size"]),
+            float(item[0]["seed_ari_mean"]) if np.isfinite(float(item[0]["seed_ari_mean"])) else -1.0,
+        ),
+    )
+    row = dict(base_row)
+    row.update(
+        {
+            "selected_micro_k": int(best["candidate_k"]),
+            "status": "accepted",
+            "tension_silhouette": float(best["tension_silhouette"]),
+            "tension_effect_size": float(best["tension_effect_size"]),
+            "seed_ari_mean": float(best["seed_ari_mean"]),
+            "min_micro_size": int(best["min_micro_size"]),
+            "accepted_candidate_count": int(len(accepted)),
+        }
+    )
+    return row, candidates, selected_labels.astype(np.int64)
+
+
+def _write_tension_micro_probe_artifacts(
+    out_dir: str,
+    dataset,
+    assignments: np.ndarray,
+    feature_state: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    config = _tension_micro_probe_config(feature_state)
+    if config is None:
+        return {}
+    probe_dir = os.path.join(out_dir, "tension_micro_probe")
+    _ensure_dir(probe_dir)
+    tension_matrix, observed = _dataset_tension_matrix(dataset)
+    view_mask = getattr(dataset, "view_mask", np.ones((len(assignments), 3), dtype=np.float32))
+    view_mask = np.asarray(view_mask, dtype=np.float32)
+    micro_ids = np.full(len(assignments), -1, dtype=np.int64)
+    summary_rows: List[Dict[str, Any]] = []
+    candidate_rows: List[Dict[str, Any]] = []
+    plot_paths: Dict[str, str] = {}
+
+    for cluster_id in sorted(np.unique(assignments).astype(int).tolist()):
+        cluster_mask = assignments == cluster_id
+        observed_indices = np.where(cluster_mask & observed)[0]
+        row, candidates, local_labels = _probe_one_cluster_tension_micro(
+            tension_matrix[observed_indices],
+            cluster_id=cluster_id,
+            total_cluster_samples=int(cluster_mask.sum()),
+            config=config,
+        )
+        summary_rows.append(row)
+        candidate_rows.extend(candidates)
+        if observed_indices.size:
+            micro_ids[observed_indices] = local_labels.astype(np.int64)
+            plot_path = os.path.join(probe_dir, f"cluster_{cluster_id}_tension_micro.png")
+            _plot_tension_micro_scatter(
+                tension_matrix[observed_indices],
+                local_labels.astype(np.int64),
+                plot_path,
+                title=f"Cluster {cluster_id} Tension Micro Probe",
+            )
+            plot_paths[str(cluster_id)] = plot_path
+
+    probe_path = os.path.join(probe_dir, "tension_micro_probe.csv")
+    candidates_path = os.path.join(probe_dir, "tension_micro_candidates.csv")
+    assignments_path = os.path.join(probe_dir, "tension_micro_assignments.csv")
+    pd.DataFrame(summary_rows, columns=TENSION_MICRO_PROBE_COLUMNS).to_csv(
+        probe_path,
+        index=False,
+        encoding="utf-8",
+    )
+    pd.DataFrame(candidate_rows, columns=TENSION_MICRO_CANDIDATE_COLUMNS).to_csv(
+        candidates_path,
+        index=False,
+        encoding="utf-8",
+    )
+    assignment_frame = pd.DataFrame(
+        {
+            "identifier": dataset.identifiers,
+            "lyric_identifier": dataset.lyric_identifiers,
+            "cluster_id": assignments.astype(int),
+            "tension_micro_id": micro_ids.astype(int),
+            "tension_label": [
+                f"C{int(cluster_id)}-T{int(micro_id)}" if int(micro_id) >= 0 else ""
+                for cluster_id, micro_id in zip(assignments.tolist(), micro_ids.tolist())
+            ],
+            "has_audio": (view_mask[:, 0] > 0).astype(bool),
+            "has_lyrics": (view_mask[:, 1] > 0).astype(bool),
+            "tension_dv": tension_matrix[:, 0],
+            "tension_da": tension_matrix[:, 1],
+            "tension_norm": tension_matrix[:, 2],
+        }
+    )
+    assignment_frame.to_csv(assignments_path, index=False, encoding="utf-8")
+    accepted = [row for row in summary_rows if int(row["selected_micro_k"]) > 1]
+    return {
+        "tension_micro_probe": {
+            "enabled": True,
+            "config": config,
+            "clusters_with_selected_micro_split": int(len(accepted)),
+            "max_selected_micro_k": int(max((row["selected_micro_k"] for row in summary_rows), default=1)),
+            "summary": summary_rows,
+        },
+        "output_files": {
+            "tension_micro_probe_dir": probe_dir,
+            "tension_micro_probe": probe_path,
+            "tension_micro_candidates": candidates_path,
+            "tension_micro_assignments": assignments_path,
+            "tension_micro_plots": plot_paths,
+        },
+    }
+
+
 def _write_split_outputs(
     out_dir: str,
     split: str,
@@ -2469,6 +2829,12 @@ def _write_split_outputs(
         if label_map
         else {}
     )
+    tension_micro_outputs = _write_tension_micro_probe_artifacts(
+        out_dir=out_dir,
+        dataset=dataset,
+        assignments=assignments,
+        feature_state=feature_state,
+    )
     with open(palette_path, "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in palette.items()}, f, ensure_ascii=False, indent=2)
 
@@ -2505,6 +2871,7 @@ def _write_split_outputs(
             "p_value_test": "hypergeometric_right_tail",
         },
         "cluster_summary": summary,
+        "tension_micro_probe": tension_micro_outputs.get("tension_micro_probe"),
         "output_files": {
             "cluster_assignments": assignment_path,
             "cluster_catalog": catalog_path,
@@ -2529,6 +2896,7 @@ def _write_split_outputs(
             "search_metrics": search_metrics_path,
             "bic_curve": bic_curve_path,
             **macro_micro_outputs,
+            **tension_micro_outputs.get("output_files", {}),
         },
     }
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -3165,6 +3533,7 @@ def main() -> None:
                     "alpha_prior_strength": float(getattr(args, "alpha_prior_strength", 0.0)),
                     "latent_max_iter": int(getattr(args, "latent_max_iter", 100)),
                     "region_max_iter": int(getattr(args, "region_max_iter", 100)),
+                    "tension_micro_probe": _tension_micro_probe_config_from_args(args),
                     "selection_info": selection_info,
                 },
             },
@@ -3273,7 +3642,7 @@ def main() -> None:
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,
             plot_va_override=plot_va_override,
-            feature_state=split_feature_state if isinstance(split_feature_state, dict) else None,
+            feature_state=_feature_state_with_tension_micro_probe_config(split_feature_state, args),
         )
         split_outputs[split] = payload
 
@@ -3321,6 +3690,7 @@ def main() -> None:
         "silhouette_mode": str(args.silhouette_mode),
         "silhouette_sample_size": int(args.silhouette_sample_size),
         "silhouette_chunk_size": int(args.silhouette_chunk_size),
+        "tension_micro_probe": _tension_micro_probe_config_from_args(args),
         "cluster_aware_finetune": bool(
             int(args.cluster_head_k) > 0
             and (

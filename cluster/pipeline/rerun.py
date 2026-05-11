@@ -26,7 +26,9 @@ from cluster.pipeline.train import (
     _dataset_mean_va,
     _dataset_plot_va,
     _ensure_dir,
+    _feature_state_with_tension_micro_probe_config,
     _parse_eval_splits,
+    _tension_micro_probe_config_from_args,
     _va_quadrant_labels,
     _write_pipeline_report,
     _write_split_outputs,
@@ -251,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha_prior_strength", type=float, default=0.0)
     parser.add_argument("--latent_max_iter", type=int, default=100)
     parser.add_argument("--region_max_iter", type=int, default=100)
+    parser.add_argument("--run_tension_micro_probe", type=str, default="true")
+    parser.add_argument("--tension_micro_k_max", type=int, default=3)
+    parser.add_argument("--tension_micro_min_cluster_size_abs", type=int, default=30)
+    parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
+    parser.add_argument("--tension_micro_min_effect", type=float, default=0.25)
+    parser.add_argument("--tension_micro_stability_runs", type=int, default=5)
     return parser
 
 
@@ -627,6 +635,7 @@ def main() -> None:
                     "alpha_prior_strength": float(getattr(args, "alpha_prior_strength", 0.0)),
                     "latent_max_iter": int(getattr(args, "latent_max_iter", 100)),
                     "region_max_iter": int(getattr(args, "region_max_iter", 100)),
+                    "tension_micro_probe": _tension_micro_probe_config_from_args(args),
                     "selection_info": selection_info,
                 },
             },
@@ -730,7 +739,7 @@ def main() -> None:
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,
             plot_va_override=plot_va_override,
-            feature_state=split_feature_state if isinstance(split_feature_state, dict) else None,
+            feature_state=_feature_state_with_tension_micro_probe_config(split_feature_state, args),
         )
         split_outputs[split] = payload
         if split == search_split:
@@ -757,6 +766,7 @@ def main() -> None:
         "silhouette_mode": str(args.silhouette_mode),
         "silhouette_sample_size": int(args.silhouette_sample_size),
         "silhouette_chunk_size": int(args.silhouette_chunk_size),
+        "tension_micro_probe": _tension_micro_probe_config_from_args(args),
         "selection_info": selection_info,
         "cluster_feature_strategy": feature_strategy,
         "cluster_feature_weights": feature_weights.tolist(),
