@@ -79,6 +79,23 @@ def test_va_quadrant_labels_are_derived_from_plot_coordinates():
     np.testing.assert_array_equal(labels, np.asarray([0, 1, 2, 3], dtype=np.int64))
 
 
+def test_va_quadrant_labels_can_exclude_boundary_points():
+    labels = _va_quadrant_labels(
+        np.asarray(
+            [
+                [0.6, 0.7],
+                [0.51, 0.8],
+                [0.3, 0.49],
+                [0.8, 0.2],
+            ],
+            dtype=np.float32,
+        ),
+        boundary_margin=0.03,
+    )
+
+    np.testing.assert_array_equal(labels, np.asarray([0, -1, -1, 3], dtype=np.int64))
+
+
 def test_original_va_cluster_feature_strategy_uses_original_va_only():
     embeddings = {
         "z_fused": np.ones((2, 3), dtype=np.float32),
@@ -648,6 +665,8 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
             "0.15",
             "--min_affect_weighted_purity",
             "0.80",
+            "--affect_boundary_margin",
+            "0.03",
         ]
     )
 
@@ -662,6 +681,7 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
     assert args.min_affect_dominant_ratio == 0.70
     assert args.max_affect_mixed_cluster_fraction == 0.15
     assert args.min_affect_weighted_purity == 0.80
+    assert args.affect_boundary_margin == 0.03
 
 
 def test_rerun_parser_accepts_complete_pair_filter_flag():
@@ -675,11 +695,14 @@ def test_rerun_parser_accepts_complete_pair_filter_flag():
             "balanced_va_diff",
             "--require_both_va",
             "true",
+            "--affect_boundary_margin",
+            "0.02",
         ]
     )
 
     assert args.require_both_va == "true"
     assert args.cluster_feature_strategy == "balanced_va_diff"
+    assert args.affect_boundary_margin == 0.02
 
 
 def test_metadata_only_strategy_uses_metadata_embedding_without_other_views():

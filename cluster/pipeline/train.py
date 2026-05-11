@@ -244,6 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_affect_mixed_cluster_fraction", type=float, default=0.15)
     parser.add_argument("--min_affect_weighted_purity", type=float, default=0.80)
     parser.add_argument("--min_affect_valid_fraction", type=float, default=0.95)
+    parser.add_argument(
+        "--affect_boundary_margin",
+        type=float,
+        default=0.0,
+        help="Exclude VA points within this distance of the 0.5 valence/arousal axes from affect hard-gate purity.",
+    )
     parser.add_argument("--min_final_clusters", type=int, default=0)
     parser.add_argument("--max_final_clusters", type=int, default=0)
     parser.add_argument("--micro_min_cluster_size_abs", type=int, default=0)
@@ -1465,18 +1471,24 @@ def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
     return _dataset_mean_va(dataset)
 
 
-def _va_quadrant_labels(va: np.ndarray) -> np.ndarray:
-    """Derive Q1/Q2/Q3/Q4 labels from VA-plane coordinates using 0.5 as the axes."""
+def _va_quadrant_labels(va: np.ndarray, boundary_margin: float = 0.0) -> np.ndarray:
+    """Derive Q1/Q2/Q3/Q4 labels from VA-plane coordinates using 0.5 as the axes.
+
+    Points inside ``boundary_margin`` of either axis are marked -1 because their
+    quadrant assignment is inherently ambiguous on a continuous VA plane.
+    """
     coords = np.asarray(va, dtype=np.float32)
     if coords.ndim != 2 or coords.shape[1] != 2:
         raise ValueError(f"VA coordinates must have shape [N, 2], got {coords.shape}.")
+    margin = max(float(boundary_margin), 0.0)
     valence_high = coords[:, 0] >= 0.5
     arousal_high = coords[:, 1] >= 0.5
     labels = np.full(coords.shape[0], -1, dtype=np.int64)
-    labels[valence_high & arousal_high] = 0
-    labels[~valence_high & arousal_high] = 1
-    labels[~valence_high & ~arousal_high] = 2
-    labels[valence_high & ~arousal_high] = 3
+    away_from_boundary = (np.abs(coords[:, 0] - 0.5) >= margin) & (np.abs(coords[:, 1] - 0.5) >= margin)
+    labels[away_from_boundary & valence_high & arousal_high] = 0
+    labels[away_from_boundary & ~valence_high & arousal_high] = 1
+    labels[away_from_boundary & ~valence_high & ~arousal_high] = 2
+    labels[away_from_boundary & valence_high & ~arousal_high] = 3
     return labels
 
 
@@ -2499,7 +2511,10 @@ def main() -> None:
         macro_k_max=int(args.macro_k_max),
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
-        affect_labels=_va_quadrant_labels(_dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))),
+        affect_labels=_va_quadrant_labels(
+            _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source)),
+            boundary_margin=float(args.affect_boundary_margin),
+        ),
         affect_gate_enabled=parse_bool_text(args.affect_gate),
         min_affect_dominant_ratio=float(args.min_affect_dominant_ratio),
         max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
@@ -2594,6 +2609,7 @@ def main() -> None:
                     "max_affect_mixed_cluster_fraction": float(args.max_affect_mixed_cluster_fraction),
                     "min_affect_weighted_purity": float(args.min_affect_weighted_purity),
                     "min_affect_valid_fraction": float(args.min_affect_valid_fraction),
+                    "affect_boundary_margin": float(args.affect_boundary_margin),
                     "metadata_policy": metadata_policy_info,
                     "metadata_cluster_weight": effective_metadata_cluster_weight,
                     "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),

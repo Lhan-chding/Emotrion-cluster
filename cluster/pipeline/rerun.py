@@ -199,6 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_affect_mixed_cluster_fraction", type=float, default=0.15)
     parser.add_argument("--min_affect_weighted_purity", type=float, default=0.80)
     parser.add_argument("--min_affect_valid_fraction", type=float, default=0.95)
+    parser.add_argument(
+        "--affect_boundary_margin",
+        type=float,
+        default=0.0,
+        help="Exclude VA points within this distance of the 0.5 valence/arousal axes from affect hard-gate purity.",
+    )
     return parser
 
 
@@ -387,7 +393,10 @@ def main() -> None:
         macro_k_max=int(args.macro_k_max),
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
-        affect_labels=_va_quadrant_labels(_dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))),
+        affect_labels=_va_quadrant_labels(
+            _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source)),
+            boundary_margin=float(args.affect_boundary_margin),
+        ),
         affect_gate_enabled=parse_bool_text(args.affect_gate),
         min_affect_dominant_ratio=float(args.min_affect_dominant_ratio),
         max_affect_mixed_cluster_fraction=float(args.max_affect_mixed_cluster_fraction),
@@ -481,6 +490,7 @@ def main() -> None:
                     "max_affect_mixed_cluster_fraction": float(args.max_affect_mixed_cluster_fraction),
                     "min_affect_weighted_purity": float(args.min_affect_weighted_purity),
                     "min_affect_valid_fraction": float(args.min_affect_valid_fraction),
+                    "affect_boundary_margin": float(args.affect_boundary_margin),
                     "metadata_policy": metadata_policy_info,
                     "metadata_cluster_weight": effective_metadata_cluster_weight,
                     "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
