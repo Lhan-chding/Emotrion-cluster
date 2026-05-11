@@ -9,11 +9,13 @@ from cluster.features.va_geometry import (
 )
 from cluster.features.affect_calibration import (
     AffectCalibrator,
+    BalanceAlphaLearner,
     DiffResidualizer,
 )
 
 __all__ = [
     "AffectCalibrator",
+    "BalanceAlphaLearner",
     "BALANCED_VA_DIFF_FEATURE_NAMES",
     "CALIBRATED_VA_TENSION_DIM",
     "CALIBRATED_VA_TENSION_FEATURE_NAMES",

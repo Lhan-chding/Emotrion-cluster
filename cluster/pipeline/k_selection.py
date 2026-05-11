@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalized_mutual_info_score, pairwise_distances, silhouette_score
+from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalized_mutual_info_score, pairwise_distances, silhouette_samples, silhouette_score
 from sklearn.mixture import GaussianMixture
 
 from cluster.backends import resolve_cluster_backend
@@ -67,6 +67,15 @@ class KSelectionConfig:
     micro_min_jaccard: float = 0.0
     micro_min_tension_effect: float = 0.0
     micro_max_consensus_effect_ratio: float = 1.0
+    micro_consensus_role: str = "anti_leakage"
+    micro_min_consensus_knn_purity: float = 0.85
+    micro_min_consensus_center_sep: float = 0.60
+    micro_min_consensus_silhouette: float = 0.10
+    # Continuous VA overlap gate
+    overlap_gate_enabled: bool = False
+    min_va_knn_purity: float = 0.90
+    min_va_center_sep: float = 0.70
+    max_va_negative_silhouette_fraction: float = 0.10
 
 
 @dataclass
@@ -237,6 +246,96 @@ def compute_affect_purity_metrics(
         "affect_worst_cluster_size": int(worst_cluster_size),
         "affect_gate_ok": bool(gate_ok),
     }
+
+
+def compute_overlap_gate_metrics(
+    primary_va: np.ndarray,
+    labels: np.ndarray,
+    *,
+    min_va_knn_purity: float = 0.90,
+    min_va_center_sep: float = 0.70,
+    max_negative_silhouette_fraction: float = 0.10,
+) -> Dict[str, Any]:
+    """Measure final-label overlap on the primary continuous VA plane."""
+    coords = np.asarray(primary_va, dtype=np.float32)
+    y = np.asarray(labels, dtype=np.int64)
+    if coords.ndim != 2 or coords.shape[0] != y.shape[0] or coords.shape[1] < 2:
+        raise ValueError(f"primary_va must have shape [N, >=2] matching labels, got {coords.shape}.")
+    coords = coords[:, :2]
+    unique = np.unique(y)
+    if coords.shape[0] < 3 or unique.size < 2:
+        return {
+            "va_knn_purity_10": float("nan"),
+            "va_knn_purity_20": float("nan"),
+            "va_center_radius_sep": float("nan"),
+            "va_negative_silhouette_fraction": float("nan"),
+            "va_mean_silhouette": float("nan"),
+            "overlap_gate_ok": False,
+        }
+
+    purity_10 = _knn_label_purity(coords, y, 10)
+    purity_20 = _knn_label_purity(coords, y, 20)
+    center_sep = _min_center_radius_separation(coords, y)
+    try:
+        samples = silhouette_samples(coords.astype(np.float64), y)
+        negative_fraction = float(np.mean(samples < 0.0))
+        mean_silhouette = float(np.mean(samples))
+    except Exception:
+        negative_fraction = float("nan")
+        mean_silhouette = float("nan")
+    gate_ok = (
+        np.isfinite(purity_20)
+        and np.isfinite(center_sep)
+        and np.isfinite(negative_fraction)
+        and float(purity_20) >= float(min_va_knn_purity)
+        and float(center_sep) >= float(min_va_center_sep)
+        and float(negative_fraction) <= float(max_negative_silhouette_fraction)
+    )
+    return {
+        "va_knn_purity_10": float(purity_10),
+        "va_knn_purity_20": float(purity_20),
+        "va_center_radius_sep": float(center_sep),
+        "va_negative_silhouette_fraction": float(negative_fraction),
+        "va_mean_silhouette": float(mean_silhouette),
+        "overlap_gate_ok": bool(gate_ok),
+    }
+
+
+def _knn_label_purity(coords: np.ndarray, labels: np.ndarray, k: int) -> float:
+    n = int(coords.shape[0])
+    if n <= 1:
+        return float("nan")
+    n_neighbors = min(int(k), n - 1)
+    distances = pairwise_distances(coords.astype(np.float64), metric="euclidean")
+    np.fill_diagonal(distances, np.inf)
+    nearest = np.argpartition(distances, n_neighbors - 1, axis=1)[:, :n_neighbors]
+    same = labels[nearest] == labels.reshape(-1, 1)
+    return float(np.mean(same.mean(axis=1)))
+
+
+def _min_center_radius_separation(coords: np.ndarray, labels: np.ndarray) -> float:
+    unique = np.unique(labels)
+    if unique.size < 2:
+        return float("nan")
+    centers: List[np.ndarray] = []
+    radii: List[float] = []
+    for cluster_id in unique:
+        group = coords[labels == int(cluster_id)].astype(np.float64)
+        center = group.mean(axis=0)
+        radius = float(np.mean(np.linalg.norm(group - center.reshape(1, -1), axis=1)))
+        centers.append(center)
+        radii.append(radius)
+    min_sep = float("inf")
+    for i in range(len(centers)):
+        for j in range(i + 1, len(centers)):
+            distance = float(np.linalg.norm(centers[i] - centers[j]))
+            denom = float(radii[i] + radii[j])
+            if denom <= 1e-12:
+                sep = 0.0 if distance <= 1e-12 else float("inf")
+            else:
+                sep = distance / denom
+            min_sep = min(min_sep, float(sep))
+    return float(min_sep)
 
 
 def _add_affect_selection_info(
@@ -1057,6 +1156,7 @@ def search_macro_micro_diffaware(
     block_slices: Sequence[Sequence[int]],
     view_mask: Optional[np.ndarray] = None,
     affect_labels: Optional[np.ndarray] = None,
+    primary_va: Optional[np.ndarray] = None,
 ) -> KSearchResult:
     """True macro/micro search for two/three-block diff-aware feature matrices."""
     if str(config.covariance_type).lower() != "diag":
@@ -1075,18 +1175,31 @@ def search_macro_micro_diffaware(
     candidates: Dict[int, MacroMicroClusterer] = {}
     consensus_start, consensus_stop = int(block_slices[0][0]), int(block_slices[0][1])
     consensus = matrix[:, consensus_start:consensus_stop]
+    overlap_va = np.asarray(primary_va, dtype=np.float32) if primary_va is not None else consensus[:, :2]
+    if overlap_va.ndim != 2 or overlap_va.shape[0] != matrix.shape[0] or overlap_va.shape[1] < 2:
+        raise ValueError(f"primary_va must have shape [N, >=2], got {overlap_va.shape}.")
 
     for macro_k in range(int(config.macro_k_min), int(config.macro_k_max) + 1):
         validator = None
         gate_level = str(config.affect_gate_level).lower()
         enforce_final_affect = bool(config.affect_gate_enabled) and gate_level in {"final", "both"}
-        if config.micro_min_silhouette > 0 or config.micro_min_tension_effect > 0 or enforce_final_affect:
+        validate_visible_separator = str(config.micro_consensus_role).lower() == "visible_separator"
+        if (
+            config.micro_min_silhouette > 0
+            or config.micro_min_tension_effect > 0
+            or enforce_final_affect
+            or validate_visible_separator
+        ):
             validator = MicroSplitValidator(
                 min_silhouette=float(config.micro_min_silhouette),
                 min_stability_ari=float(config.micro_min_stability),
                 min_jaccard=float(config.micro_min_jaccard),
                 min_tension_effect=float(config.micro_min_tension_effect),
                 max_consensus_effect_ratio=float(config.micro_max_consensus_effect_ratio),
+                consensus_role=str(config.micro_consensus_role),
+                min_consensus_knn_purity=float(config.micro_min_consensus_knn_purity),
+                min_consensus_center_sep=float(config.micro_min_consensus_center_sep),
+                min_consensus_silhouette=float(config.micro_min_consensus_silhouette),
                 min_affect_dominant_ratio=(
                     float(config.min_affect_dominant_ratio) if enforce_final_affect else None
                 ),
@@ -1129,6 +1242,13 @@ def search_macro_micro_diffaware(
         )
         mask_nmi = _mask_nmi(labels, view_mask) if view_mask is not None else float("nan")
         max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
+        overlap_metrics = compute_overlap_gate_metrics(
+            overlap_va,
+            labels,
+            min_va_knn_purity=float(config.min_va_knn_purity),
+            min_va_center_sep=float(config.min_va_center_sep),
+            max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
+        )
         affect_metrics: Dict[str, Any] = {}
         if config.affect_gate_enabled:
             macro_affect_metrics = compute_affect_purity_metrics(
@@ -1160,7 +1280,17 @@ def search_macro_micro_diffaware(
                 "affect_gate_level": gate_level,
                 "affect_gate_ok": combined_gate_ok,
             }
-        score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
+        if bool(config.overlap_gate_enabled):
+            score = (
+                0.35 * float(macro_sil)
+                + 0.20 * float(final_sil)
+                + 0.20 * float(stability["seed_ari_mean"])
+                + 0.15 * float(np.nan_to_num(overlap_metrics["va_knn_purity_20"], nan=0.0))
+                + 0.10 * min(1.0, float(np.nan_to_num(overlap_metrics["va_center_radius_sep"], nan=0.0)))
+                - 0.10 * float(np.nan_to_num(overlap_metrics["va_negative_silhouette_fraction"], nan=1.0))
+            )
+        else:
+            score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
         if np.isfinite(mask_nmi):
             score -= 0.25 * float(mask_nmi)
         candidates[int(macro_k)] = model
@@ -1178,6 +1308,7 @@ def search_macro_micro_diffaware(
                 "min_size_threshold": int(min_size_threshold),
                 "mask_nmi": float(mask_nmi),
                 "max_mask_purity": float(max_mask_purity),
+                **overlap_metrics,
                 **affect_metrics,
             }
         )
@@ -1186,6 +1317,8 @@ def search_macro_micro_diffaware(
     eligible = metrics["min_size_ok"].to_numpy(dtype=bool) & metrics["total_k_ok"].to_numpy(dtype=bool)
     if "affect_gate_ok" in metrics.columns:
         eligible = eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
+    if bool(config.overlap_gate_enabled):
+        eligible = eligible & metrics["overlap_gate_ok"].to_numpy(dtype=bool)
     if not eligible.any():
         candidates_text = ", ".join(
             (
@@ -1193,6 +1326,10 @@ def search_macro_micro_diffaware(
                 f"total_ok={bool(getattr(row, 'total_k_ok', True))},"
                 f"min_size={int(row.min_cluster_size)},"
                 f"min_ok={bool(getattr(row, 'min_size_ok', True))},"
+                f"overlap_ok={bool(getattr(row, 'overlap_gate_ok', True))},"
+                f"va_purity20={float(getattr(row, 'va_knn_purity_20', float('nan'))):.3f},"
+                f"va_sep={float(getattr(row, 'va_center_radius_sep', float('nan'))):.3f},"
+                f"va_neg={float(getattr(row, 'va_negative_silhouette_fraction', float('nan'))):.3f},"
                 f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))},"
                 f"macro_ok={bool(getattr(row, 'macro_affect_gate_ok', getattr(row, 'affect_gate_ok', True)))},"
                 f"macro_valid={float(getattr(row, 'affect_valid_fraction', float('nan'))):.3f},"
@@ -1212,7 +1349,7 @@ def search_macro_micro_diffaware(
             for row in metrics.itertuples(index=False)
         )
         raise ValueError(
-            "No macro_micro candidate satisfied total K and min-size hard gates "
+            "No macro_micro candidate satisfied total K, min-size, and overlap hard gates "
             f"(k_min={int(config.k_min)}, k_max={int(config.k_max)}, "
             f"min_cluster_size_threshold={min_size_threshold}). Candidates: {candidates_text}."
         )
@@ -1237,6 +1374,13 @@ def search_macro_micro_diffaware(
         "cluster_jaccard_mean": float(selected_row["cluster_jaccard_mean"]),
         "cluster_jaccard_min": float(selected_row["cluster_jaccard_min"]),
         "bootstrap_valid_rate": float(selected_row["bootstrap_valid_rate"]),
+        "overlap_gate_enabled": bool(config.overlap_gate_enabled),
+        "overlap_gate_ok": bool(selected_row.get("overlap_gate_ok", True)),
+        "va_knn_purity_10": float(selected_row.get("va_knn_purity_10", float("nan"))),
+        "va_knn_purity_20": float(selected_row.get("va_knn_purity_20", float("nan"))),
+        "va_center_radius_sep": float(selected_row.get("va_center_radius_sep", float("nan"))),
+        "va_negative_silhouette_fraction": float(selected_row.get("va_negative_silhouette_fraction", float("nan"))),
+        "va_mean_silhouette": float(selected_row.get("va_mean_silhouette", float("nan"))),
         "stability_runs": int(config.stability_runs),
         "partial_likelihood": True,
         "feature_block_slices": [(int(start), int(stop)) for start, stop in block_slices],

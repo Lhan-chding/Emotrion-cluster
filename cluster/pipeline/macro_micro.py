@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from sklearn.metrics import pairwise_distances, silhouette_samples
 
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
@@ -22,6 +23,10 @@ class MicroSplitValidator:
     min_jaccard: float = 0.35
     min_tension_effect: float = 0.35
     max_consensus_effect_ratio: float = 0.50
+    consensus_role: str = "anti_leakage"
+    min_consensus_knn_purity: float = 0.85
+    min_consensus_center_sep: float = 0.60
+    min_consensus_silhouette: float = 0.10
     min_affect_dominant_ratio: Optional[float] = None
     max_affect_mixed_cluster_fraction: Optional[float] = None
     min_affect_weighted_purity: Optional[float] = None
@@ -41,17 +46,38 @@ class MicroSplitValidator:
 
         tension_effect = self._effect_size(tension, labels)
         consensus_effect = self._effect_size(consensus, labels)
+        consensus_metrics = self._consensus_visibility_metrics(consensus, labels)
 
         reasons: List[str] = []
         if silhouette < self.min_silhouette:
             reasons.append(f"silhouette={silhouette:.3f}<{self.min_silhouette}")
         if tension_effect < self.min_tension_effect:
             reasons.append(f"tension_effect={tension_effect:.3f}<{self.min_tension_effect}")
-        if consensus_effect > self.max_consensus_effect_ratio * tension_effect and tension_effect > 0:
-            reasons.append(
-                f"consensus_effect={consensus_effect:.3f}>"
-                f"{self.max_consensus_effect_ratio}*tension_effect={tension_effect:.3f}"
-            )
+        consensus_role = str(self.consensus_role or "anti_leakage").strip().lower()
+        if consensus_role == "anti_leakage":
+            if consensus_effect > self.max_consensus_effect_ratio * tension_effect and tension_effect > 0:
+                reasons.append(
+                    f"consensus_effect={consensus_effect:.3f}>"
+                    f"{self.max_consensus_effect_ratio}*tension_effect={tension_effect:.3f}"
+                )
+        elif consensus_role == "visible_separator":
+            if consensus_metrics["consensus_knn_purity"] < self.min_consensus_knn_purity:
+                reasons.append(
+                    f"consensus_knn_purity={consensus_metrics['consensus_knn_purity']:.3f}<"
+                    f"{self.min_consensus_knn_purity}"
+                )
+            if consensus_metrics["consensus_center_radius_sep"] < self.min_consensus_center_sep:
+                reasons.append(
+                    f"consensus_center_sep={consensus_metrics['consensus_center_radius_sep']:.3f}<"
+                    f"{self.min_consensus_center_sep}"
+                )
+            if consensus_metrics["consensus_silhouette"] < self.min_consensus_silhouette:
+                reasons.append(
+                    f"consensus_silhouette={consensus_metrics['consensus_silhouette']:.3f}<"
+                    f"{self.min_consensus_silhouette}"
+                )
+        else:
+            raise ValueError(f"Unsupported consensus_role: {self.consensus_role!r}")
         affect_metrics: Dict[str, float] = {}
         if affect_labels is not None and self.min_affect_dominant_ratio is not None:
             affect_metrics = self._affect_metrics(labels, affect_labels)
@@ -72,6 +98,8 @@ class MicroSplitValidator:
             "tension_effect_size": float(tension_effect),
             "consensus_effect_size": float(consensus_effect),
             "micro_silhouette": float(silhouette),
+            "consensus_role": consensus_role,
+            **consensus_metrics,
             **affect_metrics,
         }
 
@@ -89,6 +117,59 @@ class MicroSplitValidator:
         pooled_var = sum(g.var(axis=0).sum() * (len(g) - 1) for g in groups) / max(features.shape[0] - len(unique), 1)
         pooled_std = float(np.sqrt(pooled_var / max(features.shape[1], 1)))
         return float(mean_diff / max(pooled_std, 1e-8))
+
+    def _consensus_visibility_metrics(self, consensus: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        coords = np.asarray(consensus, dtype=np.float32)
+        y = np.asarray(labels, dtype=np.int64)
+        if coords.ndim != 2 or coords.shape[0] != y.shape[0] or coords.shape[0] < 3 or np.unique(y).size < 2:
+            return {
+                "consensus_knn_purity": 1.0,
+                "consensus_center_radius_sep": 1.0,
+                "consensus_silhouette": 1.0,
+            }
+        return {
+            "consensus_knn_purity": float(self._knn_purity(coords, y, 20)),
+            "consensus_center_radius_sep": float(self._center_radius_sep(coords, y)),
+            "consensus_silhouette": float(self._mean_silhouette(coords, y)),
+        }
+
+    def _knn_purity(self, features: np.ndarray, labels: np.ndarray, k: int) -> float:
+        n_samples = int(features.shape[0])
+        if n_samples <= 1:
+            return 1.0
+        n_neighbors = min(int(k), n_samples - 1)
+        distances = pairwise_distances(features.astype(np.float64), metric="euclidean")
+        np.fill_diagonal(distances, np.inf)
+        nearest = np.argpartition(distances, n_neighbors - 1, axis=1)[:, :n_neighbors]
+        same = labels[nearest] == labels.reshape(-1, 1)
+        return float(np.mean(same.mean(axis=1)))
+
+    def _center_radius_sep(self, features: np.ndarray, labels: np.ndarray) -> float:
+        unique = np.unique(labels)
+        centers: List[np.ndarray] = []
+        radii: List[float] = []
+        for label in unique:
+            group = features[labels == int(label)].astype(np.float64)
+            center = group.mean(axis=0)
+            centers.append(center)
+            radii.append(float(np.mean(np.linalg.norm(group - center.reshape(1, -1), axis=1))))
+        min_sep = float("inf")
+        for i in range(len(centers)):
+            for j in range(i + 1, len(centers)):
+                distance = float(np.linalg.norm(centers[i] - centers[j]))
+                denom = float(radii[i] + radii[j])
+                if denom <= 1e-12:
+                    sep = 0.0 if distance <= 1e-12 else float("inf")
+                else:
+                    sep = distance / denom
+                min_sep = min(min_sep, float(sep))
+        return float(min_sep)
+
+    def _mean_silhouette(self, features: np.ndarray, labels: np.ndarray) -> float:
+        try:
+            return float(np.mean(silhouette_samples(features.astype(np.float64), labels)))
+        except Exception:
+            return 0.0
 
     def _affect_metrics(self, labels: np.ndarray, affect_labels: np.ndarray) -> Dict[str, float]:
         clusters = np.asarray(labels, dtype=np.int64)

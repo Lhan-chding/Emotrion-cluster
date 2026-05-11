@@ -2,7 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from cluster.pipeline.k_selection import _select_best_index, compute_affect_purity_metrics, KSelectionConfig
+from cluster.pipeline.k_selection import (
+    _select_best_index,
+    compute_affect_purity_metrics,
+    compute_overlap_gate_metrics,
+    KSelectionConfig,
+)
 from cluster.pipeline.macro_micro import MicroSplitValidator
 from cluster.pipeline.train import run_k_selection
 
@@ -260,6 +265,115 @@ def test_micro_split_validator_uses_all_micro_labels_for_effect_size():
     assert effect > 50.0
 
 
+def test_visible_separator_rejects_hidden_tension_only_split():
+    validator = MicroSplitValidator(
+        consensus_role="visible_separator",
+        min_silhouette=0.0,
+        min_tension_effect=0.10,
+        min_consensus_knn_purity=0.85,
+        min_consensus_center_sep=0.60,
+        min_consensus_silhouette=0.10,
+    )
+    labels = np.asarray([0] * 20 + [1] * 20, dtype=np.int64)
+    consensus = np.zeros((40, 2), dtype=np.float32)
+    tension = np.vstack(
+        [
+            np.tile([-2.0, 0.0], (20, 1)),
+            np.tile([2.0, 0.0], (20, 1)),
+        ]
+    ).astype(np.float32)
+
+    result = validator.evaluate(
+        features=tension,
+        labels=labels,
+        consensus=consensus,
+        tension=tension,
+        silhouette=0.8,
+    )
+
+    assert result["accepted"] is False
+    assert "consensus_center_sep" in str(result["rejection_reason"])
+    assert result["consensus_center_radius_sep"] == 0.0
+
+
+def test_visible_separator_accepts_tension_split_visible_in_consensus_plane():
+    validator = MicroSplitValidator(
+        consensus_role="visible_separator",
+        min_silhouette=0.0,
+        min_tension_effect=0.10,
+        min_consensus_knn_purity=0.85,
+        min_consensus_center_sep=0.60,
+        min_consensus_silhouette=0.10,
+    )
+    rng = np.random.default_rng(21)
+    labels = np.asarray([0] * 20 + [1] * 20, dtype=np.int64)
+    consensus = np.vstack(
+        [
+            rng.normal([-2.0, 0.0], 0.03, size=(20, 2)),
+            rng.normal([2.0, 0.0], 0.03, size=(20, 2)),
+        ]
+    ).astype(np.float32)
+    tension = np.vstack(
+        [
+            rng.normal([-1.0, 0.0], 0.03, size=(20, 2)),
+            rng.normal([1.0, 0.0], 0.03, size=(20, 2)),
+        ]
+    ).astype(np.float32)
+
+    result = validator.evaluate(
+        features=tension,
+        labels=labels,
+        consensus=consensus,
+        tension=tension,
+        silhouette=0.8,
+    )
+
+    assert result["accepted"] is True
+    assert result["consensus_knn_purity"] >= 0.95
+    assert result["consensus_center_radius_sep"] >= 1.0
+
+
+def test_anti_leakage_preserves_legacy_consensus_effect_rejection():
+    validator = MicroSplitValidator(
+        consensus_role="anti_leakage",
+        min_silhouette=0.0,
+        min_tension_effect=0.0,
+        max_consensus_effect_ratio=0.50,
+    )
+    labels = np.asarray([0] * 10 + [1] * 10, dtype=np.int64)
+    consensus = np.vstack([np.zeros((10, 1)), np.ones((10, 1)) * 10.0]).astype(np.float32)
+    tension = np.vstack([np.zeros((10, 1)), np.ones((10, 1)) * 0.1]).astype(np.float32)
+
+    result = validator.evaluate(
+        features=tension,
+        labels=labels,
+        consensus=consensus,
+        tension=tension,
+        silhouette=0.5,
+    )
+
+    assert result["accepted"] is False
+    assert "consensus_effect" in str(result["rejection_reason"])
+
+
+def test_overlap_gate_metrics_detect_va_mixing():
+    consensus = np.vstack(
+        [
+            np.tile([-2.0, 0.0], (10, 1)),
+            np.tile([-2.0, 0.0], (10, 1)),
+            np.tile([2.0, 0.0], (10, 1)),
+            np.tile([2.0, 0.0], (10, 1)),
+        ]
+    ).astype(np.float32)
+    hidden_micro_labels = np.asarray([0] * 10 + [1] * 10 + [2] * 10 + [3] * 10, dtype=np.int64)
+
+    metrics = compute_overlap_gate_metrics(consensus, hidden_micro_labels)
+
+    assert metrics["va_knn_purity_20"] < 0.90
+    assert metrics["va_center_radius_sep"] < 0.60
+    assert metrics["overlap_gate_ok"] is False
+
+
 def test_macro_micro_k_strategy_supports_two_block_va_diff_features():
     features, block_mask, block_slices = _two_block_va_diff_fixture()
 
@@ -297,6 +411,38 @@ def test_macro_micro_k_strategy_supports_two_block_va_diff_features():
     for cluster_id in np.unique(labels):
         macro_ids = np.unique(model.macro_labels_[labels == cluster_id])
         assert macro_ids.size == 1
+
+
+def test_macro_micro_overlap_gate_rejects_hidden_tension_subclusters():
+    features, block_mask, block_slices = _two_block_va_diff_fixture()
+
+    with pytest.raises(ValueError, match="overlap"):
+        run_k_selection(
+            features=features,
+            k_strategy="macro_micro",
+            k_min=4,
+            k_max=4,
+            random_state=11,
+            min_cluster_size_abs=5,
+            min_cluster_size_ratio=0.0,
+            covariance_type="diag",
+            stability_runs=1,
+            cluster_backend="sklearn",
+            eval_backend="sklearn",
+            silhouette_mode="sampled",
+            silhouette_sample_size=0,
+            assignment_mode="partial_likelihood",
+            block_mask=block_mask,
+            block_slices=block_slices,
+            macro_k_min=2,
+            macro_k_max=2,
+            micro_k_min=1,
+            micro_k_max=2,
+            overlap_gate_enabled=True,
+            min_va_knn_purity=0.90,
+            min_va_center_sep=0.60,
+            max_va_negative_silhouette_fraction=0.10,
+        )
 
 
 def test_macro_micro_honors_total_k_constraints():

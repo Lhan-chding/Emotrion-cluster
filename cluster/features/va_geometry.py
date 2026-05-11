@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from cluster.features.affect_calibration import AffectCalibrator, DiffResidualizer
+from cluster.features.affect_calibration import AffectCalibrator, BalanceAlphaLearner, DiffResidualizer
 
 VA_GEOMETRY_OBSERVED_NAMES = [
     "mean_valence",
@@ -341,9 +341,16 @@ def build_calibrated_va_tension_features(
     view_mask: np.ndarray,
     *,
     calibrator: Optional[AffectCalibrator] = None,
+    balance_learner: Optional[BalanceAlphaLearner] = None,
     residualizer: Optional[DiffResidualizer] = None,
     fit: bool = False,
     consensus_mode: str = "calibrated_mean",
+    consensus_alpha: float = 0.5,
+    alpha_search_min: float = 0.20,
+    alpha_search_max: float = 0.90,
+    alpha_search_step: float = 0.05,
+    alpha_search_k_min: int = 4,
+    alpha_search_k_max: int = 8,
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
@@ -370,12 +377,42 @@ def build_calibrated_va_tension_features(
         calibrator.fit(audio, lyrics, mask)
     audio_cal, lyrics_cal = calibrator.transform(audio, lyrics, mask)
 
-    if consensus_mode == "calibrated_mean":
+    requested_consensus_mode = str(consensus_mode or "calibrated_mean").strip().lower()
+    normalized_consensus_mode = (
+        "bias_neutral_mean"
+        if requested_consensus_mode == "calibrated_mean"
+        else requested_consensus_mode
+    )
+
+    if normalized_consensus_mode == "bias_neutral_mean":
         consensus = 0.5 * audio_cal + 0.5 * lyrics_cal
-    elif consensus_mode == "mean":
+        alpha = 0.5
+    elif normalized_consensus_mode == "mean":
         consensus = 0.5 * audio + 0.5 * lyrics
+        alpha = 0.5
+    elif normalized_consensus_mode == "global_alpha":
+        if balance_learner is None:
+            balance_learner = BalanceAlphaLearner(mode="global_alpha", alpha_=float(consensus_alpha))
+        if fit:
+            balance_learner.fit(audio_cal, lyrics_cal, mask)
+        consensus = balance_learner.transform(audio_cal, lyrics_cal, mask)
+        alpha = float(balance_learner.alpha_)
+    elif normalized_consensus_mode == "clusterability_alpha":
+        if balance_learner is None:
+            balance_learner = BalanceAlphaLearner(
+                mode="clusterability_alpha",
+                alpha_min=float(alpha_search_min),
+                alpha_max=float(alpha_search_max),
+                alpha_step=float(alpha_search_step),
+                search_k_min=int(alpha_search_k_min),
+                search_k_max=int(alpha_search_k_max),
+            )
+        if fit:
+            balance_learner.fit(audio_cal, lyrics_cal, mask)
+        consensus = balance_learner.transform(audio_cal, lyrics_cal, mask)
+        alpha = float(balance_learner.alpha_)
     else:
-        consensus = 0.5 * audio_cal + 0.5 * lyrics_cal
+        raise ValueError(f"Unsupported consensus_mode: {consensus_mode!r}")
 
     audio_only = has_audio & ~has_lyrics
     lyrics_only = has_lyrics & ~has_audio
@@ -416,7 +453,10 @@ def build_calibrated_va_tension_features(
 
     state = {
         "calibrator": calibrator,
+        "balance_learner": balance_learner,
         "residualizer": residualizer,
+        "balance_alpha": float(alpha),
+        "consensus_mode": normalized_consensus_mode,
         "sigma_v": sigma_v,
         "sigma_a": sigma_a,
     }

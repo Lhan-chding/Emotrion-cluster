@@ -684,6 +684,71 @@ def test_run_pipeline_parser_accepts_v6_plan_gate_flags():
     assert args.affect_boundary_margin == 0.03
 
 
+def test_parsers_accept_v17_adaptive_balance_flags():
+    train_args = build_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--consensus_mode",
+            "clusterability_alpha",
+            "--consensus_alpha",
+            "0.75",
+            "--alpha_search_min",
+            "0.20",
+            "--alpha_search_max",
+            "0.90",
+            "--alpha_search_step",
+            "0.05",
+            "--alpha_search_k_min",
+            "4",
+            "--alpha_search_k_max",
+            "8",
+            "--micro_consensus_role",
+            "visible_separator",
+            "--micro_min_consensus_knn_purity",
+            "0.85",
+            "--micro_min_consensus_center_sep",
+            "0.60",
+            "--micro_min_consensus_silhouette",
+            "0.05",
+            "--overlap_gate",
+            "true",
+            "--min_va_knn_purity",
+            "0.90",
+            "--min_va_center_sep",
+            "0.70",
+            "--max_va_negative_silhouette_fraction",
+            "0.10",
+            "--plot_va_source",
+            "cluster_consensus",
+        ]
+    )
+    rerun_args = build_rerun_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--consensus_mode",
+            "bias_neutral_mean",
+            "--overlap_gate",
+            "true",
+            "--plot_va_source",
+            "cluster_consensus",
+        ]
+    )
+
+    assert train_args.consensus_mode == "clusterability_alpha"
+    assert train_args.consensus_alpha == 0.75
+    assert train_args.micro_consensus_role == "visible_separator"
+    assert train_args.overlap_gate == "true"
+    assert train_args.plot_va_source == "cluster_consensus"
+    assert rerun_args.consensus_mode == "bias_neutral_mean"
+    assert rerun_args.overlap_gate == "true"
+
+
 def test_rerun_parser_accepts_complete_pair_filter_flag():
     args = build_rerun_parser().parse_args(
         [
@@ -930,6 +995,77 @@ def test_write_split_outputs_writes_macro_micro_artifacts(tmp_path):
     assert (tmp_path / "macro_micro" / "macro_1_diff_arrow.png").exists()
     assert (tmp_path / "macro_micro" / "macro_1_metadata_enrichment.csv").exists()
     assert payload["output_files"]["macro_micro_summary"].endswith("macro_micro_summary.csv")
+
+
+def test_write_split_outputs_uses_cluster_consensus_as_balanced_va(tmp_path):
+    class Dataset:
+        raw_audio = np.asarray(
+            [
+                [0.9, 0.1],
+                [0.8, 0.2],
+                [0.7, 0.3],
+                [0.2, 0.8],
+                [0.3, 0.7],
+                [0.4, 0.6],
+            ],
+            dtype=np.float32,
+        )
+        raw_lyrics = 1.0 - raw_audio
+        view_mask = np.ones((6, 3), dtype=np.float32)
+        labels = np.zeros(6, dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(6)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(6)])
+        consistency = np.ones(6, dtype=np.float32)
+        canonical_metadata = pd.DataFrame()
+        raw_metadata = np.zeros((6, 1), dtype=np.float32)
+        raw_metadata_report = raw_metadata
+
+    assignments = np.asarray([0, 0, 0, 1, 1, 1], dtype=np.int64)
+    balanced_va = np.asarray(
+        [
+            [0.75, 0.25],
+            [0.70, 0.30],
+            [0.65, 0.35],
+            [0.35, 0.65],
+            [0.30, 0.70],
+            [0.25, 0.75],
+        ],
+        dtype=np.float32,
+    )
+    embeddings = {
+        "gate_weights": np.full((6, 3), 1.0 / 3.0, dtype=np.float32),
+        "z_fused": np.random.default_rng(10).standard_normal((6, 4)).astype(np.float32),
+    }
+
+    payload = _write_split_outputs(
+        out_dir=str(tmp_path),
+        split="all",
+        dataset=Dataset(),
+        embeddings=embeddings,
+        assignments=assignments,
+        metadata_feature_names=["MoodsAll::test"],
+        selected_k=2,
+        feature_dim=5,
+        cluster_features=np.random.default_rng(12).standard_normal((6, 5)).astype(np.float32),
+        plot_va_source="cluster_consensus",
+        plot_va_override=balanced_va,
+        feature_state={"balance_alpha": 0.75},
+    )
+
+    assignments_frame = pd.read_csv(tmp_path / "cluster_assignments.csv")
+    catalog = pd.read_csv(tmp_path / "cluster_catalog.csv")
+
+    assert {"raw_mean_valence", "balanced_valence", "balance_alpha"}.issubset(assignments_frame.columns)
+    np.testing.assert_allclose(assignments_frame["balanced_valence"].to_numpy(), balanced_va[:, 0])
+    np.testing.assert_allclose(assignments_frame["mean_valence"].to_numpy(), balanced_va[:, 0])
+    assert not np.allclose(assignments_frame["raw_mean_valence"].to_numpy(), balanced_va[:, 0])
+    assert set(catalog.columns).issuperset({"balanced_valence", "balanced_arousal", "raw_mean_valence", "raw_mean_arousal"})
+    assert (tmp_path / "cluster_scatter_balanced_va.png").exists()
+    assert (tmp_path / "cluster_scatter_raw_mean_va.png").exists()
+    assert (tmp_path / "cluster_scatter_audio_va.png").exists()
+    assert (tmp_path / "cluster_scatter_lyrics_va.png").exists()
+    assert payload["plot_va_source"] == "cluster_consensus"
+    assert payload["output_files"]["cluster_scatter"].endswith("cluster_scatter_balanced_va.png")
 
 
 def test_full_strategy_no_missingness_leakage():

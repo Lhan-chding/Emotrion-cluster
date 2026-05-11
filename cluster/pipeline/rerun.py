@@ -34,6 +34,7 @@ from cluster.pipeline.train import (
     apply_metadata_policy_to_block_mask,
     build_cluster_features,
     cluster_feature_block_mask,
+    cluster_feature_primary_va,
     cluster_feature_block_slices,
     cluster_feature_weights,
     compute_mask_purity,
@@ -165,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction")
     parser.add_argument("--plot_va_source", type=str, default="mean",
-                        choices=["mean", "original"],
+                        choices=["mean", "original", "cluster_consensus"],
                         help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument(
         "--metadata_policy",
@@ -209,7 +210,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # V16 calibrated tension parameters
     parser.add_argument("--consensus_mode", type=str, default="calibrated_mean",
-                        choices=["mean", "calibrated_mean"])
+                        choices=["mean", "calibrated_mean", "bias_neutral_mean", "global_alpha", "clusterability_alpha"])
+    parser.add_argument("--consensus_alpha", type=float, default=0.5)
+    parser.add_argument("--alpha_search_min", type=float, default=0.20)
+    parser.add_argument("--alpha_search_max", type=float, default=0.90)
+    parser.add_argument("--alpha_search_step", type=float, default=0.05)
+    parser.add_argument("--alpha_search_k_min", type=int, default=4)
+    parser.add_argument("--alpha_search_k_max", type=int, default=8)
     parser.add_argument("--calibration_mode", type=str, default="global_median_shift",
                         choices=["identity", "global_median_shift"])
     parser.add_argument("--diff_residual_mode", type=str, default="knn",
@@ -226,6 +233,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--micro_min_jaccard", type=float, default=0.0)
     parser.add_argument("--micro_min_tension_effect", type=float, default=0.0)
     parser.add_argument("--micro_max_consensus_effect_ratio", type=float, default=1.0)
+    parser.add_argument("--micro_consensus_role", type=str, default="visible_separator",
+                        choices=["anti_leakage", "visible_separator"])
+    parser.add_argument("--micro_min_consensus_knn_purity", type=float, default=0.85)
+    parser.add_argument("--micro_min_consensus_center_sep", type=float, default=0.60)
+    parser.add_argument("--micro_min_consensus_silhouette", type=float, default=0.10)
+    parser.add_argument("--overlap_gate", type=str, default="false")
+    parser.add_argument("--min_va_knn_purity", type=float, default=0.90)
+    parser.add_argument("--min_va_center_sep", type=float, default=0.70)
+    parser.add_argument("--max_va_negative_silhouette_fraction", type=float, default=0.10)
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"])
     return parser
@@ -363,6 +379,12 @@ def main() -> None:
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
         consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+        consensus_alpha=float(getattr(args, "consensus_alpha", 0.5)),
+        alpha_search_min=float(getattr(args, "alpha_search_min", 0.20)),
+        alpha_search_max=float(getattr(args, "alpha_search_max", 0.90)),
+        alpha_search_step=float(getattr(args, "alpha_search_step", 0.05)),
+        alpha_search_k_min=int(getattr(args, "alpha_search_k_min", 4)),
+        alpha_search_k_max=int(getattr(args, "alpha_search_k_max", 8)),
         calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
         diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
         diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
@@ -397,6 +419,12 @@ def main() -> None:
     )
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
+    search_primary_va = cluster_feature_primary_va(feature_strategy, search_features_raw)
+    search_affect_va = (
+        search_primary_va
+        if str(args.plot_va_source).strip().lower() == "cluster_consensus" and search_primary_va is not None
+        else _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))
+    )
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -422,7 +450,7 @@ def main() -> None:
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
         affect_labels=_va_quadrant_labels(
-            _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source)),
+            search_affect_va,
             boundary_margin=float(args.affect_boundary_margin),
         ),
         affect_gate_enabled=parse_bool_text(args.affect_gate),
@@ -439,6 +467,15 @@ def main() -> None:
         micro_min_jaccard=float(getattr(args, "micro_min_jaccard", 0.0)),
         micro_min_tension_effect=float(getattr(args, "micro_min_tension_effect", 0.0)),
         micro_max_consensus_effect_ratio=float(getattr(args, "micro_max_consensus_effect_ratio", 1.0)),
+        micro_consensus_role=str(getattr(args, "micro_consensus_role", "anti_leakage")),
+        micro_min_consensus_knn_purity=float(getattr(args, "micro_min_consensus_knn_purity", 0.85)),
+        micro_min_consensus_center_sep=float(getattr(args, "micro_min_consensus_center_sep", 0.60)),
+        micro_min_consensus_silhouette=float(getattr(args, "micro_min_consensus_silhouette", 0.10)),
+        overlap_gate_enabled=parse_bool_text(getattr(args, "overlap_gate", "false")),
+        min_va_knn_purity=float(getattr(args, "min_va_knn_purity", 0.90)),
+        min_va_center_sep=float(getattr(args, "min_va_center_sep", 0.70)),
+        max_va_negative_silhouette_fraction=float(getattr(args, "max_va_negative_silhouette_fraction", 0.10)),
+        primary_va=search_primary_va,
     )
     selection_info["metadata_policy"] = dict(metadata_policy_info)
 
@@ -541,6 +578,25 @@ def main() -> None:
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
                     "checkpoint_path": checkpoint_path,
+                    "consensus_mode": str(args.consensus_mode),
+                    "consensus_alpha": float(args.consensus_alpha),
+                    "alpha_search_min": float(args.alpha_search_min),
+                    "alpha_search_max": float(args.alpha_search_max),
+                    "alpha_search_step": float(args.alpha_search_step),
+                    "alpha_search_k_min": int(args.alpha_search_k_min),
+                    "alpha_search_k_max": int(args.alpha_search_k_max),
+                    "calibration_mode": str(args.calibration_mode),
+                    "diff_residual_mode": str(args.diff_residual_mode),
+                    "diff_residual_neighbors": int(args.diff_residual_neighbors),
+                    "tension_encoding": str(args.tension_encoding),
+                    "micro_consensus_role": str(args.micro_consensus_role),
+                    "micro_min_consensus_knn_purity": float(args.micro_min_consensus_knn_purity),
+                    "micro_min_consensus_center_sep": float(args.micro_min_consensus_center_sep),
+                    "micro_min_consensus_silhouette": float(args.micro_min_consensus_silhouette),
+                    "overlap_gate": parse_bool_text(args.overlap_gate),
+                    "min_va_knn_purity": float(args.min_va_knn_purity),
+                    "min_va_center_sep": float(args.min_va_center_sep),
+                    "max_va_negative_silhouette_fraction": float(args.max_va_negative_silhouette_fraction),
                     "selection_info": selection_info,
                 },
             },
@@ -550,7 +606,7 @@ def main() -> None:
     split_outputs: Dict[str, Dict[str, Any]] = {}
     search_assignments: Optional[np.ndarray] = None
     for split in eval_splits:
-        features_raw, _, _ = build_cluster_features(
+        features_raw, _, split_feature_state = build_cluster_features(
             embeddings=embeddings_by_split[split],
             metadata_cluster_weight=effective_metadata_cluster_weight,
             conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -561,6 +617,12 @@ def main() -> None:
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
             consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+            consensus_alpha=float(getattr(args, "consensus_alpha", 0.5)),
+            alpha_search_min=float(getattr(args, "alpha_search_min", 0.20)),
+            alpha_search_max=float(getattr(args, "alpha_search_max", 0.90)),
+            alpha_search_step=float(getattr(args, "alpha_search_step", 0.05)),
+            alpha_search_k_min=int(getattr(args, "alpha_search_k_min", 4)),
+            alpha_search_k_max=int(getattr(args, "alpha_search_k_max", 8)),
             calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
             diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
             diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
@@ -579,6 +641,11 @@ def main() -> None:
         features = apply_cluster_feature_weights(
             transform_cluster_features(cluster_scaler, features_raw, block_mask=split_block_mask),
             feature_weights,
+        )
+        plot_va_override = (
+            cluster_feature_primary_va(feature_strategy, features_raw)
+            if str(args.plot_va_source).strip().lower() == "cluster_consensus"
+            else None
         )
 
         if is_hierarchical:
@@ -623,6 +690,8 @@ def main() -> None:
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,
+            plot_va_override=plot_va_override,
+            feature_state=split_feature_state if isinstance(split_feature_state, dict) else None,
         )
         split_outputs[split] = payload
         if split == search_split:

@@ -38,6 +38,7 @@ from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
     HierarchicalClusterResult,
+    compute_overlap_gate_metrics,
     search_gmm_composite,
     search_gmm_semantic_composite,
     search_macro_micro_diffaware,
@@ -204,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction (pca_reduced strategy)")
     parser.add_argument("--plot_va_source", type=str, default="mean",
-                        choices=["mean", "original"],
+                        choices=["mean", "original", "cluster_consensus"],
                         help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument(
         "--metadata_policy",
@@ -260,8 +261,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--micro_min_cluster_size_ratio", type=float, default=0.0)
     # V16 calibrated tension parameters
     parser.add_argument("--consensus_mode", type=str, default="calibrated_mean",
-                        choices=["mean", "calibrated_mean"],
+                        choices=["mean", "calibrated_mean", "bias_neutral_mean", "global_alpha", "clusterability_alpha"],
                         help="How to compute consensus VA from audio/lyrics")
+    parser.add_argument("--consensus_alpha", type=float, default=0.5,
+                        help="Global audio balance alpha for consensus_mode='global_alpha'")
+    parser.add_argument("--alpha_search_min", type=float, default=0.20)
+    parser.add_argument("--alpha_search_max", type=float, default=0.90)
+    parser.add_argument("--alpha_search_step", type=float, default=0.05)
+    parser.add_argument("--alpha_search_k_min", type=int, default=4)
+    parser.add_argument("--alpha_search_k_max", type=int, default=8)
     parser.add_argument("--calibration_mode", type=str, default="global_median_shift",
                         choices=["identity", "global_median_shift"],
                         help="Modality calibration mode")
@@ -286,6 +294,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Minimum tension effect size for micro split (V16: 0.35)")
     parser.add_argument("--micro_max_consensus_effect_ratio", type=float, default=1.0,
                         help="Max ratio of consensus effect to tension effect (V16: 0.50)")
+    parser.add_argument("--micro_consensus_role", type=str, default="visible_separator",
+                        choices=["anti_leakage", "visible_separator"],
+                        help="How consensus geometry is used to validate micro splits.")
+    parser.add_argument("--micro_min_consensus_knn_purity", type=float, default=0.85)
+    parser.add_argument("--micro_min_consensus_center_sep", type=float, default=0.60)
+    parser.add_argument("--micro_min_consensus_silhouette", type=float, default=0.10)
+    parser.add_argument("--overlap_gate", type=str, default="false",
+                        help="When true, reject K candidates that overlap in the primary VA plane.")
+    parser.add_argument("--min_va_knn_purity", type=float, default=0.90)
+    parser.add_argument("--min_va_center_sep", type=float, default=0.70)
+    parser.add_argument("--max_va_negative_silhouette_fraction", type=float, default=0.10)
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"],
                         help="Which affect gate(s) to enforce as hard gates")
@@ -448,6 +467,12 @@ def _calibrated_va_tension_features(
     *,
     fitted_state: Optional[Any] = None,
     consensus_mode: str = "calibrated_mean",
+    consensus_alpha: float = 0.5,
+    alpha_search_min: float = 0.20,
+    alpha_search_max: float = 0.90,
+    alpha_search_step: float = 0.05,
+    alpha_search_k_min: int = 4,
+    alpha_search_k_max: int = 8,
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
@@ -458,6 +483,7 @@ def _calibrated_va_tension_features(
     if audio is None or lyrics is None:
         raise ValueError("cluster_feature_strategy='calibrated_va_tension' requires audio_va and lyrics_va embeddings.")
     calibrator = fitted_state.get("calibrator") if isinstance(fitted_state, dict) else None
+    balance_learner = fitted_state.get("balance_learner") if isinstance(fitted_state, dict) else None
     residualizer = fitted_state.get("residualizer") if isinstance(fitted_state, dict) else None
     fitted_sigma = None
     if isinstance(fitted_state, dict) and "sigma_v" in fitted_state and "sigma_a" in fitted_state:
@@ -468,9 +494,16 @@ def _calibrated_va_tension_features(
         np.asarray(lyrics, dtype=np.float32),
         np.asarray(view_mask, dtype=np.float32),
         calibrator=calibrator,
+        balance_learner=balance_learner,
         residualizer=residualizer,
         fit=fit,
         consensus_mode=consensus_mode,
+        consensus_alpha=consensus_alpha,
+        alpha_search_min=alpha_search_min,
+        alpha_search_max=alpha_search_max,
+        alpha_search_step=alpha_search_step,
+        alpha_search_k_min=alpha_search_k_min,
+        alpha_search_k_max=alpha_search_k_max,
         calibration_mode=calibration_mode,
         diff_residual_mode=diff_residual_mode,
         diff_residual_neighbors=diff_residual_neighbors,
@@ -589,6 +622,12 @@ def build_cluster_features(
     fit_mask: Optional[np.ndarray] = None,
     diff_cluster_weight: float = 0.35,
     consensus_mode: str = "calibrated_mean",
+    consensus_alpha: float = 0.5,
+    alpha_search_min: float = 0.20,
+    alpha_search_max: float = 0.90,
+    alpha_search_step: float = 0.05,
+    alpha_search_k_min: int = 4,
+    alpha_search_k_max: int = 8,
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
@@ -667,6 +706,12 @@ def build_cluster_features(
             view_mask,
             fitted_state=fitted_imputation,
             consensus_mode=consensus_mode,
+            consensus_alpha=consensus_alpha,
+            alpha_search_min=alpha_search_min,
+            alpha_search_max=alpha_search_max,
+            alpha_search_step=alpha_search_step,
+            alpha_search_k_min=alpha_search_k_min,
+            alpha_search_k_max=alpha_search_k_max,
             calibration_mode=calibration_mode,
             diff_residual_mode=diff_residual_mode,
             diff_residual_neighbors=diff_residual_neighbors,
@@ -778,6 +823,16 @@ def cluster_feature_block_slices(strategy: str, feature_dim: int) -> List[Tuple[
         latent_dim = int(feature_dim) // 3
         return [(0, latent_dim), (latent_dim, 2 * latent_dim), (2 * latent_dim, 3 * latent_dim)]
     return [(0, int(feature_dim))]
+
+
+def cluster_feature_primary_va(strategy: str, raw_features: np.ndarray) -> Optional[np.ndarray]:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    matrix = np.asarray(raw_features, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[1] < 2:
+        return None
+    if base_strategy in {"calibrated_va_tension", "balanced_va_diff", "mean_va", "audio_va", "lyrics_va", "va_geometry", "mean_va_diff"}:
+        return matrix[:, :2].astype(np.float32)
+    return None
 
 
 def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n_samples: int) -> np.ndarray:
@@ -1002,6 +1057,15 @@ def run_k_selection(
     micro_min_jaccard: float = 0.0,
     micro_min_tension_effect: float = 0.0,
     micro_max_consensus_effect_ratio: float = 1.0,
+    micro_consensus_role: str = "anti_leakage",
+    micro_min_consensus_knn_purity: float = 0.85,
+    micro_min_consensus_center_sep: float = 0.60,
+    micro_min_consensus_silhouette: float = 0.10,
+    overlap_gate_enabled: bool = False,
+    min_va_knn_purity: float = 0.90,
+    min_va_center_sep: float = 0.70,
+    max_va_negative_silhouette_fraction: float = 0.10,
+    primary_va: Optional[np.ndarray] = None,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -1041,6 +1105,14 @@ def run_k_selection(
         micro_min_jaccard=float(micro_min_jaccard),
         micro_min_tension_effect=float(micro_min_tension_effect),
         micro_max_consensus_effect_ratio=float(micro_max_consensus_effect_ratio),
+        micro_consensus_role=str(micro_consensus_role),
+        micro_min_consensus_knn_purity=float(micro_min_consensus_knn_purity),
+        micro_min_consensus_center_sep=float(micro_min_consensus_center_sep),
+        micro_min_consensus_silhouette=float(micro_min_consensus_silhouette),
+        overlap_gate_enabled=bool(overlap_gate_enabled),
+        min_va_knn_purity=float(min_va_knn_purity),
+        min_va_center_sep=float(min_va_center_sep),
+        max_va_negative_silhouette_fraction=float(max_va_negative_silhouette_fraction),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
     if k_strategy in {"macro_micro", "constrained_macro_micro"}:
@@ -1055,6 +1127,7 @@ def run_k_selection(
             block_slices=block_slices,
             view_mask=view_mask,
             affect_labels=affect_labels,
+            primary_va=primary_va,
         )
         return result.best_model, result.metrics, result.selection_info
 
@@ -1586,9 +1659,23 @@ def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
         if original_va.ndim != 2 or original_va.shape[1] != 2:
             raise ValueError(f"original_va must have shape [N, 2], got {original_va.shape}.")
         return original_va
+    if source_name == "cluster_consensus":
+        raise ValueError("plot_va_source='cluster_consensus' requires plot_va_override.")
     if source_name != "mean":
-        raise ValueError("plot_va_source must be 'mean' or 'original'.")
+        raise ValueError("plot_va_source must be 'mean', 'original', or 'cluster_consensus'.")
     return _dataset_mean_va(dataset)
+
+
+def _resolve_plot_va(dataset, source: str = "mean", plot_va_override: Optional[np.ndarray] = None) -> np.ndarray:
+    source_name = str(source or "mean").strip().lower()
+    if source_name == "cluster_consensus":
+        if plot_va_override is None:
+            raise ValueError("plot_va_source='cluster_consensus' requires plot_va_override.")
+        coords = np.asarray(plot_va_override, dtype=np.float32)
+        if coords.ndim != 2 or coords.shape[1] < 2:
+            raise ValueError(f"plot_va_override must have shape [N, >=2], got {coords.shape}.")
+        return coords[:, :2].astype(np.float32)
+    return _dataset_plot_va(dataset, source_name)
 
 
 def _va_quadrant_labels(va: np.ndarray, boundary_margin: float = 0.0) -> np.ndarray:
@@ -1644,6 +1731,8 @@ def _cluster_summary(
     dataset,
     metadata_feature_names: Sequence[str],
     plot_va_source: str = "mean",
+    plot_va_override: Optional[np.ndarray] = None,
+    feature_state: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     raw_audio = dataset.raw_audio
     raw_lyrics = dataset.raw_lyrics
@@ -1651,7 +1740,9 @@ def _cluster_summary(
     if raw_metadata.shape[1] != len(metadata_feature_names):
         raw_metadata = dataset.raw_metadata
     view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32)).astype(np.float32)
-    mean_va = _dataset_plot_va(dataset, plot_va_source)
+    mean_va = _resolve_plot_va(dataset, plot_va_source, plot_va_override)
+    raw_mean_va = _dataset_mean_va(dataset)
+    balance_alpha = float(feature_state["balance_alpha"]) if isinstance(feature_state, dict) and "balance_alpha" in feature_state else float("nan")
     va_quadrants = _va_quadrant_labels(mean_va)
     numeric_indices = [idx for idx, name in enumerate(metadata_feature_names) if str(name).startswith("numeric::")]
     token_indices = [idx for idx, name in enumerate(metadata_feature_names) if not str(name).startswith("numeric::")]
@@ -1776,6 +1867,11 @@ def _cluster_summary(
                 "mean_lyrics_arousal": float(raw_lyrics[mask & (view_mask[:, 1] > 0), 1].mean()) if np.any(mask & (view_mask[:, 1] > 0)) else float("nan"),
                 "mean_valence": float(mean_va[mask, 0].mean()),
                 "mean_arousal": float(mean_va[mask, 1].mean()),
+                "balanced_valence": float(mean_va[mask, 0].mean()),
+                "balanced_arousal": float(mean_va[mask, 1].mean()),
+                "raw_mean_valence": float(raw_mean_va[mask, 0].mean()),
+                "raw_mean_arousal": float(raw_mean_va[mask, 1].mean()),
+                "balance_alpha": balance_alpha,
                 "mean_diff_magnitude": diff_magnitude,
                 "delta_direction_angle": delta_direction,
                 "has_audio_ratio": round(float((view_mask[mask, 0] > 0).mean()), 4),
@@ -1864,8 +1960,12 @@ def _build_assignment_frame(
     embeddings: Dict[str, Any],
     plot_va_source: str = "mean",
     cluster_label_names: Optional[Dict[Any, Any]] = None,
+    plot_va_override: Optional[np.ndarray] = None,
+    feature_state: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
-    mean_va = _dataset_plot_va(dataset, plot_va_source)
+    mean_va = _resolve_plot_va(dataset, plot_va_source, plot_va_override)
+    raw_mean_va = _dataset_mean_va(dataset)
+    balance_alpha = float(feature_state["balance_alpha"]) if isinstance(feature_state, dict) and "balance_alpha" in feature_state else float("nan")
     label_map = _normalize_cluster_label_names(cluster_label_names)
     frame = pd.DataFrame(
         {
@@ -1880,6 +1980,11 @@ def _build_assignment_frame(
             "lyrics_arousal": dataset.raw_lyrics[:, 1],
             "mean_valence": mean_va[:, 0],
             "mean_arousal": mean_va[:, 1],
+            "balanced_valence": mean_va[:, 0],
+            "balanced_arousal": mean_va[:, 1],
+            "raw_mean_valence": raw_mean_va[:, 0],
+            "raw_mean_arousal": raw_mean_va[:, 1],
+            "balance_alpha": np.full(len(assignments), balance_alpha, dtype=np.float32),
             "has_audio": getattr(dataset, "view_mask", np.ones((len(assignments), 3)))[:, 0].astype(bool),
             "has_lyrics": getattr(dataset, "view_mask", np.ones((len(assignments), 3)))[:, 1].astype(bool),
             "has_metadata": getattr(dataset, "view_mask", np.ones((len(assignments), 3)))[:, 2].astype(bool),
@@ -2055,9 +2160,12 @@ def _write_split_outputs(
     search_metrics: Optional[pd.DataFrame] = None,
     plot_va_source: str = "mean",
     cluster_label_names: Optional[Dict[Any, Any]] = None,
+    plot_va_override: Optional[np.ndarray] = None,
+    feature_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     _ensure_dir(out_dir)
-    mean_va = _dataset_plot_va(dataset, plot_va_source)
+    mean_va = _resolve_plot_va(dataset, plot_va_source, plot_va_override)
+    raw_mean_va = _dataset_mean_va(dataset)
     palette = _cluster_palette(int(selected_k))
     label_map = _normalize_cluster_label_names(cluster_label_names)
     summary = _cluster_summary(
@@ -2065,6 +2173,8 @@ def _write_split_outputs(
         dataset=dataset,
         metadata_feature_names=metadata_feature_names,
         plot_va_source=plot_va_source,
+        plot_va_override=plot_va_override,
+        feature_state=feature_state,
     )
     assignment_frame = _build_assignment_frame(
         assignments=assignments,
@@ -2072,6 +2182,8 @@ def _write_split_outputs(
         embeddings=embeddings,
         plot_va_source=plot_va_source,
         cluster_label_names=label_map,
+        plot_va_override=plot_va_override,
+        feature_state=feature_state,
     )
     catalog_frame = pd.DataFrame(
         [
@@ -2083,6 +2195,11 @@ def _write_split_outputs(
                 "dominant_quadrant_ratio": float(item["dominant_quadrant_ratio"]),
                 "mean_valence": float(item["mean_valence"]),
                 "mean_arousal": float(item["mean_arousal"]),
+                "balanced_valence": float(item["balanced_valence"]),
+                "balanced_arousal": float(item["balanced_arousal"]),
+                "raw_mean_valence": float(item["raw_mean_valence"]),
+                "raw_mean_arousal": float(item["raw_mean_arousal"]),
+                "balance_alpha": float(item["balance_alpha"]),
                 "top_metadata_tokens": ", ".join(
                     str(entry["feature"]).split("::", 1)[-1]
                     for entry in item.get("top_metadata_tokens", [])[:5]
@@ -2103,7 +2220,14 @@ def _write_split_outputs(
 
     assignment_path = os.path.join(out_dir, "cluster_assignments.csv")
     catalog_path = os.path.join(out_dir, "cluster_catalog.csv")
-    scatter_path = os.path.join(out_dir, "cluster_scatter_mean_va.png")
+    use_cluster_consensus = str(plot_va_source or "mean").strip().lower() == "cluster_consensus"
+    scatter_path = os.path.join(
+        out_dir,
+        "cluster_scatter_balanced_va.png" if use_cluster_consensus else "cluster_scatter_mean_va.png",
+    )
+    raw_mean_scatter_path = os.path.join(out_dir, "cluster_scatter_raw_mean_va.png")
+    audio_scatter_path = os.path.join(out_dir, "cluster_scatter_audio_va.png")
+    lyrics_scatter_path = os.path.join(out_dir, "cluster_scatter_lyrics_va.png")
     latent_pca_path = os.path.join(out_dir, "cluster_pca_fused.png")
     feature_pca_path = os.path.join(out_dir, "cluster_pca_features.png")
     size_bar_path = os.path.join(out_dir, "cluster_size_bar.png")
@@ -2111,12 +2235,16 @@ def _write_split_outputs(
     gate_profile_path = os.path.join(out_dir, "cluster_gate_profile.png")
     diff_scatter_path = os.path.join(out_dir, "cluster_diff_arrow.png")
     mask_dist_path = os.path.join(out_dir, "cluster_mask_distribution.png")
+    overlap_audit_path = os.path.join(out_dir, "cluster_overlap_audit.csv")
     palette_path = os.path.join(out_dir, "cluster_palette.json")
     summary_path = os.path.join(out_dir, "cluster_summary.json")
 
     assignment_frame.to_csv(assignment_path, index=False, encoding="utf-8")
     catalog_frame.to_csv(catalog_path, index=False, encoding="utf-8")
     _plot_cluster_scatter(mean_va, assignments, scatter_path, palette)
+    _plot_cluster_scatter(raw_mean_va, assignments, raw_mean_scatter_path, palette)
+    _plot_cluster_scatter(dataset.raw_audio, assignments, audio_scatter_path, palette)
+    _plot_cluster_scatter(dataset.raw_lyrics, assignments, lyrics_scatter_path, palette)
     _plot_cluster_latent_pca(embeddings["z_fused"], assignments, latent_pca_path, palette)
     feature_pca_written = False
     if cluster_features is not None:
@@ -2129,6 +2257,12 @@ def _write_split_outputs(
                        dataset.raw_lyrics if hasattr(dataset, "raw_lyrics") else np.zeros((len(assignments), 2)),
                        _dataset_view_mask, assignments, diff_scatter_path, palette)
     _plot_mask_distribution(assignments, _dataset_view_mask, mask_dist_path, palette)
+    overlap_metrics = compute_overlap_gate_metrics(mean_va, assignments)
+    pd.DataFrame([{key: value for key, value in overlap_metrics.items()}]).to_csv(
+        overlap_audit_path,
+        index=False,
+        encoding="utf-8",
+    )
     macro_micro_outputs = (
         _write_macro_micro_artifacts(
             out_dir=out_dir,
@@ -2160,6 +2294,11 @@ def _write_split_outputs(
         "feature_dim": int(feature_dim),
         "num_samples": int(len(assignments)),
         "plot_va_source": str(plot_va_source),
+        "balance_alpha": (
+            float(feature_state["balance_alpha"])
+            if isinstance(feature_state, dict) and "balance_alpha" in feature_state
+            else float("nan")
+        ),
         "metadata_token_thresholds": {
             "min_global_support": int(METADATA_MIN_GLOBAL_SUPPORT),
             "min_cluster_support": int(METADATA_MIN_CLUSTER_SUPPORT),
@@ -2172,6 +2311,10 @@ def _write_split_outputs(
             "cluster_catalog": catalog_path,
             "cluster_summary": summary_path,
             "cluster_scatter": scatter_path,
+            "cluster_scatter_balanced_va": scatter_path if use_cluster_consensus else None,
+            "cluster_scatter_raw_mean_va": raw_mean_scatter_path,
+            "cluster_scatter_audio_va": audio_scatter_path,
+            "cluster_scatter_lyrics_va": lyrics_scatter_path,
             "cluster_pca_fused": latent_pca_path,
             "cluster_pca_features": feature_pca_path if feature_pca_written else None,
             "cluster_size_bar": size_bar_path,
@@ -2179,6 +2322,7 @@ def _write_split_outputs(
             "cluster_gate_profile": gate_profile_path,
             "cluster_diff_arrow": diff_scatter_path,
             "cluster_mask_distribution": mask_dist_path,
+            "cluster_overlap_audit": overlap_audit_path,
             "cluster_palette": palette_path,
             "search_metrics": search_metrics_path,
             "bic_curve": bic_curve_path,
@@ -2583,6 +2727,12 @@ def main() -> None:
         fit_mask=both_mask,
         diff_cluster_weight=float(args.diff_cluster_weight),
         consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+        consensus_alpha=float(getattr(args, "consensus_alpha", 0.5)),
+        alpha_search_min=float(getattr(args, "alpha_search_min", 0.20)),
+        alpha_search_max=float(getattr(args, "alpha_search_max", 0.90)),
+        alpha_search_step=float(getattr(args, "alpha_search_step", 0.05)),
+        alpha_search_k_min=int(getattr(args, "alpha_search_k_min", 4)),
+        alpha_search_k_max=int(getattr(args, "alpha_search_k_max", 8)),
         calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
         diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
         diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
@@ -2611,6 +2761,12 @@ def main() -> None:
     )
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
+    search_primary_va = cluster_feature_primary_va(feature_strategy, search_features_raw)
+    search_affect_va = (
+        search_primary_va
+        if str(args.plot_va_source).strip().lower() == "cluster_consensus" and search_primary_va is not None
+        else _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))
+    )
     selection_info_metadata_policy = dict(metadata_policy_info)
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
@@ -2637,7 +2793,7 @@ def main() -> None:
         micro_k_min=int(args.micro_k_min),
         micro_k_max=int(args.micro_k_max),
         affect_labels=_va_quadrant_labels(
-            _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source)),
+            search_affect_va,
             boundary_margin=float(args.affect_boundary_margin),
         ),
         affect_gate_enabled=parse_bool_text(args.affect_gate),
@@ -2654,6 +2810,15 @@ def main() -> None:
         micro_min_jaccard=float(getattr(args, "micro_min_jaccard", 0.0)),
         micro_min_tension_effect=float(getattr(args, "micro_min_tension_effect", 0.0)),
         micro_max_consensus_effect_ratio=float(getattr(args, "micro_max_consensus_effect_ratio", 1.0)),
+        micro_consensus_role=str(getattr(args, "micro_consensus_role", "anti_leakage")),
+        micro_min_consensus_knn_purity=float(getattr(args, "micro_min_consensus_knn_purity", 0.85)),
+        micro_min_consensus_center_sep=float(getattr(args, "micro_min_consensus_center_sep", 0.60)),
+        micro_min_consensus_silhouette=float(getattr(args, "micro_min_consensus_silhouette", 0.10)),
+        overlap_gate_enabled=parse_bool_text(getattr(args, "overlap_gate", "false")),
+        min_va_knn_purity=float(getattr(args, "min_va_knn_purity", 0.90)),
+        min_va_center_sep=float(getattr(args, "min_va_center_sep", 0.70)),
+        max_va_negative_silhouette_fraction=float(getattr(args, "max_va_negative_silhouette_fraction", 0.10)),
+        primary_va=search_primary_va,
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 
@@ -2756,6 +2921,25 @@ def main() -> None:
                     "feature_block_slices": cluster_feature_block_slices(feature_strategy, int(search_features.shape[1])),
                     "plot_va_source": str(args.plot_va_source),
                     "pca_target_dim": int(args.pca_target_dim),
+                    "consensus_mode": str(args.consensus_mode),
+                    "consensus_alpha": float(args.consensus_alpha),
+                    "alpha_search_min": float(args.alpha_search_min),
+                    "alpha_search_max": float(args.alpha_search_max),
+                    "alpha_search_step": float(args.alpha_search_step),
+                    "alpha_search_k_min": int(args.alpha_search_k_min),
+                    "alpha_search_k_max": int(args.alpha_search_k_max),
+                    "calibration_mode": str(args.calibration_mode),
+                    "diff_residual_mode": str(args.diff_residual_mode),
+                    "diff_residual_neighbors": int(args.diff_residual_neighbors),
+                    "tension_encoding": str(args.tension_encoding),
+                    "micro_consensus_role": str(args.micro_consensus_role),
+                    "micro_min_consensus_knn_purity": float(args.micro_min_consensus_knn_purity),
+                    "micro_min_consensus_center_sep": float(args.micro_min_consensus_center_sep),
+                    "micro_min_consensus_silhouette": float(args.micro_min_consensus_silhouette),
+                    "overlap_gate": parse_bool_text(args.overlap_gate),
+                    "min_va_knn_purity": float(args.min_va_knn_purity),
+                    "min_va_center_sep": float(args.min_va_center_sep),
+                    "max_va_negative_silhouette_fraction": float(args.max_va_negative_silhouette_fraction),
                     "selection_info": selection_info,
                 },
             },
@@ -2765,7 +2949,7 @@ def main() -> None:
     split_outputs: Dict[str, Dict[str, Any]] = {}
     split_assignments: Dict[str, np.ndarray] = {}
     for split in eval_splits:
-        features_raw, _, _ = build_cluster_features(
+        features_raw, _, split_feature_state = build_cluster_features(
             embeddings=embeddings_by_split[split],
             metadata_cluster_weight=effective_metadata_cluster_weight,
             conflict_cluster_weight=float(args.conflict_cluster_weight),
@@ -2776,6 +2960,12 @@ def main() -> None:
             fitted_imputation=search_imputation,
             diff_cluster_weight=float(args.diff_cluster_weight),
             consensus_mode=str(getattr(args, "consensus_mode", "calibrated_mean")),
+            consensus_alpha=float(getattr(args, "consensus_alpha", 0.5)),
+            alpha_search_min=float(getattr(args, "alpha_search_min", 0.20)),
+            alpha_search_max=float(getattr(args, "alpha_search_max", 0.90)),
+            alpha_search_step=float(getattr(args, "alpha_search_step", 0.05)),
+            alpha_search_k_min=int(getattr(args, "alpha_search_k_min", 4)),
+            alpha_search_k_max=int(getattr(args, "alpha_search_k_max", 8)),
             calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
             diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
             diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
@@ -2794,6 +2984,11 @@ def main() -> None:
         features = apply_cluster_feature_weights(
             transform_cluster_features(cluster_scaler, features_raw, block_mask=split_block_mask),
             feature_weights,
+        )
+        plot_va_override = (
+            cluster_feature_primary_va(feature_strategy, features_raw)
+            if str(args.plot_va_source).strip().lower() == "cluster_consensus"
+            else None
         )
         if is_hierarchical:
             # For hierarchical: predict macro, then apply micro sub-labels
@@ -2843,6 +3038,8 @@ def main() -> None:
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,
+            plot_va_override=plot_va_override,
+            feature_state=split_feature_state if isinstance(split_feature_state, dict) else None,
         )
         split_outputs[split] = payload
 
