@@ -76,6 +76,11 @@ class KSelectionConfig:
     min_va_knn_purity: float = 0.90
     min_va_center_sep: float = 0.70
     max_va_negative_silhouette_fraction: float = 0.10
+    # V19 two-view latent VA mixture
+    latent_learn_view_bias: bool = True
+    latent_share_view_noise: bool = False
+    latent_alpha_prior_strength: float = 0.0
+    latent_max_iter: int = 100
 
 
 @dataclass
@@ -656,6 +661,39 @@ def _cluster_jaccard_summary(reference_labels: np.ndarray, candidate_labels: np.
     return float(np.mean(scores)), float(np.min(scores))
 
 
+def _macro_micro_validator_for_config(config: KSelectionConfig) -> Optional[MicroSplitValidator]:
+    gate_level = str(config.affect_gate_level).lower()
+    enforce_final_affect = bool(config.affect_gate_enabled) and gate_level in {"final", "both"}
+    validate_visible_separator = str(config.micro_consensus_role).lower() == "visible_separator"
+    if not (
+        config.micro_min_silhouette > 0
+        or config.micro_min_tension_effect > 0
+        or enforce_final_affect
+        or validate_visible_separator
+    ):
+        return None
+    return MicroSplitValidator(
+        min_silhouette=float(config.micro_min_silhouette),
+        min_stability_ari=float(config.micro_min_stability),
+        min_jaccard=float(config.micro_min_jaccard),
+        min_tension_effect=float(config.micro_min_tension_effect),
+        max_consensus_effect_ratio=float(config.micro_max_consensus_effect_ratio),
+        consensus_role=str(config.micro_consensus_role),
+        min_consensus_knn_purity=float(config.micro_min_consensus_knn_purity),
+        min_consensus_center_sep=float(config.micro_min_consensus_center_sep),
+        min_consensus_silhouette=float(config.micro_min_consensus_silhouette),
+        min_affect_dominant_ratio=(
+            float(config.min_affect_dominant_ratio) if enforce_final_affect else None
+        ),
+        max_affect_mixed_cluster_fraction=(
+            float(config.max_affect_mixed_cluster_fraction) if enforce_final_affect else None
+        ),
+        min_affect_weighted_purity=(
+            float(config.min_affect_weighted_purity) if enforce_final_affect else None
+        ),
+    )
+
+
 def compute_macro_micro_bootstrap_stability(
     features: np.ndarray,
     block_mask: np.ndarray,
@@ -664,7 +702,19 @@ def compute_macro_micro_bootstrap_stability(
     macro_k: int,
     config: KSelectionConfig,
     n_runs: int,
-) -> Dict[str, float]:
+    affect_labels: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    validator = _macro_micro_validator_for_config(config)
+    gate_level = str(config.affect_gate_level).lower()
+    enforce_final_affect = bool(config.affect_gate_enabled) and gate_level in {"final", "both"}
+    audit: Dict[str, Any] = {
+        "bootstrap_micro_feature_mode": str(config.micro_feature_mode),
+        "bootstrap_micro_tension_weight": float(config.micro_tension_weight),
+        "bootstrap_micro_consensus_residual_weight": float(config.micro_consensus_residual_weight),
+        "bootstrap_validator_enabled": bool(validator is not None),
+        "bootstrap_affect_gate_level": gate_level,
+        "bootstrap_affect_labels_used": bool(enforce_final_affect and affect_labels is not None),
+    }
     if int(n_runs) < 2:
         return {
             "seed_ari_mean": 1.0,
@@ -672,11 +722,13 @@ def compute_macro_micro_bootstrap_stability(
             "cluster_jaccard_mean": 1.0,
             "cluster_jaccard_min": 1.0,
             "bootstrap_valid_rate": 1.0,
+            **audit,
         }
 
     matrix = np.asarray(features, dtype=np.float32)
     mask = np.asarray(block_mask, dtype=bool)
     base = np.asarray(base_labels, dtype=np.int64)
+    affect = np.asarray(affect_labels, dtype=np.int64) if affect_labels is not None else None
     rng = np.random.default_rng(int(config.random_state) + int(macro_k) * 10007)
     sample_size = max(
         int(min(matrix.shape[0], max(int(config.min_cluster_size) * int(macro_k), round(matrix.shape[0] * 0.8)))),
@@ -694,12 +746,20 @@ def compute_macro_micro_bootstrap_stability(
                 block_slices=block_slices,
                 covariance_type=str(config.covariance_type),
                 random_state=int(config.random_state) + 7919 * (run + 1),
-                n_init=1,
-                max_iter=80,
+                n_init=max(1, int(config.n_init)),
+                max_iter=100,
                 micro_k_min=int(config.micro_k_min),
                 micro_k_max=int(config.micro_k_max),
                 min_cluster_size=max(1, int(config.min_cluster_size)),
-            ).fit(matrix[sample_idx], block_mask=mask[sample_idx])
+                micro_feature_mode=str(config.micro_feature_mode),
+                micro_tension_weight=float(config.micro_tension_weight),
+                micro_consensus_residual_weight=float(config.micro_consensus_residual_weight),
+                micro_split_validator=validator,
+            ).fit(
+                matrix[sample_idx],
+                block_mask=mask[sample_idx],
+                affect_labels=affect[sample_idx] if enforce_final_affect and affect is not None else None,
+            )
             predicted = model.predict(matrix, block_mask=mask)
         except Exception:
             continue
@@ -715,6 +775,7 @@ def compute_macro_micro_bootstrap_stability(
             "cluster_jaccard_mean": 0.0,
             "cluster_jaccard_min": 0.0,
             "bootstrap_valid_rate": 0.0,
+            **audit,
         }
     return {
         "seed_ari_mean": float(np.mean(ari_scores)),
@@ -722,6 +783,7 @@ def compute_macro_micro_bootstrap_stability(
         "cluster_jaccard_mean": float(np.mean(jaccard_means)),
         "cluster_jaccard_min": float(np.min(jaccard_mins)),
         "bootstrap_valid_rate": float(len(ari_scores) / max(attempts, 1)),
+        **audit,
     }
 
 
@@ -1180,36 +1242,9 @@ def search_macro_micro_diffaware(
         raise ValueError(f"primary_va must have shape [N, >=2], got {overlap_va.shape}.")
 
     for macro_k in range(int(config.macro_k_min), int(config.macro_k_max) + 1):
-        validator = None
         gate_level = str(config.affect_gate_level).lower()
         enforce_final_affect = bool(config.affect_gate_enabled) and gate_level in {"final", "both"}
-        validate_visible_separator = str(config.micro_consensus_role).lower() == "visible_separator"
-        if (
-            config.micro_min_silhouette > 0
-            or config.micro_min_tension_effect > 0
-            or enforce_final_affect
-            or validate_visible_separator
-        ):
-            validator = MicroSplitValidator(
-                min_silhouette=float(config.micro_min_silhouette),
-                min_stability_ari=float(config.micro_min_stability),
-                min_jaccard=float(config.micro_min_jaccard),
-                min_tension_effect=float(config.micro_min_tension_effect),
-                max_consensus_effect_ratio=float(config.micro_max_consensus_effect_ratio),
-                consensus_role=str(config.micro_consensus_role),
-                min_consensus_knn_purity=float(config.micro_min_consensus_knn_purity),
-                min_consensus_center_sep=float(config.micro_min_consensus_center_sep),
-                min_consensus_silhouette=float(config.micro_min_consensus_silhouette),
-                min_affect_dominant_ratio=(
-                    float(config.min_affect_dominant_ratio) if enforce_final_affect else None
-                ),
-                max_affect_mixed_cluster_fraction=(
-                    float(config.max_affect_mixed_cluster_fraction) if enforce_final_affect else None
-                ),
-                min_affect_weighted_purity=(
-                    float(config.min_affect_weighted_purity) if enforce_final_affect else None
-                ),
-            )
+        validator = _macro_micro_validator_for_config(config)
         model = MacroMicroClusterer(
             macro_k=int(macro_k),
             block_slices=block_slices,
@@ -1239,6 +1274,7 @@ def search_macro_micro_diffaware(
             int(macro_k),
             config,
             int(config.stability_runs),
+            affect_labels=affect_labels if enforce_final_affect else None,
         )
         mask_nmi = _mask_nmi(labels, view_mask) if view_mask is not None else float("nan")
         max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
@@ -1314,11 +1350,12 @@ def search_macro_micro_diffaware(
         )
 
     metrics = pd.DataFrame(rows).sort_values("macro_k", kind="stable").reset_index(drop=True)
-    eligible = metrics["min_size_ok"].to_numpy(dtype=bool) & metrics["total_k_ok"].to_numpy(dtype=bool)
+    unconstrained_eligible = metrics["min_size_ok"].to_numpy(dtype=bool)
     if "affect_gate_ok" in metrics.columns:
-        eligible = eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
+        unconstrained_eligible = unconstrained_eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
     if bool(config.overlap_gate_enabled):
-        eligible = eligible & metrics["overlap_gate_ok"].to_numpy(dtype=bool)
+        unconstrained_eligible = unconstrained_eligible & metrics["overlap_gate_ok"].to_numpy(dtype=bool)
+    eligible = unconstrained_eligible & metrics["total_k_ok"].to_numpy(dtype=bool)
     if not eligible.any():
         candidates_text = ", ".join(
             (
@@ -1356,8 +1393,15 @@ def search_macro_micro_diffaware(
     eligible_metrics = metrics[eligible]
     selected_idx = int(eligible_metrics["macro_micro_score"].idxmax())
     selected_row = metrics.loc[selected_idx]
+    unconstrained_metrics = metrics[unconstrained_eligible]
+    if unconstrained_metrics.empty:
+        unconstrained_row = selected_row
+    else:
+        unconstrained_row = metrics.loc[int(unconstrained_metrics["macro_micro_score"].idxmax())]
     selected_macro_k = int(selected_row["macro_k"])
     best_model = candidates[selected_macro_k]
+    forced_by_k_bounds = int(unconstrained_row["macro_k"]) != selected_macro_k
+    forced_score_gap = float(unconstrained_row["macro_micro_score"]) - float(selected_row["macro_micro_score"])
     selection_info = {
         "selected_k": int(best_model.n_components),
         "selection_mode": "macro_micro_diffaware",
@@ -1365,6 +1409,17 @@ def search_macro_micro_diffaware(
         "micro_details": best_model.info.get("micro_details", {}),
         "label_names": best_model.label_names,
         "macro_micro_score": float(selected_row["macro_micro_score"]),
+        "best_unconstrained_macro_k": int(unconstrained_row["macro_k"]),
+        "best_unconstrained_total_k": int(unconstrained_row["total_clusters"]),
+        "best_unconstrained_score": float(unconstrained_row["macro_micro_score"]),
+        "best_constrained_macro_k": int(selected_row["macro_k"]),
+        "best_constrained_total_k": int(selected_row["total_clusters"]),
+        "best_constrained_score": float(selected_row["macro_micro_score"]),
+        "selection_forced_by_total_k_min": bool(
+            forced_by_k_bounds and int(unconstrained_row["total_clusters"]) < int(config.k_min)
+        ),
+        "selection_forced_by_total_k_bounds": bool(forced_by_k_bounds),
+        "forced_score_gap": float(max(0.0, forced_score_gap)),
         "total_k_ok": bool(selected_row["total_k_ok"]),
         "min_cluster_size_threshold": int(min_size_threshold),
         "min_cluster_size": int(selected_row["min_cluster_size"]),
@@ -1374,6 +1429,12 @@ def search_macro_micro_diffaware(
         "cluster_jaccard_mean": float(selected_row["cluster_jaccard_mean"]),
         "cluster_jaccard_min": float(selected_row["cluster_jaccard_min"]),
         "bootstrap_valid_rate": float(selected_row["bootstrap_valid_rate"]),
+        "bootstrap_micro_feature_mode": str(selected_row["bootstrap_micro_feature_mode"]),
+        "bootstrap_micro_tension_weight": float(selected_row["bootstrap_micro_tension_weight"]),
+        "bootstrap_micro_consensus_residual_weight": float(selected_row["bootstrap_micro_consensus_residual_weight"]),
+        "bootstrap_validator_enabled": bool(selected_row["bootstrap_validator_enabled"]),
+        "bootstrap_affect_gate_level": str(selected_row["bootstrap_affect_gate_level"]),
+        "bootstrap_affect_labels_used": bool(selected_row["bootstrap_affect_labels_used"]),
         "overlap_gate_enabled": bool(config.overlap_gate_enabled),
         "overlap_gate_ok": bool(selected_row.get("overlap_gate_ok", True)),
         "va_knn_purity_10": float(selected_row.get("va_knn_purity_10", float("nan"))),
@@ -1415,6 +1476,10 @@ def search_macro_micro_diffaware(
                 selection_info[field] = float(value) if pd.notna(value) else float("nan")
         selection_info["final_affect_gate_ok"] = bool(selected_row.get("final_affect_gate_ok", False))
         selection_info["macro_affect_gate_ok"] = bool(selected_row.get("macro_affect_gate_ok", selected_row.get("affect_gate_ok", False)))
+    if bool(selection_info["selection_forced_by_total_k_bounds"]) and float(selection_info["forced_score_gap"]) > 0.02:
+        selection_info["selection_warning"] = (
+            "Selected K was forced by total_k_min/total_k_max and is not the unconstrained optimum."
+        )
     return KSearchResult(
         best_k=int(best_model.n_components),
         best_model=best_model,

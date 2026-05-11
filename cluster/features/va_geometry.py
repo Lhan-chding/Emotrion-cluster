@@ -460,6 +460,23 @@ def build_calibrated_va_tension_features(
         "sigma_v": sigma_v,
         "sigma_a": sigma_a,
     }
+    if balance_learner is not None:
+        scores = [dict(item) for item in getattr(balance_learner, "scores_", [])]
+        state["balance_alpha_scores"] = scores
+        selected_score = next(
+            (item for item in scores if abs(float(item.get("alpha", float("nan"))) - float(alpha)) < 1e-8),
+            None,
+        )
+        if selected_score is None and scores:
+            selected_score = max(scores, key=lambda item: float(item.get("score", -float("inf"))))
+        state["balance_alpha_summary"] = {
+            "alpha": float(alpha),
+            "alpha_best_k": int(float(selected_score.get("best_k", -1))) if selected_score else -1,
+            "alpha_score": float(selected_score.get("score", float("nan"))) if selected_score else float("nan"),
+            "alpha_silhouette": float(selected_score.get("silhouette", float("nan"))) if selected_score else float("nan"),
+            "alpha_stability": float(selected_score.get("stability", float("nan"))) if selected_score else float("nan"),
+            "alpha_size_balance": float(selected_score.get("size_balance", float("nan"))) if selected_score else float("nan"),
+        }
     return features, state
 
 

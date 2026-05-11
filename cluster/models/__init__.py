@@ -13,6 +13,7 @@ from cluster.models.discovery_net import (
     target_distribution,
     train_music_discovery_model,
 )
+from cluster.models.two_view_latent_va_gmm import TwoViewLatentVAGMM
 
 __all__ = [
     "DECClusterHead",
@@ -28,4 +29,5 @@ __all__ = [
     "save_discovery_checkpoint",
     "target_distribution",
     "train_music_discovery_model",
+    "TwoViewLatentVAGMM",
 ]

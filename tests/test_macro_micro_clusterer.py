@@ -548,6 +548,51 @@ def test_macro_micro_reports_bootstrap_stability_when_requested():
     assert info["bootstrap_valid_rate"] > 0.0
 
 
+def test_macro_micro_reports_bootstrap_configuration_audit_and_unconstrained_k():
+    features, block_mask, block_slices = _macro_micro_fixture()
+
+    _model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="macro_micro",
+        k_min=4,
+        k_max=4,
+        random_state=7,
+        min_cluster_size_abs=4,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=3,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+        assignment_mode="partial_likelihood",
+        block_mask=block_mask,
+        block_slices=block_slices,
+        macro_k_min=2,
+        macro_k_max=3,
+        micro_k_min=1,
+        micro_k_max=2,
+        micro_feature_mode="tension_only",
+        micro_tension_weight=0.75,
+        micro_consensus_residual_weight=0.25,
+        micro_min_silhouette=0.10,
+        micro_min_tension_effect=0.10,
+    )
+
+    assert {"bootstrap_micro_feature_mode", "bootstrap_validator_enabled", "bootstrap_affect_gate_level"}.issubset(metrics.columns)
+    assert info["bootstrap_micro_feature_mode"] == "tension_only"
+    assert info["bootstrap_validator_enabled"] is True
+    assert info["bootstrap_affect_gate_level"] == "both"
+    assert "best_unconstrained_macro_k" in info
+    assert "best_unconstrained_total_k" in info
+    assert "best_unconstrained_score" in info
+    assert "best_constrained_macro_k" in info
+    assert "best_constrained_total_k" in info
+    assert "best_constrained_score" in info
+    assert "selection_forced_by_total_k_min" in info
+    assert "forced_score_gap" in info
+
+
 def test_affect_purity_metrics_flag_large_mixed_va_clusters():
     cluster_labels = np.asarray([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int64)
     quadrant_labels = np.asarray([0, 0, 1, 1, 1, 1, 1, 1], dtype=np.int64)

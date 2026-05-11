@@ -1068,6 +1068,211 @@ def test_write_split_outputs_uses_cluster_consensus_as_balanced_va(tmp_path):
     assert payload["output_files"]["cluster_scatter"].endswith("cluster_scatter_balanced_va.png")
 
 
+def test_calibrated_va_tension_feature_state_exposes_alpha_audit():
+    embeddings = {
+        "audio_va": np.asarray(
+            [
+                [0.90, 0.80],
+                [0.86, 0.78],
+                [0.20, 0.30],
+                [0.24, 0.34],
+                [0.80, 0.25],
+                [0.76, 0.22],
+                [0.30, 0.82],
+                [0.34, 0.78],
+            ],
+            dtype=np.float32,
+        ),
+        "lyrics_va": np.asarray(
+            [
+                [0.70, 0.70],
+                [0.66, 0.68],
+                [0.35, 0.40],
+                [0.38, 0.42],
+                [0.68, 0.35],
+                [0.66, 0.34],
+                [0.42, 0.68],
+                [0.44, 0.66],
+            ],
+            dtype=np.float32,
+        ),
+        "view_mask": np.ones((8, 3), dtype=np.float32),
+    }
+
+    _features, _pca, state = build_cluster_features(
+        embeddings,
+        metadata_cluster_weight=0.0,
+        conflict_cluster_weight=0.0,
+        gate_cluster_weight=0.0,
+        strategy="calibrated_va_tension",
+        consensus_mode="clusterability_alpha",
+        alpha_search_min=0.20,
+        alpha_search_max=0.80,
+        alpha_search_step=0.30,
+        alpha_search_k_min=2,
+        alpha_search_k_max=3,
+    )
+
+    assert isinstance(state, dict)
+    assert state["consensus_mode"] == "clusterability_alpha"
+    assert "balance_alpha_scores" in state
+    assert state["balance_alpha_scores"]
+    assert {"alpha", "best_k", "score", "silhouette", "stability", "size_balance"}.issubset(
+        state["balance_alpha_scores"][0]
+    )
+    assert "balance_alpha_summary" in state
+    assert state["balance_alpha_summary"]["alpha"] == state["balance_alpha"]
+
+
+def test_write_split_outputs_writes_alpha_audit_and_segment_plot(tmp_path):
+    class Dataset:
+        raw_audio = np.asarray(
+            [
+                [0.9, 0.1],
+                [0.8, 0.2],
+                [0.7, 0.3],
+                [0.2, 0.8],
+                [0.3, 0.7],
+                [0.4, 0.6],
+            ],
+            dtype=np.float32,
+        )
+        raw_lyrics = 1.0 - raw_audio
+        view_mask = np.ones((6, 3), dtype=np.float32)
+        labels = np.zeros(6, dtype=np.int64)
+        identifiers = np.asarray([f"audio-{idx}" for idx in range(6)])
+        lyric_identifiers = np.asarray([f"lyrics-{idx}" for idx in range(6)])
+        consistency = np.ones(6, dtype=np.float32)
+        canonical_metadata = pd.DataFrame()
+        raw_metadata = np.zeros((6, 1), dtype=np.float32)
+        raw_metadata_report = raw_metadata
+
+    assignments = np.asarray([0, 0, 0, 1, 1, 1], dtype=np.int64)
+    balanced_va = np.asarray(
+        [
+            [0.75, 0.25],
+            [0.70, 0.30],
+            [0.65, 0.35],
+            [0.35, 0.65],
+            [0.30, 0.70],
+            [0.25, 0.75],
+        ],
+        dtype=np.float32,
+    )
+    embeddings = {
+        "gate_weights": np.full((6, 3), 1.0 / 3.0, dtype=np.float32),
+        "z_fused": np.random.default_rng(14).standard_normal((6, 4)).astype(np.float32),
+    }
+
+    payload = _write_split_outputs(
+        out_dir=str(tmp_path),
+        split="all",
+        dataset=Dataset(),
+        embeddings=embeddings,
+        assignments=assignments,
+        metadata_feature_names=["MoodsAll::test"],
+        selected_k=2,
+        feature_dim=5,
+        cluster_features=np.random.default_rng(15).standard_normal((6, 5)).astype(np.float32),
+        plot_va_source="cluster_consensus",
+        plot_va_override=balanced_va,
+        feature_state={
+            "balance_alpha": 0.65,
+            "balance_alpha_scores": [
+                {"alpha": 0.35, "best_k": 2, "score": 0.40, "silhouette": 0.30, "stability": 0.20, "size_balance": 1.0},
+                {"alpha": 0.65, "best_k": 2, "score": 0.55, "silhouette": 0.42, "stability": 0.30, "size_balance": 1.0},
+            ],
+            "balance_alpha_summary": {
+                "alpha": 0.65,
+                "alpha_best_k": 2,
+                "alpha_score": 0.55,
+                "alpha_silhouette": 0.42,
+                "alpha_stability": 0.30,
+                "alpha_size_balance": 1.0,
+            },
+        },
+    )
+
+    assert (tmp_path / "balance_alpha_report.csv").exists()
+    assert (tmp_path / "alpha_search_curve.png").exists()
+    assert (tmp_path / "cluster_audio_lyrics_segments.png").exists()
+    assert payload["output_files"]["balance_alpha_report"].endswith("balance_alpha_report.csv")
+    assert payload["output_files"]["alpha_search_curve"].endswith("alpha_search_curve.png")
+    assert payload["output_files"]["cluster_audio_lyrics_segments"].endswith("cluster_audio_lyrics_segments.png")
+    assert payload["balance_alpha_summary"]["alpha"] == 0.65
+
+
+def test_parser_accepts_latent_two_view_va_gmm_options():
+    args = build_parser().parse_args(
+        [
+            "--processed_dir",
+            "processed",
+            "--out_dir",
+            "out",
+            "--cluster_feature_strategy",
+            "latent_two_view_va",
+            "--k_strategy",
+            "latent_va_gmm",
+            "--cluster_assignment_mode",
+            "missing_view_likelihood",
+            "--plot_va_source",
+            "latent_consensus",
+            "--learn_view_bias",
+            "true",
+            "--share_view_noise",
+            "false",
+            "--alpha_prior_strength",
+            "0.1",
+        ]
+    )
+
+    assert args.cluster_feature_strategy == "latent_two_view_va"
+    assert args.k_strategy == "latent_va_gmm"
+    assert args.cluster_assignment_mode == "missing_view_likelihood"
+    assert args.plot_va_source == "latent_consensus"
+    assert args.alpha_prior_strength == 0.1
+
+
+def test_run_k_selection_latent_va_gmm_uses_missing_view_likelihood():
+    rng = np.random.default_rng(21)
+    centers = np.asarray([[0.25, 0.25], [0.75, 0.75]], dtype=np.float32)
+    audio = np.vstack([
+        center + rng.normal(0.0, 0.03, size=(20, 2)) + np.asarray([0.04, -0.02])
+        for center in centers
+    ]).astype(np.float32)
+    lyrics = np.vstack([
+        center + rng.normal(0.0, 0.04, size=(20, 2)) + np.asarray([-0.03, 0.02])
+        for center in centers
+    ]).astype(np.float32)
+    features = np.concatenate([audio, lyrics], axis=1).astype(np.float32)
+    block_mask = np.ones((features.shape[0], 2), dtype=bool)
+    block_mask[::5, 1] = False
+    block_mask[1::5, 0] = False
+
+    model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="latent_va_gmm",
+        k_min=2,
+        k_max=3,
+        random_state=21,
+        min_cluster_size_abs=5,
+        min_cluster_size_ratio=0.0,
+        stability_runs=2,
+        assignment_mode="missing_view_likelihood",
+        block_mask=block_mask,
+        block_slices=[(0, 2), (2, 4)],
+        latent_learn_view_bias=True,
+        latent_share_view_noise=False,
+        latent_alpha_prior_strength=0.0,
+        latent_max_iter=40,
+    )
+
+    assert info["selection_mode"] == "latent_va_gmm"
+    assert info["actual_cluster_backend"] == "two_view_latent_va_gmm"
+    assert {"icl", "latent_consensus_silhouette", "posterior_margin_mean", "latent_va_score"}.issubset(metrics.columns)
+    assert model.posterior_consensus(features[:, :2], features[:, 2:4], block_mask).shape == (features.shape[0], 2)
+
+
 def test_full_strategy_no_missingness_leakage():
     """Missing-view rows should not be identifiable by their feature values."""
     rng = np.random.default_rng(42)

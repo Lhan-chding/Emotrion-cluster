@@ -52,6 +52,7 @@ RAW_ONLY_CLUSTER_FEATURE_STRATEGIES = frozenset(
         "lyrics_va",
         "balanced_va_diff",
         "calibrated_va_tension",
+        "latent_two_view_va",
         "va_geometry",
         "mean_va_diff",
         "original_va",
@@ -129,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_cluster_weight", type=float, default=0.35)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "bic_only", "hierarchical"],
+                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "latent_va_gmm", "bic_only", "hierarchical"],
                         help="K-selection strategy")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
@@ -156,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "lyrics_va",
                             "balanced_va_diff",
                             "calibrated_va_tension",
+                            "latent_two_view_va",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -166,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction")
     parser.add_argument("--plot_va_source", type=str, default="mean",
-                        choices=["mean", "original", "cluster_consensus"],
+                        choices=["mean", "original", "cluster_consensus", "latent_consensus"],
                         help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument(
         "--metadata_policy",
@@ -186,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow_incompatible_checkpoint", type=str, default="false",
                         help="Allow checkpoint with mismatched metadata_dim (true/false)")
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
-                        choices=["joint", "complete_first", "partial_likelihood"],
+                        choices=["joint", "complete_first", "partial_likelihood", "missing_view_likelihood"],
                         help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
     parser.add_argument("--macro_k_min", type=int, default=4)
     parser.add_argument("--macro_k_max", type=int, default=8)
@@ -244,6 +246,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_va_negative_silhouette_fraction", type=float, default=0.10)
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"])
+    parser.add_argument("--learn_view_bias", type=str, default="true")
+    parser.add_argument("--share_view_noise", type=str, default="false")
+    parser.add_argument("--alpha_prior_strength", type=float, default=0.0)
+    parser.add_argument("--latent_max_iter", type=int, default=100)
     return parser
 
 
@@ -420,10 +426,11 @@ def main() -> None:
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
     search_primary_va = cluster_feature_primary_va(feature_strategy, search_features_raw)
+    plot_source_name = str(args.plot_va_source).strip().lower()
     search_affect_va = (
         search_primary_va
-        if str(args.plot_va_source).strip().lower() == "cluster_consensus" and search_primary_va is not None
-        else _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))
+        if plot_source_name in {"cluster_consensus", "latent_consensus"} and search_primary_va is not None
+        else _dataset_plot_va(eval_datasets[search_split], plot_source_name)
     )
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
@@ -476,6 +483,10 @@ def main() -> None:
         min_va_center_sep=float(getattr(args, "min_va_center_sep", 0.70)),
         max_va_negative_silhouette_fraction=float(getattr(args, "max_va_negative_silhouette_fraction", 0.10)),
         primary_va=search_primary_va,
+        latent_learn_view_bias=parse_bool_text(getattr(args, "learn_view_bias", "true")),
+        latent_share_view_noise=parse_bool_text(getattr(args, "share_view_noise", "false")),
+        latent_alpha_prior_strength=float(getattr(args, "alpha_prior_strength", 0.0)),
+        latent_max_iter=int(getattr(args, "latent_max_iter", 100)),
     )
     selection_info["metadata_policy"] = dict(metadata_policy_info)
 
@@ -491,12 +502,16 @@ def main() -> None:
             "Use k_strategy='composite' or 'bic_only' instead."
         )
 
+    is_latent_va_model = k_strategy == "latent_va_gmm"
     if is_hierarchical:
         gmm_model = k_result.macro_model
         selected_k = k_result.total_clusters
     else:
         gmm_model = k_result
         selected_k = int(gmm_model.n_components)
+
+    if is_latent_va_model and assignment_mode not in {"joint", "missing_view_likelihood"}:
+        raise ValueError("k_strategy='latent_va_gmm' supports cluster_assignment_mode='joint' or 'missing_view_likelihood'.")
 
     # Complete-pair-first: re-fit GMM on both-pair samples only
     if assignment_mode == "complete_first":
@@ -528,6 +543,11 @@ def main() -> None:
         if str(args.covariance_type) != "diag":
             raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
         selection_info["partial_likelihood"] = True
+        selection_info["feature_block_slices"] = block_slices
+    elif assignment_mode == "missing_view_likelihood":
+        if not is_latent_va_model:
+            raise ValueError("cluster_assignment_mode='missing_view_likelihood' requires k_strategy='latent_va_gmm'.")
+        selection_info["missing_view_likelihood"] = True
         selection_info["feature_block_slices"] = block_slices
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
@@ -597,6 +617,10 @@ def main() -> None:
                     "min_va_knn_purity": float(args.min_va_knn_purity),
                     "min_va_center_sep": float(args.min_va_center_sep),
                     "max_va_negative_silhouette_fraction": float(args.max_va_negative_silhouette_fraction),
+                    "learn_view_bias": parse_bool_text(getattr(args, "learn_view_bias", "true")),
+                    "share_view_noise": parse_bool_text(getattr(args, "share_view_noise", "false")),
+                    "alpha_prior_strength": float(getattr(args, "alpha_prior_strength", 0.0)),
+                    "latent_max_iter": int(getattr(args, "latent_max_iter", 100)),
                     "selection_info": selection_info,
                 },
             },
@@ -672,7 +696,11 @@ def main() -> None:
                     assignments[mask] = global_label
                     global_label += 1
         else:
-            if assignment_mode == "partial_likelihood":
+            if is_latent_va_model:
+                assignments = gmm_model.predict(features_raw[:, :2], features_raw[:, 2:4], split_block_mask).astype(np.int64)
+                if str(args.plot_va_source).strip().lower() == "latent_consensus":
+                    plot_va_override = gmm_model.posterior_consensus(features_raw[:, :2], features_raw[:, 2:4], split_block_mask)
+            elif assignment_mode == "partial_likelihood":
                 assignments = gmm_model.predict(features, block_mask=split_block_mask).astype(np.int64)
             else:
                 assignments = gmm_model.predict(features).astype(np.int64)

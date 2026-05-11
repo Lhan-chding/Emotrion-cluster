@@ -34,6 +34,11 @@ from cluster.features.va_geometry import (
     build_calibrated_va_tension_features,
     impute_unobserved_pairwise,
 )
+from cluster.features.latent_consensus import (
+    LATENT_TWO_VIEW_VA_DIM,
+    build_latent_two_view_va_features,
+    observed_mean_va_from_two_view_features,
+)
 from cluster.pipeline.k_selection import (
     KSelectionConfig,
     KSearchResult,
@@ -163,8 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_input_dim", type=int, default=26,
                         help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "bic_only", "hierarchical"],
-                        help="K-selection strategy: composite, semantic_composite, macro_micro, constrained_macro_micro, macro_only, bic_only, or hierarchical")
+                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "latent_va_gmm", "bic_only", "hierarchical"],
+                        help="K-selection strategy: composite, semantic_composite, macro_micro, constrained_macro_micro, macro_only, latent_va_gmm, bic_only, or hierarchical")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
                         help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
@@ -195,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "lyrics_va",
                             "balanced_va_diff",
                             "calibrated_va_tension",
+                            "latent_two_view_va",
                             "va_geometry",
                             "mean_va_diff",
                             "original_va",
@@ -205,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pca_target_dim", type=int, default=32,
                         help="Target dimensionality for PCA reduction (pca_reduced strategy)")
     parser.add_argument("--plot_va_source", type=str, default="mean",
-                        choices=["mean", "original", "cluster_consensus"],
+                        choices=["mean", "original", "cluster_consensus", "latent_consensus"],
                         help="VA coordinates used in cluster scatter and summaries.")
     parser.add_argument(
         "--metadata_policy",
@@ -233,8 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument("--cluster_assignment_mode", type=str, default="joint",
-                        choices=["joint", "complete_first", "partial_likelihood"],
-                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction")
+                        choices=["joint", "complete_first", "partial_likelihood", "missing_view_likelihood"],
+                        help="joint: GMM fit on all samples; complete_first: fit only on both-pair samples; partial_likelihood: ignore unobserved feature blocks during prediction; missing_view_likelihood: two-view latent VA likelihood")
     parser.add_argument("--macro_k_min", type=int, default=4)
     parser.add_argument("--macro_k_max", type=int, default=6)
     parser.add_argument("--micro_k_min", type=int, default=1)
@@ -308,6 +314,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"],
                         help="Which affect gate(s) to enforce as hard gates")
+    parser.add_argument("--learn_view_bias", type=str, default="true",
+                        help="V19 latent_va_gmm: learn per-cluster audio/lyrics view bias (true/false).")
+    parser.add_argument("--share_view_noise", type=str, default="false",
+                        help="V19 latent_va_gmm: tie audio and lyrics observation noise (true/false).")
+    parser.add_argument("--alpha_prior_strength", type=float, default=0.0,
+                        help="V19 latent_va_gmm: shrink audio/lyrics view reliability toward 0.5.")
+    parser.add_argument("--latent_max_iter", type=int, default=100,
+                        help="V19 latent_va_gmm EM iterations.")
     return parser
 
 
@@ -386,6 +400,7 @@ class ClusterFeatureStrategy(Enum):
     MEAN_VA_DIFF = "mean_va_diff"     # legacy alias for va_geometry
     BALANCED_VA_DIFF = "balanced_va_diff"  # consensus VA + compact disagreement encoding
     CALIBRATED_VA_TENSION = "calibrated_va_tension"  # V16: calibrated consensus + residual tension
+    LATENT_TWO_VIEW_VA = "latent_two_view_va"  # V19: raw audio/lyrics VA for latent two-view mixture
     ORIGINAL_VA = "original_va"       # original VA only; sanity baseline for VA-derived labels
     METADATA_ONLY = "metadata_only"   # metadata-only leakage/upper-bound baseline
     PCA_REDUCED = "pca_reduced"       # any strategy above -> PCA to target_dim
@@ -511,6 +526,18 @@ def _calibrated_va_tension_features(
         fitted_sigma=fitted_sigma,
     )
     return features, state
+
+
+def _latent_two_view_va_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
+    audio = embeddings.get("audio_va")
+    lyrics = embeddings.get("lyrics_va")
+    if audio is None or lyrics is None:
+        raise ValueError("cluster_feature_strategy='latent_two_view_va' requires audio_va and lyrics_va embeddings.")
+    return build_latent_two_view_va_features(
+        np.asarray(audio, dtype=np.float32),
+        np.asarray(lyrics, dtype=np.float32),
+        np.asarray(view_mask, dtype=np.float32),
+    )
 
 
 def _metadata_only_features(embeddings: Dict[str, Any], view_mask: np.ndarray) -> np.ndarray:
@@ -717,6 +744,8 @@ def build_cluster_features(
             diff_residual_neighbors=diff_residual_neighbors,
             tension_encoding=tension_encoding,
         )
+    elif base_strategy == "latent_two_view_va":
+        features, imputation_fill = _latent_two_view_va_features(embeddings, view_mask)
     elif base_strategy in {"va_geometry", "mean_va_diff"}:
         raw_geom = _va_geometry_features(embeddings)
         features, imputation_fill = impute_unobserved_pairwise(raw_geom, view_mask, fitted_imputation)
@@ -801,6 +830,8 @@ def cluster_feature_weights(
     elif base_strategy == "calibrated_va_tension" and int(feature_dim) == CALIBRATED_VA_TENSION_DIM:
         weights[0:2] = 1.0
         weights[2:CALIBRATED_VA_TENSION_DIM] = float(diff_cluster_weight)
+    elif base_strategy == "latent_two_view_va" and int(feature_dim) == LATENT_TWO_VIEW_VA_DIM:
+        weights[:] = 1.0
     elif base_strategy == "fused_va_geometry" and int(feature_dim) > VA_GEOMETRY_OBSERVED_DIM:
         latent_dim = int(feature_dim) - VA_GEOMETRY_OBSERVED_DIM
         weights[:latent_dim] = 0.5
@@ -819,6 +850,8 @@ def cluster_feature_block_slices(strategy: str, feature_dim: int) -> List[Tuple[
         return [(0, 2), (2, int(feature_dim))]
     if base_strategy == "calibrated_va_tension" and int(feature_dim) == CALIBRATED_VA_TENSION_DIM:
         return [(0, 2), (2, int(feature_dim))]
+    if base_strategy == "latent_two_view_va" and int(feature_dim) == LATENT_TWO_VIEW_VA_DIM:
+        return [(0, 2), (2, 4)]
     if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and int(feature_dim) % 3 == 0:
         latent_dim = int(feature_dim) // 3
         return [(0, latent_dim), (latent_dim, 2 * latent_dim), (2 * latent_dim, 3 * latent_dim)]
@@ -830,6 +863,8 @@ def cluster_feature_primary_va(strategy: str, raw_features: np.ndarray) -> Optio
     matrix = np.asarray(raw_features, dtype=np.float32)
     if matrix.ndim != 2 or matrix.shape[1] < 2:
         return None
+    if base_strategy == "latent_two_view_va":
+        return observed_mean_va_from_two_view_features(matrix, None)
     if base_strategy in {"calibrated_va_tension", "balanced_va_diff", "mean_va", "audio_va", "lyrics_va", "va_geometry", "mean_va_diff"}:
         return matrix[:, :2].astype(np.float32)
     return None
@@ -838,8 +873,19 @@ def cluster_feature_primary_va(strategy: str, raw_features: np.ndarray) -> Optio
 def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n_samples: int) -> np.ndarray:
     base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
     if view_mask is None:
+        if base_strategy == "latent_two_view_va":
+            return np.ones((int(n_samples), 2), dtype=bool)
         return np.ones((int(n_samples), len(cluster_feature_block_slices(base_strategy, 1))), dtype=bool)
     mask = np.asarray(view_mask, dtype=np.float32)
+    if base_strategy == "latent_two_view_va":
+        has_audio = mask[:, 0] > 0.0
+        has_lyrics = mask[:, 1] > 0.0
+        block_mask = np.stack([has_audio, has_lyrics], axis=1).astype(bool)
+        empty_rows = ~block_mask.any(axis=1)
+        if empty_rows.any():
+            block_mask = np.array(block_mask, copy=True)
+            block_mask[empty_rows, 0] = True
+        return block_mask
     if base_strategy in {"balanced_va_diff", "calibrated_va_tension"}:
         has_audio = mask[:, 0] > 0.0
         has_lyrics = mask[:, 1] > 0.0
@@ -955,6 +1001,14 @@ def _uses_blockwise_observed_scaler(strategy: str, block_slices: Sequence[Sequen
     return base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and len(block_slices) > 1
 
 
+class _IdentityClusterScaler:
+    def fit(self, values: np.ndarray, *args: Any, **kwargs: Any) -> "_IdentityClusterScaler":
+        return self
+
+    def transform(self, values: np.ndarray) -> np.ndarray:
+        return np.asarray(values, dtype=np.float32)
+
+
 def fit_cluster_scaler(
     strategy: str,
     features_raw: np.ndarray,
@@ -964,6 +1018,9 @@ def fit_cluster_scaler(
     fit_mask: Optional[np.ndarray] = None,
     block_scaler: str = "auto",
 ) -> Any:
+    base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    if base_strategy == "latent_two_view_va":
+        return _IdentityClusterScaler().fit(features_raw)
     scaler_mode = str(block_scaler or "auto").strip().lower()
     if scaler_mode not in {"auto", "standard", "observed"}:
         raise ValueError("block_scaler must be one of: auto, standard, observed.")
@@ -1066,6 +1123,10 @@ def run_k_selection(
     min_va_center_sep: float = 0.70,
     max_va_negative_silhouette_fraction: float = 0.10,
     primary_va: Optional[np.ndarray] = None,
+    latent_learn_view_bias: bool = True,
+    latent_share_view_noise: bool = False,
+    latent_alpha_prior_strength: float = 0.0,
+    latent_max_iter: int = 100,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -1113,8 +1174,31 @@ def run_k_selection(
         min_va_knn_purity=float(min_va_knn_purity),
         min_va_center_sep=float(min_va_center_sep),
         max_va_negative_silhouette_fraction=float(max_va_negative_silhouette_fraction),
+        latent_learn_view_bias=bool(latent_learn_view_bias),
+        latent_share_view_noise=bool(latent_share_view_noise),
+        latent_alpha_prior_strength=float(latent_alpha_prior_strength),
+        latent_max_iter=int(latent_max_iter),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
+    if k_strategy == "latent_va_gmm":
+        if features.ndim != 2 or features.shape[1] < 4:
+            raise ValueError("k_strategy='latent_va_gmm' requires latent_two_view_va features with shape [N, >=4].")
+        if block_mask is None:
+            if view_mask is None:
+                block_mask = np.ones((features.shape[0], 2), dtype=bool)
+            else:
+                block_mask = np.asarray(view_mask, dtype=bool)[:, :2]
+        from cluster.pipeline.latent_va_selection import search_latent_va_gmm
+
+        result = search_latent_va_gmm(
+            features[:, :2],
+            features[:, 2:4],
+            np.asarray(block_mask, dtype=bool),
+            config,
+            affect_labels=affect_labels,
+            primary_va=primary_va,
+        )
+        return result.best_model, result.metrics, result.selection_info
     if k_strategy in {"macro_micro", "constrained_macro_micro"}:
         if assignment_mode == "complete_first":
             raise ValueError("macro_micro K search is incompatible with complete_first; use partial_likelihood or joint.")
@@ -1565,6 +1649,92 @@ def _plot_diff_scatter(
     plt.close(fig)
 
 
+def _plot_audio_lyrics_segments(
+    audio_va: np.ndarray,
+    lyrics_va: np.ndarray,
+    view_mask: np.ndarray,
+    assignments: np.ndarray,
+    out_path: str,
+    palette: Dict[int, str],
+    max_segments: int = 500,
+) -> None:
+    """Line segments connecting each track's audio and lyrics VA observations."""
+    both_mask = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+    indices = np.where(both_mask)[0]
+    if indices.size > int(max_segments):
+        indices = np.sort(np.random.RandomState(42).choice(indices, size=int(max_segments), replace=False))
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    if indices.size == 0:
+        ax.text(0.5, 0.5, "No tracks with both audio+lyrics", ha="center", va="center", transform=ax.transAxes)
+    else:
+        for idx in indices.tolist():
+            color = palette.get(int(assignments[idx]), "#888888")
+            ax.plot(
+                [float(audio_va[idx, 0]), float(lyrics_va[idx, 0])],
+                [float(audio_va[idx, 1]), float(lyrics_va[idx, 1])],
+                color=color,
+                alpha=0.28,
+                linewidth=0.8,
+            )
+        ax.scatter(audio_va[indices, 0], audio_va[indices, 1], c="#333333", s=10, alpha=0.55, label="audio")
+        ax.scatter(
+            lyrics_va[indices, 0],
+            lyrics_va[indices, 1],
+            c="#ffffff",
+            s=10,
+            alpha=0.85,
+            edgecolors="#333333",
+            linewidths=0.4,
+            label="lyrics",
+        )
+        ax.legend(loc="best", frameon=False)
+    ax.axvline(0.5, color="gray", linestyle="--", alpha=0.4)
+    ax.axhline(0.5, color="gray", linestyle="--", alpha=0.4)
+    ax.set_xlabel("Valence")
+    ax.set_ylabel("Arousal")
+    ax.set_title("Audio-Lyrics VA Segments")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
+def _write_balance_alpha_audit(feature_state: Optional[Dict[str, Any]], out_dir: str) -> Tuple[Optional[str], Optional[str]]:
+    if not isinstance(feature_state, dict):
+        return None, None
+    scores = feature_state.get("balance_alpha_scores")
+    if not scores:
+        return None, None
+    frame = pd.DataFrame(scores)
+    if frame.empty or "alpha" not in frame.columns or "score" not in frame.columns:
+        return None, None
+
+    report_path = os.path.join(out_dir, "balance_alpha_report.csv")
+    curve_path = os.path.join(out_dir, "alpha_search_curve.png")
+    frame.to_csv(report_path, index=False, encoding="utf-8")
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(frame["alpha"], frame["score"], marker="o", label="score")
+    if "silhouette" in frame.columns:
+        ax.plot(frame["alpha"], frame["silhouette"], marker="s", label="silhouette")
+    if "stability" in frame.columns:
+        ax.plot(frame["alpha"], frame["stability"], marker="^", label="stability")
+    selected_alpha = feature_state.get("balance_alpha")
+    if selected_alpha is not None and np.isfinite(float(selected_alpha)):
+        ax.axvline(float(selected_alpha), color="black", linestyle="--", alpha=0.55)
+    ax.set_xlabel("Audio balance alpha")
+    ax.set_ylabel("Metric")
+    ax.set_title("Balance Alpha Search")
+    ax.legend(frameon=False)
+    ax.grid(alpha=0.25, linestyle="--")
+    fig.tight_layout()
+    fig.savefig(curve_path, dpi=180)
+    plt.close(fig)
+    return report_path, curve_path
+
+
 def _plot_mask_distribution(
     assignments: np.ndarray,
     view_mask: np.ndarray,
@@ -1659,18 +1829,18 @@ def _dataset_plot_va(dataset, source: str = "mean") -> np.ndarray:
         if original_va.ndim != 2 or original_va.shape[1] != 2:
             raise ValueError(f"original_va must have shape [N, 2], got {original_va.shape}.")
         return original_va
-    if source_name == "cluster_consensus":
-        raise ValueError("plot_va_source='cluster_consensus' requires plot_va_override.")
+    if source_name in {"cluster_consensus", "latent_consensus"}:
+        raise ValueError(f"plot_va_source='{source_name}' requires plot_va_override.")
     if source_name != "mean":
-        raise ValueError("plot_va_source must be 'mean', 'original', or 'cluster_consensus'.")
+        raise ValueError("plot_va_source must be 'mean', 'original', 'cluster_consensus', or 'latent_consensus'.")
     return _dataset_mean_va(dataset)
 
 
 def _resolve_plot_va(dataset, source: str = "mean", plot_va_override: Optional[np.ndarray] = None) -> np.ndarray:
     source_name = str(source or "mean").strip().lower()
-    if source_name == "cluster_consensus":
+    if source_name in {"cluster_consensus", "latent_consensus"}:
         if plot_va_override is None:
-            raise ValueError("plot_va_source='cluster_consensus' requires plot_va_override.")
+            raise ValueError(f"plot_va_source='{source_name}' requires plot_va_override.")
         coords = np.asarray(plot_va_override, dtype=np.float32)
         if coords.ndim != 2 or coords.shape[1] < 2:
             raise ValueError(f"plot_va_override must have shape [N, >=2], got {coords.shape}.")
@@ -2220,7 +2390,7 @@ def _write_split_outputs(
 
     assignment_path = os.path.join(out_dir, "cluster_assignments.csv")
     catalog_path = os.path.join(out_dir, "cluster_catalog.csv")
-    use_cluster_consensus = str(plot_va_source or "mean").strip().lower() == "cluster_consensus"
+    use_cluster_consensus = str(plot_va_source or "mean").strip().lower() in {"cluster_consensus", "latent_consensus"}
     scatter_path = os.path.join(
         out_dir,
         "cluster_scatter_balanced_va.png" if use_cluster_consensus else "cluster_scatter_mean_va.png",
@@ -2234,10 +2404,12 @@ def _write_split_outputs(
     quadrant_heatmap_path = os.path.join(out_dir, "cluster_quadrant_heatmap.png")
     gate_profile_path = os.path.join(out_dir, "cluster_gate_profile.png")
     diff_scatter_path = os.path.join(out_dir, "cluster_diff_arrow.png")
+    audio_lyrics_segments_path = os.path.join(out_dir, "cluster_audio_lyrics_segments.png")
     mask_dist_path = os.path.join(out_dir, "cluster_mask_distribution.png")
     overlap_audit_path = os.path.join(out_dir, "cluster_overlap_audit.csv")
     palette_path = os.path.join(out_dir, "cluster_palette.json")
     summary_path = os.path.join(out_dir, "cluster_summary.json")
+    alpha_report_path, alpha_curve_path = _write_balance_alpha_audit(feature_state, out_dir)
 
     assignment_frame.to_csv(assignment_path, index=False, encoding="utf-8")
     catalog_frame.to_csv(catalog_path, index=False, encoding="utf-8")
@@ -2256,6 +2428,14 @@ def _write_split_outputs(
     _plot_diff_scatter(dataset.raw_audio if hasattr(dataset, "raw_audio") else np.zeros((len(assignments), 2)),
                        dataset.raw_lyrics if hasattr(dataset, "raw_lyrics") else np.zeros((len(assignments), 2)),
                        _dataset_view_mask, assignments, diff_scatter_path, palette)
+    _plot_audio_lyrics_segments(
+        dataset.raw_audio if hasattr(dataset, "raw_audio") else np.zeros((len(assignments), 2)),
+        dataset.raw_lyrics if hasattr(dataset, "raw_lyrics") else np.zeros((len(assignments), 2)),
+        _dataset_view_mask,
+        assignments,
+        audio_lyrics_segments_path,
+        palette,
+    )
     _plot_mask_distribution(assignments, _dataset_view_mask, mask_dist_path, palette)
     overlap_metrics = compute_overlap_gate_metrics(mean_va, assignments)
     pd.DataFrame([{key: value for key, value in overlap_metrics.items()}]).to_csv(
@@ -2299,6 +2479,11 @@ def _write_split_outputs(
             if isinstance(feature_state, dict) and "balance_alpha" in feature_state
             else float("nan")
         ),
+        "balance_alpha_summary": (
+            dict(feature_state["balance_alpha_summary"])
+            if isinstance(feature_state, dict) and isinstance(feature_state.get("balance_alpha_summary"), dict)
+            else None
+        ),
         "metadata_token_thresholds": {
             "min_global_support": int(METADATA_MIN_GLOBAL_SUPPORT),
             "min_cluster_support": int(METADATA_MIN_CLUSTER_SUPPORT),
@@ -2321,8 +2506,11 @@ def _write_split_outputs(
             "cluster_quadrant_heatmap": quadrant_heatmap_path,
             "cluster_gate_profile": gate_profile_path,
             "cluster_diff_arrow": diff_scatter_path,
+            "cluster_audio_lyrics_segments": audio_lyrics_segments_path,
             "cluster_mask_distribution": mask_dist_path,
             "cluster_overlap_audit": overlap_audit_path,
+            "balance_alpha_report": alpha_report_path,
+            "alpha_search_curve": alpha_curve_path,
             "cluster_palette": palette_path,
             "search_metrics": search_metrics_path,
             "bic_curve": bic_curve_path,
@@ -2762,10 +2950,11 @@ def main() -> None:
     k_strategy = str(args.k_strategy).strip().lower()
     block_slices = cluster_feature_block_slices(feature_strategy, int(search_features.shape[1]))
     search_primary_va = cluster_feature_primary_va(feature_strategy, search_features_raw)
+    plot_source_name = str(args.plot_va_source).strip().lower()
     search_affect_va = (
         search_primary_va
-        if str(args.plot_va_source).strip().lower() == "cluster_consensus" and search_primary_va is not None
-        else _dataset_plot_va(eval_datasets[search_split], str(args.plot_va_source))
+        if plot_source_name in {"cluster_consensus", "latent_consensus"} and search_primary_va is not None
+        else _dataset_plot_va(eval_datasets[search_split], plot_source_name)
     )
     selection_info_metadata_policy = dict(metadata_policy_info)
     k_result, search_metrics, selection_info = run_k_selection(
@@ -2819,6 +3008,10 @@ def main() -> None:
         min_va_center_sep=float(getattr(args, "min_va_center_sep", 0.70)),
         max_va_negative_silhouette_fraction=float(getattr(args, "max_va_negative_silhouette_fraction", 0.10)),
         primary_va=search_primary_va,
+        latent_learn_view_bias=parse_bool_text(getattr(args, "learn_view_bias", "true")),
+        latent_share_view_noise=parse_bool_text(getattr(args, "share_view_noise", "false")),
+        latent_alpha_prior_strength=float(getattr(args, "alpha_prior_strength", 0.0)),
+        latent_max_iter=int(getattr(args, "latent_max_iter", 100)),
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 
@@ -2835,12 +3028,16 @@ def main() -> None:
             "Use k_strategy='composite' or 'bic_only' instead."
         )
 
+    is_latent_va_model = k_strategy == "latent_va_gmm"
     if is_hierarchical:
         gmm_model = k_result.macro_model
         selected_k = k_result.total_clusters
     else:
         gmm_model = k_result
         selected_k = int(gmm_model.n_components)
+
+    if is_latent_va_model and assignment_mode not in {"joint", "missing_view_likelihood"}:
+        raise ValueError("k_strategy='latent_va_gmm' supports cluster_assignment_mode='joint' or 'missing_view_likelihood'.")
 
     # Complete-pair-first: re-fit GMM on both-pair samples only
     if assignment_mode == "complete_first":
@@ -2872,6 +3069,11 @@ def main() -> None:
         if str(args.covariance_type) != "diag":
             raise ValueError("cluster_assignment_mode='partial_likelihood' requires --covariance_type diag.")
         selection_info["partial_likelihood"] = True
+        selection_info["feature_block_slices"] = block_slices
+    elif assignment_mode == "missing_view_likelihood":
+        if not is_latent_va_model:
+            raise ValueError("cluster_assignment_mode='missing_view_likelihood' requires k_strategy='latent_va_gmm'.")
+        selection_info["missing_view_likelihood"] = True
         selection_info["feature_block_slices"] = block_slices
 
     gmm_bundle_path = os.path.join(out_dir, "discovery_gmm_bundle.pkl")
@@ -2940,6 +3142,10 @@ def main() -> None:
                     "min_va_knn_purity": float(args.min_va_knn_purity),
                     "min_va_center_sep": float(args.min_va_center_sep),
                     "max_va_negative_silhouette_fraction": float(args.max_va_negative_silhouette_fraction),
+                    "learn_view_bias": parse_bool_text(getattr(args, "learn_view_bias", "true")),
+                    "share_view_noise": parse_bool_text(getattr(args, "share_view_noise", "false")),
+                    "alpha_prior_strength": float(getattr(args, "alpha_prior_strength", 0.0)),
+                    "latent_max_iter": int(getattr(args, "latent_max_iter", 100)),
                     "selection_info": selection_info,
                 },
             },
@@ -3018,7 +3224,11 @@ def main() -> None:
                     assignments[mask] = global_label
                     global_label += 1
         else:
-            if assignment_mode == "partial_likelihood":
+            if is_latent_va_model:
+                assignments = gmm_model.predict(features_raw[:, :2], features_raw[:, 2:4], split_block_mask).astype(np.int64)
+                if str(args.plot_va_source).strip().lower() == "latent_consensus":
+                    plot_va_override = gmm_model.posterior_consensus(features_raw[:, :2], features_raw[:, 2:4], split_block_mask)
+            elif assignment_mode == "partial_likelihood":
                 assignments = gmm_model.predict(features, block_mask=split_block_mask).astype(np.int64)
             else:
                 assignments = gmm_model.predict(features).astype(np.int64)
