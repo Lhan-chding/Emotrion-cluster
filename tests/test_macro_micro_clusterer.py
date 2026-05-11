@@ -50,6 +50,32 @@ def _two_block_va_diff_fixture() -> tuple[np.ndarray, np.ndarray, list[tuple[int
     return features, block_mask, [(0, 2), (2, 4)]
 
 
+def _macro_pure_micro_mixed_fixture() -> tuple[np.ndarray, np.ndarray, list[tuple[int, int]], np.ndarray]:
+    rng = np.random.default_rng(17)
+    rows = []
+    labels = []
+    macro_specs = [(-4.0, 0, 1), (4.0, 2, 3)]
+    for macro_center, dominant_label, minority_label in macro_specs:
+        for diff_center, cluster_labels in (
+            (-1.5, [dominant_label] * 6 + [minority_label] * 4),
+            (1.5, [dominant_label] * 10),
+        ):
+            for affect_label in cluster_labels:
+                consensus = np.asarray(
+                    [macro_center + rng.normal(0.0, 0.04), rng.normal(0.0, 0.04)],
+                    dtype=np.float32,
+                )
+                diff = np.asarray(
+                    [diff_center + rng.normal(0.0, 0.04), rng.normal(0.0, 0.04)],
+                    dtype=np.float32,
+                )
+                rows.append(np.concatenate([consensus, diff]))
+                labels.append(affect_label)
+    features = np.vstack(rows).astype(np.float32)
+    block_mask = np.ones((features.shape[0], 2), dtype=bool)
+    return features, block_mask, [(0, 2), (2, 4)], np.asarray(labels, dtype=np.int64)
+
+
 def test_macro_micro_k_strategy_fits_predictable_two_level_model():
     features, block_mask, block_slices = _macro_micro_fixture()
 
@@ -90,6 +116,45 @@ def test_macro_micro_k_strategy_fits_predictable_two_level_model():
     for cluster_id in np.unique(labels):
         macro_ids = np.unique(model.macro_labels_[labels == cluster_id])
         assert macro_ids.size == 1
+
+
+def test_macro_micro_affect_gate_applies_to_macro_regions_not_diff_subclusters():
+    features, block_mask, block_slices, affect_labels = _macro_pure_micro_mixed_fixture()
+
+    model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="macro_micro",
+        k_min=4,
+        k_max=4,
+        random_state=17,
+        min_cluster_size_abs=5,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=1,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+        assignment_mode="partial_likelihood",
+        block_mask=block_mask,
+        block_slices=block_slices,
+        macro_k_min=2,
+        macro_k_max=2,
+        micro_k_min=1,
+        micro_k_max=2,
+        affect_labels=affect_labels,
+        affect_gate_enabled=True,
+        min_affect_dominant_ratio=0.70,
+        min_affect_weighted_purity=0.80,
+        max_affect_mixed_cluster_fraction=0.15,
+    )
+
+    assert model.n_components == 4
+    assert info["affect_gate_level"] == "macro"
+    assert info["affect_gate_ok"] is True
+    assert info["final_affect_gate_ok"] is False
+    assert bool(metrics.loc[0, "affect_gate_ok"]) is True
+    assert bool(metrics.loc[0, "final_affect_gate_ok"]) is False
 
 
 def test_macro_micro_k_strategy_supports_two_block_va_diff_features():

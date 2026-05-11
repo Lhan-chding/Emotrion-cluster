@@ -237,6 +237,10 @@ def _add_affect_selection_info(
         info[field] = float(value) if pd.notna(value) else float("nan")
 
 
+def _prefix_affect_metrics(metrics: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    return {f"{prefix}_{key}": value for key, value in metrics.items()}
+
+
 def _select_best_index(
     metrics: pd.DataFrame,
     scores: np.ndarray,
@@ -1069,7 +1073,15 @@ def search_macro_micro_diffaware(
         max_mask_purity = _max_cluster_mask_purity(labels, view_mask) if view_mask is not None else float("nan")
         affect_metrics: Dict[str, Any] = {}
         if config.affect_gate_enabled:
-            affect_metrics = compute_affect_purity_metrics(
+            macro_affect_metrics = compute_affect_purity_metrics(
+                macro_labels,
+                affect_labels,
+                min_dominant_ratio=float(config.min_affect_dominant_ratio),
+                max_mixed_cluster_fraction=float(config.max_affect_mixed_cluster_fraction),
+                min_weighted_purity=float(config.min_affect_weighted_purity),
+                min_valid_fraction=float(config.min_affect_valid_fraction),
+            )
+            final_affect_metrics = compute_affect_purity_metrics(
                 labels,
                 affect_labels,
                 min_dominant_ratio=float(config.min_affect_dominant_ratio),
@@ -1077,6 +1089,11 @@ def search_macro_micro_diffaware(
                 min_weighted_purity=float(config.min_affect_weighted_purity),
                 min_valid_fraction=float(config.min_affect_valid_fraction),
             )
+            affect_metrics = {
+                **macro_affect_metrics,
+                **_prefix_affect_metrics(final_affect_metrics, "final"),
+                "affect_gate_level": "macro",
+            }
         score = 0.35 * float(macro_sil) + 0.25 * float(final_sil) + 0.25 * float(stability["seed_ari_mean"])
         if np.isfinite(mask_nmi):
             score -= 0.25 * float(mask_nmi)
@@ -1108,7 +1125,10 @@ def search_macro_micro_diffaware(
             (
                 f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},"
                 f"min_size={int(row.min_cluster_size)},"
-                f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))}"
+                f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))},"
+                f"weighted={float(getattr(row, 'affect_weighted_dominant_ratio', float('nan'))):.3f},"
+                f"min={float(getattr(row, 'affect_min_dominant_ratio', float('nan'))):.3f},"
+                f"mixed={float(getattr(row, 'affect_mixed_cluster_fraction', float('nan'))):.3f}"
             )
             for row in metrics.itertuples(index=False)
         )
@@ -1152,6 +1172,17 @@ def search_macro_micro_diffaware(
     }
     if config.affect_gate_enabled:
         _add_affect_selection_info(selection_info, selected_row, config)
+        selection_info["affect_gate_level"] = str(selected_row.get("affect_gate_level", "macro"))
+        for field in (
+            "final_affect_valid_fraction",
+            "final_affect_weighted_dominant_ratio",
+            "final_affect_min_dominant_ratio",
+            "final_affect_mixed_cluster_fraction",
+            "final_affect_nmi",
+        ):
+            value = selected_row.get(field, float("nan"))
+            selection_info[field] = float(value) if pd.notna(value) else float("nan")
+        selection_info["final_affect_gate_ok"] = bool(selected_row.get("final_affect_gate_ok", False))
     return KSearchResult(
         best_k=int(best_model.n_components),
         best_model=best_model,
