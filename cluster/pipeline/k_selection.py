@@ -1020,15 +1020,17 @@ def search_macro_micro_diffaware(
     view_mask: Optional[np.ndarray] = None,
     affect_labels: Optional[np.ndarray] = None,
 ) -> KSearchResult:
-    """True macro/micro search for three-block diff-aware feature matrices."""
+    """True macro/micro search for two/three-block diff-aware feature matrices."""
     if str(config.covariance_type).lower() != "diag":
         raise ValueError("macro_micro K search requires covariance_type='diag'.")
     matrix = np.asarray(features, dtype=np.float32)
     mask = np.asarray(block_mask, dtype=bool)
-    if mask.ndim != 2 or mask.shape != (matrix.shape[0], 3):
-        raise ValueError(f"block_mask must have shape [N, 3], got {mask.shape} for features {matrix.shape}.")
-    if len(block_slices) != 3:
-        raise ValueError("macro_micro K search requires three block_slices: consensus, tension, metadata.")
+    if len(block_slices) not in {2, 3}:
+        raise ValueError("macro_micro K search requires block_slices: consensus, tension[, metadata].")
+    if mask.ndim != 2 or mask.shape != (matrix.shape[0], len(block_slices)):
+        raise ValueError(
+            f"block_mask must have shape [N, {len(block_slices)}], got {mask.shape} for features {matrix.shape}."
+        )
 
     min_size_threshold = _min_size_threshold(config, int(matrix.shape[0]))
     rows: List[Dict[str, Any]] = []

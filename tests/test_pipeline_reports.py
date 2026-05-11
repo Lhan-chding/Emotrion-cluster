@@ -15,6 +15,7 @@ from cluster.pipeline.train import (
     apply_cluster_feature_weights,
     build_cluster_features,
     cluster_feature_block_mask,
+    cluster_feature_block_slices,
     cluster_feature_weights,
     resolve_metadata_policy,
     run_k_selection,
@@ -508,6 +509,42 @@ def test_zero_diff_weight_removes_diff_block_from_cluster_mask():
     )
 
     np.testing.assert_array_equal(block_mask, np.asarray([[True, False, True]], dtype=bool))
+
+
+def test_balanced_va_diff_block_slices_keep_consensus_and_diff_separate():
+    view_mask = np.asarray(
+        [
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    assert cluster_feature_block_slices("balanced_va_diff", 8) == [(0, 2), (2, 8)]
+    block_mask = cluster_feature_block_mask("balanced_va_diff", view_mask, view_mask.shape[0])
+
+    np.testing.assert_array_equal(
+        block_mask,
+        np.asarray(
+            [
+                [True, True],
+                [True, False],
+            ],
+            dtype=bool,
+        ),
+    )
+
+
+def test_zero_diff_weight_removes_balanced_va_diff_block():
+    view_mask = np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32)
+    block_mask = cluster_feature_block_mask("balanced_va_diff", view_mask, view_mask.shape[0])
+    block_mask = apply_metadata_policy_to_block_mask(
+        block_mask,
+        metadata_cluster_weight=0.0,
+        diff_cluster_weight=0.0,
+    )
+
+    np.testing.assert_array_equal(block_mask, np.asarray([[True, False]], dtype=bool))
 
 
 def test_non_affective_metadata_policy_rejects_affective_fields():

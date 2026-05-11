@@ -46,7 +46,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "proposed_full": {
         "strategy": "balanced_va_diff",
-        "k_strategy": "composite",
+        "k_strategy": "macro_micro",
         "requires_run_dir": False,
         "metadata_policy": "report_only",
         "diff_cluster_weight": 0.2,

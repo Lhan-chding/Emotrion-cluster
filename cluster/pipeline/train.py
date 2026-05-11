@@ -671,6 +671,8 @@ def cluster_feature_weights(
 
 def cluster_feature_block_slices(strategy: str, feature_dim: int) -> List[Tuple[int, int]]:
     base_strategy = str(strategy or "full").strip().lower().replace("pca_reduced_", "")
+    if base_strategy == "balanced_va_diff" and int(feature_dim) == BALANCED_VA_DIFF_DIM:
+        return [(0, 2), (2, int(feature_dim))]
     if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"} and int(feature_dim) % 3 == 0:
         latent_dim = int(feature_dim) // 3
         return [(0, latent_dim), (latent_dim, 2 * latent_dim), (2 * latent_dim, 3 * latent_dim)]
@@ -682,6 +684,16 @@ def cluster_feature_block_mask(strategy: str, view_mask: Optional[np.ndarray], n
     if view_mask is None:
         return np.ones((int(n_samples), len(cluster_feature_block_slices(base_strategy, 1))), dtype=bool)
     mask = np.asarray(view_mask, dtype=np.float32)
+    if base_strategy == "balanced_va_diff":
+        has_audio = mask[:, 0] > 0.0
+        has_lyrics = mask[:, 1] > 0.0
+        has_consensus = has_audio | has_lyrics
+        block_mask = np.stack([has_consensus, has_audio & has_lyrics], axis=1).astype(bool)
+        empty_rows = ~block_mask.any(axis=1)
+        if empty_rows.any():
+            block_mask = np.array(block_mask, copy=True)
+            block_mask[empty_rows, 0] = True
+        return block_mask
     if base_strategy in {"masked_diffaware", "macro_micro_diffaware", "partial_gmm_diffaware"}:
         has_audio = mask[:, 0] > 0.0
         has_lyrics = mask[:, 1] > 0.0

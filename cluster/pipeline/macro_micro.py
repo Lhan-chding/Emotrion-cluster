@@ -20,8 +20,8 @@ def _as_block_slices(block_slices: Sequence[Sequence[int]], n_features: int) -> 
         if start < 0 or stop <= start or stop > int(n_features):
             raise ValueError(f"Invalid block slice ({start}, {stop}) for feature_dim={n_features}.")
         slices.append((start, stop))
-    if len(slices) != 3:
-        raise ValueError("MacroMicroClusterer requires exactly three blocks: consensus, tension, metadata.")
+    if len(slices) not in {2, 3}:
+        raise ValueError("MacroMicroClusterer requires two or three blocks: consensus, tension[, metadata].")
     return slices
 
 
@@ -98,8 +98,8 @@ class MacroMicroClusterer:
                 continue
 
             self.consensus_centroids_[macro_id] = consensus[macro_indices].mean(axis=0)
-            metadata_observed = mask[macro_indices, 2]
-            if metadata_observed.any():
+            metadata_observed = mask[macro_indices, 2] if mask.shape[1] > 2 else np.zeros(macro_indices.size, dtype=bool)
+            if metadata.shape[1] > 0 and metadata_observed.any():
                 self.metadata_centroids_[macro_id] = metadata[macro_indices][metadata_observed].mean(axis=0)
 
             micro_features = self._micro_features_for_macro(matrix[macro_indices], macro_id)
@@ -173,6 +173,9 @@ class MacroMicroClusterer:
 
     def _split_blocks(self, matrix: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         blocks = [matrix[:, start:stop] for start, stop in self.block_slices_]
+        if len(blocks) == 2:
+            metadata = np.zeros((matrix.shape[0], 0), dtype=np.float32)
+            return blocks[0], blocks[1], metadata
         return blocks[0], blocks[1], blocks[2]
 
     def _micro_features_for_macro(self, matrix: np.ndarray, macro_id: int) -> np.ndarray:
@@ -182,6 +185,12 @@ class MacroMicroClusterer:
         return np.concatenate([tension, metadata_residual, local_consensus], axis=1).astype(np.float32)
 
     def _micro_block_mask(self, block_mask: np.ndarray) -> np.ndarray:
+        if block_mask.shape[1] == 2:
+            micro_mask = np.stack([block_mask[:, 1], block_mask[:, 0]], axis=1).astype(bool)
+            empty_rows = ~micro_mask.any(axis=1)
+            if empty_rows.any():
+                micro_mask[empty_rows, 1] = True
+            return micro_mask
         micro_mask = np.stack([block_mask[:, 1], block_mask[:, 2], block_mask[:, 0]], axis=1).astype(bool)
         empty_rows = ~micro_mask.any(axis=1)
         if empty_rows.any():
@@ -191,10 +200,15 @@ class MacroMicroClusterer:
     def _micro_block_slices(self) -> List[BlockSlice]:
         consensus_start, consensus_stop = self.block_slices_[0]
         tension_start, tension_stop = self.block_slices_[1]
-        metadata_start, metadata_stop = self.block_slices_[2]
         tension_dim = int(tension_stop - tension_start)
-        metadata_dim = int(metadata_stop - metadata_start)
         consensus_dim = int(consensus_stop - consensus_start)
+        if len(self.block_slices_) == 2:
+            return [
+                (0, tension_dim),
+                (tension_dim, tension_dim + consensus_dim),
+            ]
+        metadata_start, metadata_stop = self.block_slices_[2]
+        metadata_dim = int(metadata_stop - metadata_start)
         return [
             (0, tension_dim),
             (tension_dim, tension_dim + metadata_dim),
