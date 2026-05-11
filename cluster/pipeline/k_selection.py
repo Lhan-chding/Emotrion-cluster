@@ -1126,6 +1126,7 @@ def search_macro_micro_diffaware(
                 f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},"
                 f"min_size={int(row.min_cluster_size)},"
                 f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))},"
+                f"valid={float(getattr(row, 'affect_valid_fraction', float('nan'))):.3f},"
                 f"weighted={float(getattr(row, 'affect_weighted_dominant_ratio', float('nan'))):.3f},"
                 f"min={float(getattr(row, 'affect_min_dominant_ratio', float('nan'))):.3f},"
                 f"mixed={float(getattr(row, 'affect_mixed_cluster_fraction', float('nan'))):.3f}"
