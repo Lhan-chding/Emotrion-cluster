@@ -159,12 +159,57 @@ def test_macro_micro_affect_gate_applies_to_macro_regions_not_diff_subclusters()
     assert bool(metrics.loc[0, "final_affect_gate_ok"]) is False
 
 
+def test_macro_micro_final_affect_gate_rejects_incoherent_micro_splits():
+    features, block_mask, block_slices, affect_labels = _macro_pure_micro_mixed_fixture()
+
+    model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="macro_micro",
+        k_min=2,
+        k_max=2,
+        random_state=17,
+        min_cluster_size_abs=5,
+        min_cluster_size_ratio=0.0,
+        covariance_type="diag",
+        stability_runs=1,
+        cluster_backend="sklearn",
+        eval_backend="sklearn",
+        silhouette_mode="sampled",
+        silhouette_sample_size=0,
+        assignment_mode="partial_likelihood",
+        block_mask=block_mask,
+        block_slices=block_slices,
+        macro_k_min=2,
+        macro_k_max=2,
+        micro_k_min=1,
+        micro_k_max=2,
+        affect_labels=affect_labels,
+        affect_gate_enabled=True,
+        min_affect_dominant_ratio=0.70,
+        min_affect_weighted_purity=0.80,
+        max_affect_mixed_cluster_fraction=0.15,
+        affect_gate_level="both",
+    )
+
+    labels = model.predict(features, block_mask=block_mask)
+
+    assert model.n_components == 2
+    assert len(np.unique(labels)) == 2
+    assert info["affect_gate_level"] == "both"
+    assert info["affect_gate_ok"] is True
+    assert info["macro_affect_gate_ok"] is True
+    assert info["final_affect_gate_ok"] is True
+    assert bool(metrics.loc[0, "affect_gate_ok"]) is True
+    assert bool(metrics.loc[0, "macro_affect_gate_ok"]) is True
+    assert bool(metrics.loc[0, "final_affect_gate_ok"]) is True
+
+
 def test_macro_micro_affect_gate_error_reports_valid_fraction():
     features, block_mask, block_slices, affect_labels = _macro_pure_micro_mixed_fixture()
     sparse_labels = affect_labels.copy()
     sparse_labels[::2] = -1
 
-    with pytest.raises(ValueError, match=r"valid=0\.500"):
+    with pytest.raises(ValueError, match=r"macro_valid=0\.500"):
         run_k_selection(
             features=features,
             k_strategy="macro_micro",

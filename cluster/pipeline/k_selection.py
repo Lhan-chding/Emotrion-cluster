@@ -1054,13 +1054,24 @@ def search_macro_micro_diffaware(
 
     for macro_k in range(int(config.macro_k_min), int(config.macro_k_max) + 1):
         validator = None
-        if config.micro_min_silhouette > 0 or config.micro_min_tension_effect > 0:
+        gate_level = str(config.affect_gate_level).lower()
+        enforce_final_affect = bool(config.affect_gate_enabled) and gate_level in {"final", "both"}
+        if config.micro_min_silhouette > 0 or config.micro_min_tension_effect > 0 or enforce_final_affect:
             validator = MicroSplitValidator(
                 min_silhouette=float(config.micro_min_silhouette),
                 min_stability_ari=float(config.micro_min_stability),
                 min_jaccard=float(config.micro_min_jaccard),
                 min_tension_effect=float(config.micro_min_tension_effect),
                 max_consensus_effect_ratio=float(config.micro_max_consensus_effect_ratio),
+                min_affect_dominant_ratio=(
+                    float(config.min_affect_dominant_ratio) if enforce_final_affect else None
+                ),
+                max_affect_mixed_cluster_fraction=(
+                    float(config.max_affect_mixed_cluster_fraction) if enforce_final_affect else None
+                ),
+                min_affect_weighted_purity=(
+                    float(config.min_affect_weighted_purity) if enforce_final_affect else None
+                ),
             )
         model = MacroMicroClusterer(
             macro_k=int(macro_k),
@@ -1076,7 +1087,7 @@ def search_macro_micro_diffaware(
             micro_tension_weight=float(config.micro_tension_weight),
             micro_consensus_residual_weight=float(config.micro_consensus_residual_weight),
             micro_split_validator=validator,
-        ).fit(matrix, block_mask=mask)
+        ).fit(matrix, block_mask=mask, affect_labels=affect_labels if enforce_final_affect else None)
         labels = model.labels_.astype(np.int64)
         macro_labels = model.macro_labels_.astype(np.int64)
         sizes = np.bincount(labels, minlength=int(model.n_components))
@@ -1112,7 +1123,6 @@ def search_macro_micro_diffaware(
                 min_weighted_purity=float(config.min_affect_weighted_purity),
                 min_valid_fraction=float(config.min_affect_valid_fraction),
             )
-            gate_level = str(config.affect_gate_level).lower()
             if gate_level == "macro":
                 combined_gate_ok = bool(macro_affect_metrics["affect_gate_ok"])
             elif gate_level == "final":
@@ -1122,6 +1132,7 @@ def search_macro_micro_diffaware(
             affect_metrics = {
                 **macro_affect_metrics,
                 **_prefix_affect_metrics(final_affect_metrics, "final"),
+                "macro_affect_gate_ok": bool(macro_affect_metrics["affect_gate_ok"]),
                 "affect_gate_level": gate_level,
                 "affect_gate_ok": combined_gate_ok,
             }
@@ -1155,12 +1166,20 @@ def search_macro_micro_diffaware(
         candidates_text = ", ".join(
             (
                 f"macro_k={int(row.macro_k)}:total_k={int(row.total_clusters)},"
+                f"total_ok={bool(getattr(row, 'total_k_ok', True))},"
                 f"min_size={int(row.min_cluster_size)},"
+                f"min_ok={bool(getattr(row, 'min_size_ok', True))},"
                 f"affect_ok={bool(getattr(row, 'affect_gate_ok', True))},"
-                f"valid={float(getattr(row, 'affect_valid_fraction', float('nan'))):.3f},"
-                f"weighted={float(getattr(row, 'affect_weighted_dominant_ratio', float('nan'))):.3f},"
-                f"min={float(getattr(row, 'affect_min_dominant_ratio', float('nan'))):.3f},"
-                f"mixed={float(getattr(row, 'affect_mixed_cluster_fraction', float('nan'))):.3f}"
+                f"macro_ok={bool(getattr(row, 'macro_affect_gate_ok', getattr(row, 'affect_gate_ok', True)))},"
+                f"macro_valid={float(getattr(row, 'affect_valid_fraction', float('nan'))):.3f},"
+                f"macro_weighted={float(getattr(row, 'affect_weighted_dominant_ratio', float('nan'))):.3f},"
+                f"macro_min={float(getattr(row, 'affect_min_dominant_ratio', float('nan'))):.3f},"
+                f"macro_mixed={float(getattr(row, 'affect_mixed_cluster_fraction', float('nan'))):.3f},"
+                f"final_ok={bool(getattr(row, 'final_affect_gate_ok', getattr(row, 'affect_gate_ok', True)))},"
+                f"final_valid={float(getattr(row, 'final_affect_valid_fraction', float('nan'))):.3f},"
+                f"final_weighted={float(getattr(row, 'final_affect_weighted_dominant_ratio', float('nan'))):.3f},"
+                f"final_min={float(getattr(row, 'final_affect_min_dominant_ratio', float('nan'))):.3f},"
+                f"final_mixed={float(getattr(row, 'final_affect_mixed_cluster_fraction', float('nan'))):.3f}"
             )
             for row in metrics.itertuples(index=False)
         )
@@ -1215,6 +1234,7 @@ def search_macro_micro_diffaware(
             value = selected_row.get(field, float("nan"))
             selection_info[field] = float(value) if pd.notna(value) else float("nan")
         selection_info["final_affect_gate_ok"] = bool(selected_row.get("final_affect_gate_ok", False))
+        selection_info["macro_affect_gate_ok"] = bool(selected_row.get("macro_affect_gate_ok", selected_row.get("affect_gate_ok", False)))
     return KSearchResult(
         best_k=int(best_model.n_components),
         best_model=best_model,

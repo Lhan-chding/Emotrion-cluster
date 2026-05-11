@@ -22,6 +22,9 @@ class MicroSplitValidator:
     min_jaccard: float = 0.35
     min_tension_effect: float = 0.35
     max_consensus_effect_ratio: float = 0.50
+    min_affect_dominant_ratio: Optional[float] = None
+    max_affect_mixed_cluster_fraction: Optional[float] = None
+    min_affect_weighted_purity: Optional[float] = None
 
     def evaluate(
         self,
@@ -30,6 +33,7 @@ class MicroSplitValidator:
         consensus: np.ndarray,
         tension: np.ndarray,
         silhouette: float,
+        affect_labels: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         unique_labels = np.unique(labels)
         if len(unique_labels) < 2:
@@ -48,6 +52,21 @@ class MicroSplitValidator:
                 f"consensus_effect={consensus_effect:.3f}>"
                 f"{self.max_consensus_effect_ratio}*tension_effect={tension_effect:.3f}"
             )
+        affect_metrics: Dict[str, float] = {}
+        if affect_labels is not None and self.min_affect_dominant_ratio is not None:
+            affect_metrics = self._affect_metrics(labels, affect_labels)
+            weighted = affect_metrics["affect_weighted_dominant_ratio"]
+            min_ratio = affect_metrics["affect_min_dominant_ratio"]
+            mixed = affect_metrics["affect_mixed_cluster_fraction"]
+            if self.min_affect_weighted_purity is not None and weighted < self.min_affect_weighted_purity:
+                reasons.append(f"affect_weighted={weighted:.3f}<{self.min_affect_weighted_purity}")
+            if min_ratio < self.min_affect_dominant_ratio:
+                reasons.append(f"affect_min={min_ratio:.3f}<{self.min_affect_dominant_ratio}")
+            if (
+                self.max_affect_mixed_cluster_fraction is not None
+                and mixed > self.max_affect_mixed_cluster_fraction
+            ):
+                reasons.append(f"affect_mixed={mixed:.3f}>{self.max_affect_mixed_cluster_fraction}")
 
         accepted = len(reasons) == 0
         return {
@@ -56,6 +75,7 @@ class MicroSplitValidator:
             "tension_effect_size": float(tension_effect),
             "consensus_effect_size": float(consensus_effect),
             "micro_silhouette": float(silhouette),
+            **affect_metrics,
         }
 
     def _effect_size(self, features: np.ndarray, labels: np.ndarray) -> float:
@@ -72,6 +92,47 @@ class MicroSplitValidator:
         pooled_var = sum(g.var(axis=0).sum() * (len(g) - 1) for g in groups) / max(features.shape[0] - len(unique), 1)
         pooled_std = float(np.sqrt(pooled_var / max(features.shape[1], 1)))
         return float(mean_diff / max(pooled_std, 1e-8))
+
+    def _affect_metrics(self, labels: np.ndarray, affect_labels: np.ndarray) -> Dict[str, float]:
+        clusters = np.asarray(labels, dtype=np.int64)
+        affect = np.asarray(affect_labels, dtype=np.int64)
+        if clusters.shape[0] != affect.shape[0]:
+            raise ValueError(
+                f"affect_labels length {affect.shape[0]} does not match micro labels length {clusters.shape[0]}."
+            )
+        valid = (affect >= 0) & (affect < 4)
+        valid_count = int(valid.sum())
+        valid_fraction = float(valid_count / max(affect.shape[0], 1))
+        if valid_count == 0:
+            return {
+                "affect_valid_fraction": valid_fraction,
+                "affect_weighted_dominant_ratio": 1.0,
+                "affect_min_dominant_ratio": 1.0,
+                "affect_mixed_cluster_fraction": 0.0,
+            }
+
+        weighted_dominant = 0.0
+        mixed_count = 0
+        dominant_ratios: List[float] = []
+        min_ratio_threshold = float(self.min_affect_dominant_ratio or 0.0)
+        for cluster_id in np.unique(clusters[valid]):
+            cluster_mask = valid & (clusters == int(cluster_id))
+            cluster_size = int(cluster_mask.sum())
+            if cluster_size == 0:
+                continue
+            counts = np.bincount(affect[cluster_mask], minlength=4).astype(np.float64)
+            dominant = float(counts.max() / max(cluster_size, 1))
+            dominant_ratios.append(dominant)
+            weighted_dominant += float(counts.max())
+            if dominant < min_ratio_threshold:
+                mixed_count += cluster_size
+
+        return {
+            "affect_valid_fraction": valid_fraction,
+            "affect_weighted_dominant_ratio": float(weighted_dominant / max(valid_count, 1)),
+            "affect_min_dominant_ratio": float(min(dominant_ratios)) if dominant_ratios else 1.0,
+            "affect_mixed_cluster_fraction": float(mixed_count / max(valid_count, 1)),
+        }
 
 
 def _as_block_slices(block_slices: Sequence[Sequence[int]], n_features: int) -> List[BlockSlice]:
@@ -123,12 +184,24 @@ class MacroMicroClusterer:
     micro_consensus_residual_weight: float = 1.0
     micro_split_validator: Optional[MicroSplitValidator] = None
 
-    def fit(self, features: np.ndarray, block_mask: Optional[np.ndarray] = None) -> "MacroMicroClusterer":
+    def fit(
+        self,
+        features: np.ndarray,
+        block_mask: Optional[np.ndarray] = None,
+        affect_labels: Optional[np.ndarray] = None,
+    ) -> "MacroMicroClusterer":
         matrix = np.asarray(features, dtype=np.float32)
         if matrix.ndim != 2:
             raise ValueError(f"features must be 2D, got {matrix.shape}.")
         self.block_slices_ = _as_block_slices(self.block_slices, matrix.shape[1])
         mask = _normalize_block_mask(block_mask, matrix.shape[0], len(self.block_slices_))
+        affect = None
+        if affect_labels is not None:
+            affect = np.asarray(affect_labels, dtype=np.int64)
+            if affect.shape[0] != matrix.shape[0]:
+                raise ValueError(
+                    f"affect_labels length {affect.shape[0]} does not match features length {matrix.shape[0]}."
+                )
         consensus, _tension, metadata = self._split_blocks(matrix)
 
         self.macro_model_ = fit_gaussian_mixture_robust(
@@ -171,10 +244,12 @@ class MacroMicroClusterer:
             micro_mask = self._micro_block_mask(mask[macro_indices])
             consensus_sub = consensus[macro_indices]
             tension_sub = matrix[macro_indices, self.block_slices_[1][0]:self.block_slices_[1][1]]
+            affect_sub = affect[macro_indices] if affect is not None else None
             micro_k, micro_model, micro_labels, micro_sil = self._fit_micro(
                 micro_features, micro_mask, macro_id,
                 consensus_block=consensus_sub,
                 tension_block=tension_sub,
+                affect_labels=affect_sub,
             )
             self.micro_k_by_macro_[macro_id] = int(micro_k)
             offsets: Dict[int, int] = {}
@@ -317,6 +392,7 @@ class MacroMicroClusterer:
         macro_id: int,
         consensus_block: Optional[np.ndarray] = None,
         tension_block: Optional[np.ndarray] = None,
+        affect_labels: Optional[np.ndarray] = None,
     ) -> Tuple[int, Optional[MaskedDiagonalGMM], np.ndarray, float]:
         n_samples = int(micro_features.shape[0])
         min_size = max(int(self.min_cluster_size), 1)
@@ -360,6 +436,7 @@ class MacroMicroClusterer:
                     consensus=consensus_block,
                     tension=tension_block,
                     silhouette=score,
+                    affect_labels=affect_labels,
                 )
                 if not validation["accepted"]:
                     continue
