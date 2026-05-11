@@ -3044,6 +3044,7 @@ def main() -> None:
         )
 
     is_latent_va_model = k_strategy == "latent_va_gmm"
+    is_balanced_region_model = k_strategy == "balanced_va_regions"
     if is_hierarchical:
         gmm_model = k_result.macro_model
         selected_k = k_result.total_clusters
@@ -3053,6 +3054,8 @@ def main() -> None:
 
     if is_latent_va_model and assignment_mode not in {"joint", "missing_view_likelihood"}:
         raise ValueError("k_strategy='latent_va_gmm' supports cluster_assignment_mode='joint' or 'missing_view_likelihood'.")
+    if is_balanced_region_model and assignment_mode != "joint":
+        raise ValueError("k_strategy='balanced_va_regions' requires cluster_assignment_mode='joint'.")
 
     # Complete-pair-first: re-fit GMM on both-pair samples only
     if assignment_mode == "complete_first":
@@ -3207,8 +3210,9 @@ def main() -> None:
             transform_cluster_features(cluster_scaler, features_raw, block_mask=split_block_mask),
             feature_weights,
         )
+        split_primary_va = cluster_feature_primary_va(feature_strategy, features_raw)
         plot_va_override = (
-            cluster_feature_primary_va(feature_strategy, features_raw)
+            split_primary_va
             if str(args.plot_va_source).strip().lower() == "cluster_consensus"
             else None
         )
@@ -3244,6 +3248,10 @@ def main() -> None:
                 assignments = gmm_model.predict(features_raw[:, :2], features_raw[:, 2:4], split_block_mask).astype(np.int64)
                 if str(args.plot_va_source).strip().lower() == "latent_consensus":
                     plot_va_override = gmm_model.posterior_consensus(features_raw[:, :2], features_raw[:, 2:4], split_block_mask)
+            elif is_balanced_region_model:
+                if split_primary_va is None:
+                    raise ValueError("balanced_va_regions requires cluster_feature_primary_va for split assignment.")
+                assignments = gmm_model.predict(split_primary_va).astype(np.int64)
             elif assignment_mode == "partial_likelihood":
                 assignments = gmm_model.predict(features, block_mask=split_block_mask).astype(np.int64)
             else:
