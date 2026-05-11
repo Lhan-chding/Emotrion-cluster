@@ -168,8 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff_input_dim", type=int, default=26,
                         help="Input dimension for DiffEncoder (diff geometry features)")
     parser.add_argument("--k_strategy", type=str, default="composite",
-                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "latent_va_gmm", "bic_only", "hierarchical"],
-                        help="K-selection strategy: composite, semantic_composite, macro_micro, constrained_macro_micro, macro_only, latent_va_gmm, bic_only, or hierarchical")
+                        choices=["composite", "semantic_composite", "macro_micro", "constrained_macro_micro", "macro_only", "latent_va_gmm", "balanced_va_regions", "bic_only", "hierarchical"],
+                        help="K-selection strategy: composite, semantic_composite, macro_micro, constrained_macro_micro, macro_only, latent_va_gmm, balanced_va_regions, bic_only, or hierarchical")
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"],
                         help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
@@ -322,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="V19 latent_va_gmm: shrink audio/lyrics view reliability toward 0.5.")
     parser.add_argument("--latent_max_iter", type=int, default=100,
                         help="V19 latent_va_gmm EM iterations.")
+    parser.add_argument("--region_max_iter", type=int, default=100,
+                        help="V20 balanced_va_regions constrained assignment iterations.")
     return parser
 
 
@@ -1127,6 +1129,7 @@ def run_k_selection(
     latent_share_view_noise: bool = False,
     latent_alpha_prior_strength: float = 0.0,
     latent_max_iter: int = 100,
+    region_max_iter: int = 100,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -1178,8 +1181,19 @@ def run_k_selection(
         latent_share_view_noise=bool(latent_share_view_noise),
         latent_alpha_prior_strength=float(latent_alpha_prior_strength),
         latent_max_iter=int(latent_max_iter),
+        region_max_iter=int(region_max_iter),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
+    if k_strategy == "balanced_va_regions":
+        from cluster.pipeline.balanced_regions import search_balanced_va_regions
+
+        result = search_balanced_va_regions(
+            features,
+            config,
+            primary_va=primary_va,
+            affect_labels=affect_labels,
+        )
+        return result.best_model, result.metrics, result.selection_info
     if k_strategy == "latent_va_gmm":
         if features.ndim != 2 or features.shape[1] < 4:
             raise ValueError("k_strategy='latent_va_gmm' requires latent_two_view_va features with shape [N, >=4].")
@@ -3012,6 +3026,7 @@ def main() -> None:
         latent_share_view_noise=parse_bool_text(getattr(args, "share_view_noise", "false")),
         latent_alpha_prior_strength=float(getattr(args, "alpha_prior_strength", 0.0)),
         latent_max_iter=int(getattr(args, "latent_max_iter", 100)),
+        region_max_iter=int(getattr(args, "region_max_iter", 100)),
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 
@@ -3146,6 +3161,7 @@ def main() -> None:
                     "share_view_noise": parse_bool_text(getattr(args, "share_view_noise", "false")),
                     "alpha_prior_strength": float(getattr(args, "alpha_prior_strength", 0.0)),
                     "latent_max_iter": int(getattr(args, "latent_max_iter", 100)),
+                    "region_max_iter": int(getattr(args, "region_max_iter", 100)),
                     "selection_info": selection_info,
                 },
             },

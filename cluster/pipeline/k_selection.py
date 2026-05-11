@@ -81,6 +81,8 @@ class KSelectionConfig:
     latent_share_view_noise: bool = False
     latent_alpha_prior_strength: float = 0.0
     latent_max_iter: int = 100
+    # V20 balanced VA region clustering
+    region_max_iter: int = 100
 
 
 @dataclass
