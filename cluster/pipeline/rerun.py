@@ -248,9 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_va_negative_silhouette_fraction", type=float, default=0.10)
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"])
-    parser.add_argument("--learn_view_bias", type=str, default="true")
-    parser.add_argument("--share_view_noise", type=str, default="false")
-    parser.add_argument("--alpha_prior_strength", type=float, default=0.0)
+    parser.add_argument("--learn_view_bias", "--latent_learn_view_bias", dest="learn_view_bias", type=str, default="true")
+    parser.add_argument("--share_view_noise", "--latent_share_view_noise", dest="share_view_noise", type=str, default="false")
+    parser.add_argument("--alpha_prior_strength", "--latent_alpha_prior_strength", dest="alpha_prior_strength", type=float, default=0.0)
     parser.add_argument("--latent_max_iter", type=int, default=100)
     parser.add_argument("--region_max_iter", type=int, default=100)
     parser.add_argument("--run_tension_micro_probe", type=str, default="true")

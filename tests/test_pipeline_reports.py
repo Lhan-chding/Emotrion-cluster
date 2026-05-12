@@ -5,6 +5,7 @@ from cluster.pipeline.rerun import build_parser as build_rerun_parser
 from cluster.pipeline.train import (
     _canonical_tension_labels,
     _cluster_label_names_for_outputs,
+    _cluster_scatter_labels,
     _dataset_plot_va,
     _plot_cluster_feature_pca,
     _quadrant_heatmap_matrix,
@@ -883,6 +884,19 @@ def test_cluster_feature_pca_plot_writes_actual_gmm_feature_projection(tmp_path)
     assert out_path.stat().st_size > 0
 
 
+def test_cluster_scatter_labels_distinguish_balanced_and_raw_mean_planes():
+    assert _cluster_scatter_labels("cluster_consensus") == (
+        "Discovered Regions on Learned Balanced VA Plane",
+        "Balanced Valence",
+        "Balanced Arousal",
+    )
+    assert _cluster_scatter_labels("mean") == (
+        "Discovered Regions on Raw Mean VA Plane",
+        "Mean Valence",
+        "Mean Arousal",
+    )
+
+
 def test_canonical_tension_labels_order_micro_ids_by_mean_norm():
     tension = np.asarray(
         [
@@ -1094,6 +1108,25 @@ def test_write_split_outputs_uses_cluster_consensus_as_balanced_va(tmp_path):
     assert (tmp_path / "cluster_scatter_lyrics_va.png").exists()
     assert payload["plot_va_source"] == "cluster_consensus"
     assert payload["output_files"]["cluster_scatter"].endswith("cluster_scatter_balanced_va.png")
+    region_csv = tmp_path / "canonical_affect_regions.csv"
+    region_md = tmp_path / "canonical_affect_regions.md"
+    assert region_csv.exists()
+    assert region_md.exists()
+    region_frame = pd.read_csv(region_csv)
+    assert {
+        "cluster_id",
+        "canonical_name",
+        "short_name",
+        "balanced_valence",
+        "balanced_arousal",
+        "raw_audio_mean",
+        "raw_lyrics_mean",
+        "mean_delta",
+        "top_tokens",
+        "representative_tracks",
+    }.issubset(region_frame.columns)
+    assert region_frame.loc[region_frame["cluster_id"] == 0, "canonical_name"].iloc[0] == "Melancholic Low-Arousal"
+    assert payload["output_files"]["canonical_affect_regions_csv"] == str(region_csv)
 
 
 def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
@@ -1160,8 +1193,13 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
 
     probe_path = tmp_path / "tension_micro_probe" / "tension_micro_probe.csv"
     assignment_path = tmp_path / "tension_micro_probe" / "tension_micro_assignments.csv"
+    subtype_report_path = tmp_path / "tension_substructure_report.md"
+    subtype_enrichment_path = tmp_path / "tension_substructure_enrichment.csv"
+    subtype_assignment_path = tmp_path / "tension_subtype_assignments.csv"
     probe = pd.read_csv(probe_path)
     tension_assignments = pd.read_csv(assignment_path)
+    subtype_enrichment = pd.read_csv(subtype_enrichment_path)
+    subtype_assignments = pd.read_csv(subtype_assignment_path)
     final_assignments = pd.read_csv(tmp_path / "cluster_assignments.csv")
 
     assert probe_path.exists()
@@ -1170,10 +1208,17 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
     assert payload["output_files"]["tension_micro_probe"] == str(probe_path)
     assert payload["output_files"]["tension_micro_assignments"] == str(assignment_path)
     assert "tension_micro_probe" in payload
+    assert subtype_report_path.exists()
+    assert subtype_enrichment_path.exists()
+    assert subtype_assignment_path.exists()
+    assert payload["output_files"]["tension_substructure_report"] == str(subtype_report_path)
     assert set(probe["cluster_id"].tolist()) == {0, 1}
     assert set(probe["selected_micro_k"].tolist()) == {2}
     assert {"tension_silhouette", "tension_effect_size", "seed_ari_mean"}.issubset(probe.columns)
     assert set(tension_assignments["tension_micro_id"].tolist()) == {0, 1}
+    assert {"subtype_label", "mean_tension_norm", "top_tokens"}.issubset(subtype_enrichment.columns)
+    assert "modality-consistent" in set(subtype_enrichment["subtype_label"].astype(str))
+    assert {"tension_micro_id", "tension_subtype_label"}.issubset(subtype_assignments.columns)
     assert "tension_micro_id" not in final_assignments.columns
 
 

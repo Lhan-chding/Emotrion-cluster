@@ -6,7 +6,7 @@ import json
 import os
 import pickle
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -316,11 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--affect_gate_level", type=str, default="both",
                         choices=["macro", "final", "both"],
                         help="Which affect gate(s) to enforce as hard gates")
-    parser.add_argument("--learn_view_bias", type=str, default="true",
+    parser.add_argument("--learn_view_bias", "--latent_learn_view_bias", dest="learn_view_bias", type=str, default="true",
                         help="V19 latent_va_gmm: learn per-cluster audio/lyrics view bias (true/false).")
-    parser.add_argument("--share_view_noise", type=str, default="false",
+    parser.add_argument("--share_view_noise", "--latent_share_view_noise", dest="share_view_noise", type=str, default="false",
                         help="V19 latent_va_gmm: tie audio and lyrics observation noise (true/false).")
-    parser.add_argument("--alpha_prior_strength", type=float, default=0.0,
+    parser.add_argument("--alpha_prior_strength", "--latent_alpha_prior_strength", dest="alpha_prior_strength", type=float, default=0.0,
                         help="V19 latent_va_gmm: shrink audio/lyrics view reliability toward 0.5.")
     parser.add_argument("--latent_max_iter", type=int, default=100,
                         help="V19 latent_va_gmm EM iterations.")
@@ -1459,12 +1459,37 @@ def _plot_training_curves(history: pd.DataFrame, out_path: str) -> None:
     plt.close(fig)
 
 
+def _cluster_scatter_labels(plot_va_source: str) -> Tuple[str, str, str]:
+    source = str(plot_va_source or "mean").strip().lower()
+    if source == "cluster_consensus":
+        return (
+            "Discovered Regions on Learned Balanced VA Plane",
+            "Balanced Valence",
+            "Balanced Arousal",
+        )
+    if source == "latent_consensus":
+        return (
+            "Discovered Regions on Latent Consensus VA Plane",
+            "Latent Consensus Valence",
+            "Latent Consensus Arousal",
+        )
+    if source == "audio":
+        return ("Discovered Regions on Audio VA Plane", "Audio Valence", "Audio Arousal")
+    if source == "lyrics":
+        return ("Discovered Regions on Lyrics VA Plane", "Lyrics Valence", "Lyrics Arousal")
+    return ("Discovered Regions on Raw Mean VA Plane", "Mean Valence", "Mean Arousal")
+
+
 def _plot_cluster_scatter(
     mean_va: np.ndarray,
     assignments: np.ndarray,
     out_path: str,
     palette: Dict[int, str],
+    title: Optional[str] = None,
+    xlabel: Optional[str] = None,
+    ylabel: Optional[str] = None,
 ) -> None:
+    default_title, default_xlabel, default_ylabel = _cluster_scatter_labels("mean")
     cluster_ids = sorted(np.unique(assignments).tolist())
     colors = [palette[int(item)] for item in assignments.tolist()]
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -1478,9 +1503,9 @@ def _plot_cluster_scatter(
     )
     ax.axvline(0.5, color="gray", linestyle="--", alpha=0.5)
     ax.axhline(0.5, color="gray", linestyle="--", alpha=0.5)
-    ax.set_xlabel("Mean Valence")
-    ax.set_ylabel("Mean Arousal")
-    ax.set_title("Discovered Clusters on Mean VA Plane")
+    ax.set_xlabel(xlabel or default_xlabel)
+    ax.set_ylabel(ylabel or default_ylabel)
+    ax.set_title(title or default_title)
     ax.legend(
         handles=_legend_handles(palette, cluster_ids),
         title="Cluster",
@@ -2233,6 +2258,126 @@ def _metadata_token_stats_text(tokens: Sequence[Dict[str, Any]], limit: int = 5)
     )
 
 
+CANONICAL_AFFECT_REGION_NAMES: Dict[int, Tuple[str, str]] = {
+    0: ("Melancholic Low-Arousal", "melancholic-low-arousal"),
+    1: ("Warm Calm-Positive", "warm-calm-positive"),
+    2: ("Aggressive Negative-Active", "aggressive-negative-active"),
+    3: ("Playful Energetic-Positive", "playful-energetic-positive"),
+}
+
+
+def _format_va_pair(first: Any, second: Any) -> str:
+    try:
+        first_value = float(first)
+        second_value = float(second)
+    except (TypeError, ValueError):
+        return ""
+    if not np.isfinite(first_value) or not np.isfinite(second_value):
+        return ""
+    return f"{first_value:.4f},{second_value:.4f}"
+
+
+def _canonical_region_name(cluster_id: int) -> Tuple[str, str]:
+    if int(cluster_id) in CANONICAL_AFFECT_REGION_NAMES:
+        return CANONICAL_AFFECT_REGION_NAMES[int(cluster_id)]
+    return (f"Affect Region {int(cluster_id)}", f"affect-region-{int(cluster_id)}")
+
+
+def _write_canonical_affect_region_artifacts(
+    out_dir: str,
+    summary: Sequence[Dict[str, Any]],
+) -> Dict[str, str]:
+    csv_path = os.path.join(out_dir, "canonical_affect_regions.csv")
+    md_path = os.path.join(out_dir, "canonical_affect_regions.md")
+    rows: List[Dict[str, Any]] = []
+    for item in sorted(summary, key=lambda row: int(row.get("cluster_id", 0))):
+        cluster_id = int(item["cluster_id"])
+        canonical_name, short_name = _canonical_region_name(cluster_id)
+        top_tokens = ", ".join(
+            str(token.get("feature", "")).split("::", 1)[-1]
+            for token in list(item.get("top_metadata_tokens", []))[:5]
+            if str(token.get("feature", ""))
+        )
+        representative_tracks = "; ".join(
+            str(track.get("title") or track.get("identifier") or track.get("lyric_identifier") or "")
+            for track in list(item.get("example_tracks", []))[:5]
+        )
+        raw_audio_mean = _format_va_pair(item.get("mean_audio_valence"), item.get("mean_audio_arousal"))
+        raw_lyrics_mean = _format_va_pair(item.get("mean_lyrics_valence"), item.get("mean_lyrics_arousal"))
+        audio_v = float(item.get("mean_audio_valence", float("nan")))
+        audio_a = float(item.get("mean_audio_arousal", float("nan")))
+        lyrics_v = float(item.get("mean_lyrics_valence", float("nan")))
+        lyrics_a = float(item.get("mean_lyrics_arousal", float("nan")))
+        mean_delta = (
+            _format_va_pair(lyrics_v - audio_v, lyrics_a - audio_a)
+            if all(np.isfinite(value) for value in (audio_v, audio_a, lyrics_v, lyrics_a))
+            else ""
+        )
+        rows.append(
+            {
+                "cluster_id": cluster_id,
+                "canonical_name": canonical_name,
+                "short_name": short_name,
+                "size": int(item.get("num_samples", 0)),
+                "balanced_valence": float(item.get("balanced_valence", item.get("mean_valence", float("nan")))),
+                "balanced_arousal": float(item.get("balanced_arousal", item.get("mean_arousal", float("nan")))),
+                "raw_audio_mean": raw_audio_mean,
+                "raw_lyrics_mean": raw_lyrics_mean,
+                "mean_delta": mean_delta,
+                "top_tokens": top_tokens,
+                "representative_tracks": representative_tracks,
+            }
+        )
+    frame = pd.DataFrame(
+        rows,
+        columns=[
+            "cluster_id",
+            "canonical_name",
+            "short_name",
+            "size",
+            "balanced_valence",
+            "balanced_arousal",
+            "raw_audio_mean",
+            "raw_lyrics_mean",
+            "mean_delta",
+            "top_tokens",
+            "representative_tracks",
+        ],
+    )
+    frame.to_csv(csv_path, index=False, encoding="utf-8")
+    lines = ["# Canonical Affect Regions", ""]
+    lines.append(
+        "| cluster_id | canonical_name | short_name | size | balanced_valence | balanced_arousal | raw_audio_mean | raw_lyrics_mean | mean_delta | top_tokens | representative_tracks |"
+    )
+    lines.append("|---:|---|---|---:|---:|---:|---|---|---|---|---|")
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row["cluster_id"]),
+                    str(row["canonical_name"]),
+                    str(row["short_name"]),
+                    str(row["size"]),
+                    f"{float(row['balanced_valence']):.4f}",
+                    f"{float(row['balanced_arousal']):.4f}",
+                    str(row["raw_audio_mean"]),
+                    str(row["raw_lyrics_mean"]),
+                    str(row["mean_delta"]),
+                    str(row["top_tokens"]),
+                    str(row["representative_tracks"]),
+                ]
+            )
+            + " |"
+        )
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    return {
+        "canonical_affect_regions_csv": csv_path,
+        "canonical_affect_regions_md": md_path,
+    }
+
+
 MACRO_MICRO_ENRICHMENT_COLUMNS = [
     "cluster_id",
     "label_name",
@@ -2707,6 +2852,145 @@ def _write_tension_micro_probe_artifacts(
     }
 
 
+def _tension_subtype_label(micro_id: int, mean_dv: float, mean_da: float, mean_norm: float) -> str:
+    del micro_id
+    if np.isfinite(mean_norm) and float(mean_norm) <= 0.20:
+        return "modality-consistent"
+    labels: List[str] = []
+    if np.isfinite(mean_dv):
+        if float(mean_dv) >= 0.05:
+            labels.append("lyric-brightened")
+        elif float(mean_dv) <= -0.05:
+            labels.append("lyric-darkened")
+    if np.isfinite(mean_da):
+        if float(mean_da) >= 0.05:
+            labels.append("lyric-intensified")
+        elif float(mean_da) <= -0.05:
+            labels.append("lyric-softened")
+    if not labels or (np.isfinite(mean_norm) and float(mean_norm) >= 0.30):
+        labels.append("high cross-modal tension")
+    return " + ".join(dict.fromkeys(labels))
+
+
+def _top_metadata_tokens_for_mask(
+    raw_metadata: np.ndarray,
+    metadata_feature_names: Sequence[str],
+    mask: np.ndarray,
+    limit: int = 5,
+) -> str:
+    if raw_metadata.ndim != 2 or raw_metadata.shape[1] != len(metadata_feature_names) or not bool(mask.any()):
+        return ""
+    token_indices = [
+        idx
+        for idx, name in enumerate(metadata_feature_names)
+        if not str(name).startswith("numeric::")
+    ]
+    if not token_indices:
+        return ""
+    values = raw_metadata[mask][:, token_indices]
+    if values.size == 0:
+        return ""
+    means = np.asarray(values, dtype=np.float64).mean(axis=0)
+    ordered = np.argsort(-means)[:limit].tolist()
+    tokens = []
+    for rel_idx in ordered:
+        if float(means[rel_idx]) <= 0.0:
+            continue
+        feature = str(metadata_feature_names[token_indices[rel_idx]])
+        tokens.append(feature.split("::", 1)[-1])
+    return ", ".join(tokens)
+
+
+def _write_tension_substructure_artifacts(
+    out_dir: str,
+    dataset,
+    metadata_feature_names: Sequence[str],
+    tension_micro_outputs: Dict[str, Any],
+) -> Dict[str, str]:
+    output_files = tension_micro_outputs.get("output_files", {}) if isinstance(tension_micro_outputs, dict) else {}
+    assignments_path = output_files.get("tension_micro_assignments")
+    if not assignments_path or not os.path.exists(str(assignments_path)):
+        return {}
+
+    assignment_frame = pd.read_csv(str(assignments_path))
+    if assignment_frame.empty or "tension_micro_id" not in assignment_frame.columns:
+        return {}
+
+    raw_metadata = getattr(dataset, "raw_metadata_report", getattr(dataset, "raw_metadata", np.zeros((len(assignment_frame), 0))))
+    raw_metadata = np.asarray(raw_metadata)
+    if raw_metadata.ndim != 2 or raw_metadata.shape[0] != len(assignment_frame):
+        raw_metadata = np.zeros((len(assignment_frame), 0), dtype=np.float32)
+
+    enrichment_rows: List[Dict[str, Any]] = []
+    subtype_labels: Dict[Tuple[int, int], str] = {}
+    for (cluster_id, micro_id), group in assignment_frame.groupby(["cluster_id", "tension_micro_id"], dropna=False):
+        cluster_int = int(cluster_id)
+        micro_int = int(micro_id)
+        if micro_int < 0:
+            continue
+        mean_dv = float(pd.to_numeric(group["tension_dv"], errors="coerce").mean())
+        mean_da = float(pd.to_numeric(group["tension_da"], errors="coerce").mean())
+        mean_norm = float(pd.to_numeric(group["tension_norm"], errors="coerce").mean())
+        label = _tension_subtype_label(micro_int, mean_dv, mean_da, mean_norm)
+        subtype_labels[(cluster_int, micro_int)] = label
+        row_mask = np.asarray(assignment_frame.index.isin(group.index), dtype=bool)
+        enrichment_rows.append(
+            {
+                "cluster_id": cluster_int,
+                "tension_micro_id": micro_int,
+                "subtype_label": label,
+                "size": int(len(group)),
+                "mean_tension_dv": mean_dv,
+                "mean_tension_da": mean_da,
+                "mean_tension_norm": mean_norm,
+                "top_tokens": _top_metadata_tokens_for_mask(raw_metadata, metadata_feature_names, row_mask),
+            }
+        )
+
+    subtype_assignment_frame = assignment_frame.copy()
+    subtype_assignment_frame["tension_subtype_label"] = [
+        subtype_labels.get((int(cluster_id), int(micro_id)), "")
+        for cluster_id, micro_id in zip(
+            subtype_assignment_frame["cluster_id"].tolist(),
+            subtype_assignment_frame["tension_micro_id"].tolist(),
+        )
+    ]
+    enrichment_path = os.path.join(out_dir, "tension_substructure_enrichment.csv")
+    assignment_path = os.path.join(out_dir, "tension_subtype_assignments.csv")
+    report_path = os.path.join(out_dir, "tension_substructure_report.md")
+    pd.DataFrame(
+        enrichment_rows,
+        columns=[
+            "cluster_id",
+            "tension_micro_id",
+            "subtype_label",
+            "size",
+            "mean_tension_dv",
+            "mean_tension_da",
+            "mean_tension_norm",
+            "top_tokens",
+        ],
+    ).to_csv(enrichment_path, index=False, encoding="utf-8")
+    subtype_assignment_frame.to_csv(assignment_path, index=False, encoding="utf-8")
+
+    lines = ["# Report-Only Tension Substructure", ""]
+    lines.append("| cluster_id | tension_micro_id | subtype_label | size | mean_tension_dv | mean_tension_da | mean_tension_norm | top_tokens |")
+    lines.append("|---:|---:|---|---:|---:|---:|---:|---|")
+    for row in enrichment_rows:
+        lines.append(
+            f"| {row['cluster_id']} | {row['tension_micro_id']} | {row['subtype_label']} | {row['size']} | "
+            f"{float(row['mean_tension_dv']):.4f} | {float(row['mean_tension_da']):.4f} | "
+            f"{float(row['mean_tension_norm']):.4f} | {row['top_tokens']} |"
+        )
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    return {
+        "tension_substructure_report": report_path,
+        "tension_substructure_enrichment": enrichment_path,
+        "tension_subtype_assignments": assignment_path,
+    }
+
+
 def _write_split_outputs(
     out_dir: str,
     split: str,
@@ -2803,10 +3087,47 @@ def _write_split_outputs(
 
     assignment_frame.to_csv(assignment_path, index=False, encoding="utf-8")
     catalog_frame.to_csv(catalog_path, index=False, encoding="utf-8")
-    _plot_cluster_scatter(mean_va, assignments, scatter_path, palette)
-    _plot_cluster_scatter(raw_mean_va, assignments, raw_mean_scatter_path, palette)
-    _plot_cluster_scatter(dataset.raw_audio, assignments, audio_scatter_path, palette)
-    _plot_cluster_scatter(dataset.raw_lyrics, assignments, lyrics_scatter_path, palette)
+    primary_label_source = "cluster_consensus" if use_cluster_consensus else "mean"
+    primary_title, primary_xlabel, primary_ylabel = _cluster_scatter_labels(primary_label_source)
+    raw_title, raw_xlabel, raw_ylabel = _cluster_scatter_labels("mean")
+    audio_title, audio_xlabel, audio_ylabel = _cluster_scatter_labels("audio")
+    lyrics_title, lyrics_xlabel, lyrics_ylabel = _cluster_scatter_labels("lyrics")
+    _plot_cluster_scatter(
+        mean_va,
+        assignments,
+        scatter_path,
+        palette,
+        title=primary_title,
+        xlabel=primary_xlabel,
+        ylabel=primary_ylabel,
+    )
+    _plot_cluster_scatter(
+        raw_mean_va,
+        assignments,
+        raw_mean_scatter_path,
+        palette,
+        title=raw_title,
+        xlabel=raw_xlabel,
+        ylabel=raw_ylabel,
+    )
+    _plot_cluster_scatter(
+        dataset.raw_audio,
+        assignments,
+        audio_scatter_path,
+        palette,
+        title=audio_title,
+        xlabel=audio_xlabel,
+        ylabel=audio_ylabel,
+    )
+    _plot_cluster_scatter(
+        dataset.raw_lyrics,
+        assignments,
+        lyrics_scatter_path,
+        palette,
+        title=lyrics_title,
+        xlabel=lyrics_xlabel,
+        ylabel=lyrics_ylabel,
+    )
     _plot_cluster_latent_pca(embeddings["z_fused"], assignments, latent_pca_path, palette)
     feature_pca_written = False
     if cluster_features is not None:
@@ -2850,6 +3171,13 @@ def _write_split_outputs(
         dataset=dataset,
         assignments=assignments,
         feature_state=feature_state,
+    )
+    canonical_region_outputs = _write_canonical_affect_region_artifacts(out_dir=out_dir, summary=summary)
+    tension_substructure_outputs = _write_tension_substructure_artifacts(
+        out_dir=out_dir,
+        dataset=dataset,
+        metadata_feature_names=metadata_feature_names,
+        tension_micro_outputs=tension_micro_outputs,
     )
     with open(palette_path, "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in palette.items()}, f, ensure_ascii=False, indent=2)
@@ -2913,11 +3241,57 @@ def _write_split_outputs(
             "bic_curve": bic_curve_path,
             **macro_micro_outputs,
             **tension_micro_outputs.get("output_files", {}),
+            **canonical_region_outputs,
+            **tension_substructure_outputs,
         },
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
+
+
+def _format_report_metric(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not np.isfinite(number):
+        return "n/a"
+    return f"{number:.4f}"
+
+
+def _split_level_overlap_metrics(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    output_files = payload.get("output_files", {}) if isinstance(payload, dict) else {}
+    path = output_files.get("cluster_overlap_audit") if isinstance(output_files, dict) else None
+    if not path or not os.path.exists(str(path)):
+        return {}
+    try:
+        frame = pd.read_csv(str(path))
+    except (OSError, ValueError, pd.errors.EmptyDataError):
+        return {}
+    if frame.empty:
+        return {}
+    row = frame.iloc[0]
+    return {
+        "va_silhouette": row.get("va_mean_silhouette", row.get("va_silhouette", float("nan"))),
+        "knn_purity_20": row.get("va_knn_purity_20", float("nan")),
+        "center_radius_sep": row.get("va_center_radius_sep", float("nan")),
+        "negative_silhouette_fraction": row.get("va_negative_silhouette_fraction", float("nan")),
+        "overlap_gate": row.get("overlap_gate_ok", float("nan")),
+    }
+
+
+def _format_overlap_gate_value(value: Any) -> str:
+    if isinstance(value, (bool, np.bool_)):
+        return str(bool(value))
+    if isinstance(value, str):
+        return value
+    try:
+        if bool(pd.isna(value)):
+            return "n/a"
+    except (TypeError, ValueError):
+        return "n/a"
+    return str(value)
 
 
 def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
@@ -2971,6 +3345,22 @@ def _write_pipeline_report(out_path: str, summary: Dict[str, Any]) -> None:
     lines.append(f"- Model checkpoint: `{summary['checkpoint_path']}`")
     lines.append(f"- GMM bundle: `{summary['gmm_bundle_path']}`")
     lines.append(f"- Training history: `{summary['history_path']}`")
+    lines.append("")
+    lines.append("## Split-Level VA Region Metrics")
+    lines.append("")
+    lines.append("| split | N | VA silhouette | KNN purity@20 | center/radius sep | negative silhouette fraction | overlap gate |")
+    lines.append("|---|---:|---:|---:|---:|---:|---|")
+    for split, payload in summary["split_outputs"].items():
+        metrics = _split_level_overlap_metrics(payload)
+        overlap_text = _format_overlap_gate_value(metrics.get("overlap_gate", "n/a"))
+        lines.append(
+            f"| {split} | {int(payload.get('num_samples', 0))} | "
+            f"{_format_report_metric(metrics.get('va_silhouette'))} | "
+            f"{_format_report_metric(metrics.get('knn_purity_20'))} | "
+            f"{_format_report_metric(metrics.get('center_radius_sep'))} | "
+            f"{_format_report_metric(metrics.get('negative_silhouette_fraction'))} | "
+            f"{overlap_text} |"
+        )
     lines.append("")
     lines.append("## Per-Split Cluster Snapshot")
     lines.append("")

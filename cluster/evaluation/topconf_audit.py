@@ -11,6 +11,19 @@ PASS = "pass"
 FAIL = "fail"
 WARN = "warn"
 
+REQUIRED_ABLATION_CONFIGS = {
+    "audio_va",
+    "lyrics_va",
+    "raw_mean_va",
+    "calibrated_mean_alpha_0_5",
+    "clusterability_alpha",
+    "raw_mean_plus_signed_diff",
+    "calibrated_va_tension_final_report_only",
+    "latent_two_view_va_gmm",
+    "metadata_only_report_diagnostic",
+}
+MAIN_ABLATION_CONFIG = "calibrated_va_tension_final_report_only"
+
 
 def _load_summary(run_dir: Path) -> Dict[str, Any]:
     for name in ("rerun_summary.json", "pipeline_summary.json"):
@@ -170,6 +183,142 @@ def _affect_purity_gate(run_dir: Path, selection: Mapping[str, Any], metrics: pd
     )
 
 
+def _is_balanced_va_regions(summary: Mapping[str, Any], selection: Mapping[str, Any]) -> bool:
+    mode = str(summary.get("selection_mode", selection.get("selection_mode", ""))).strip().lower()
+    return mode == "balanced_va_regions"
+
+
+def _selected_metric_row(metrics: pd.DataFrame, selected_k: int) -> pd.Series:
+    if metrics.empty:
+        return pd.Series(dtype=float)
+    for column in ("total_clusters", "k"):
+        if column in metrics.columns:
+            rows = metrics[metrics[column].astype(int) == int(selected_k)]
+            if not rows.empty:
+                return rows.iloc[0]
+    return metrics.iloc[0]
+
+
+def _metric_or_selection_value(
+    selection: Mapping[str, Any],
+    metrics: pd.DataFrame,
+    selected_k: int,
+    field: str,
+) -> Any:
+    if field in selection:
+        return selection[field]
+    row = _selected_metric_row(metrics, selected_k)
+    if not row.empty and field in row:
+        return row[field]
+    return None
+
+
+def _balanced_va_region_stability_gate(
+    summary: Mapping[str, Any],
+    selection: Mapping[str, Any],
+    metrics: pd.DataFrame,
+    selected_k: int,
+) -> Dict[str, Any]:
+    if not _is_balanced_va_regions(summary, selection):
+        return _gate(PASS, "Balanced VA region stability is only required for balanced_va_regions main runs.")
+    mean_value = _metric_or_selection_value(selection, metrics, selected_k, "seed_ari_mean")
+    std_value = _metric_or_selection_value(selection, metrics, selected_k, "seed_ari_std")
+    try:
+        seed_ari_mean = float(mean_value)
+        seed_ari_std = float(std_value)
+    except (TypeError, ValueError):
+        return _gate(FAIL, "balanced_va_regions must report seed_ari_mean and seed_ari_std.", {"seed_ari_mean": mean_value, "seed_ari_std": std_value})
+    ok = pd.notna(seed_ari_mean) and pd.notna(seed_ari_std) and seed_ari_mean >= 0.90
+    return _gate(
+        PASS if ok else FAIL,
+        "Balanced VA region runs must report high seed stability.",
+        {"seed_ari_mean": round(seed_ari_mean, 4), "seed_ari_std": round(seed_ari_std, 4)},
+    )
+
+
+def _overlap_gate_train_val_test_all(run_dir: Path, summary: Mapping[str, Any], selection: Mapping[str, Any]) -> Dict[str, Any]:
+    if not _is_balanced_va_regions(summary, selection):
+        return _gate(PASS, "Split overlap audit is only required for balanced_va_regions main runs.")
+    rows: Dict[str, Any] = {}
+    missing = []
+    failures = []
+    for split in ("train", "val", "test", "all"):
+        path = run_dir / split / "cluster_overlap_audit.csv"
+        if not path.exists():
+            missing.append(split)
+            continue
+        frame = pd.read_csv(path)
+        if frame.empty:
+            missing.append(split)
+            continue
+        row = frame.iloc[0]
+        purity20 = float(row.get("va_knn_purity_20", float("nan")))
+        sep = float(row.get("va_center_radius_sep", float("nan")))
+        negative_fraction = float(row.get("va_negative_silhouette_fraction", float("nan")))
+        overlap_ok = bool(row.get("overlap_gate_ok", False))
+        metric_ok = purity20 >= 0.88 and sep >= 0.70 and negative_fraction <= 0.05
+        if not (overlap_ok or metric_ok):
+            failures.append(split)
+        rows[split] = {
+            "overlap_gate_ok": overlap_ok,
+            "va_knn_purity_20": round(purity20, 4) if pd.notna(purity20) else None,
+            "va_center_radius_sep": round(sep, 4) if pd.notna(sep) else None,
+            "va_negative_silhouette_fraction": round(negative_fraction, 4) if pd.notna(negative_fraction) else None,
+            "metric_ok": metric_ok,
+        }
+    if missing:
+        return _gate(FAIL, "cluster_overlap_audit.csv must exist for train/val/test/all.", {"missing_splits": missing})
+    return _gate(
+        PASS if not failures else FAIL,
+        "Train/val/test/all splits must pass overlap audit or balanced VA metric thresholds.",
+        {"splits": rows, "failed_splits": failures},
+    )
+
+
+def _metadata_not_used_for_clustering(summary: Mapping[str, Any], selection: Mapping[str, Any]) -> Dict[str, Any]:
+    policy = summary.get("metadata_policy", selection.get("metadata_policy", {}))
+    if isinstance(policy, Mapping):
+        metadata_policy = str(policy.get("metadata_policy", "")).lower()
+        effective_weight = float(policy.get("effective_metadata_cluster_weight", 0.0))
+        block_used = bool(policy.get("metadata_block_used_for_clustering", effective_weight > 0.0))
+    else:
+        metadata_policy = str(policy).lower()
+        effective_weight = 0.0 if metadata_policy == "report_only" else float("nan")
+        block_used = metadata_policy not in {"report_only", "affective_va_only"}
+    ok = metadata_policy == "report_only" and effective_weight == 0.0 and not block_used
+    return _gate(
+        PASS if ok else FAIL,
+        "Main claim metadata policy must be report_only with zero effective metadata clustering weight.",
+        {"metadata_policy": metadata_policy, "effective_metadata_cluster_weight": effective_weight, "metadata_block_used_for_clustering": block_used},
+    )
+
+
+def _report_only_tension_present(run_dir: Path, summary: Mapping[str, Any], selection: Mapping[str, Any]) -> Dict[str, Any]:
+    if not _is_balanced_va_regions(summary, selection):
+        return _gate(PASS, "Report-only tension artifacts are only required for balanced_va_regions main runs.")
+    required = [
+        run_dir / "all" / "tension_micro_probe" / "tension_micro_probe.csv",
+        run_dir / "all" / "tension_substructure_report.md",
+    ]
+    missing = [str(path.relative_to(run_dir)) for path in required if not path.exists()]
+    return _gate(
+        PASS if not missing else FAIL,
+        "Report-only tension micro/subtype artifacts must be present for ACL reporting.",
+        {"missing_files": missing},
+    )
+
+
+def _alpha_search_report_present(run_dir: Path, summary: Mapping[str, Any], selection: Mapping[str, Any]) -> Dict[str, Any]:
+    if not _is_balanced_va_regions(summary, selection):
+        return _gate(PASS, "Alpha-search report is only required for balanced_va_regions main runs.")
+    path = run_dir / "all" / "balance_alpha_report.csv"
+    return _gate(
+        PASS if path.exists() else FAIL,
+        "all/balance_alpha_report.csv must be present for the balanced VA alpha audit.",
+        str(path.relative_to(run_dir)) if path.exists() else None,
+    )
+
+
 def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
     missing_files = [name for name in ("ablation_report.csv", "baseline_comparison.csv") if not (run_dir / name).exists()]
     if missing_files:
@@ -179,22 +328,11 @@ def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
             {"missing_files": missing_files},
         )
 
-    required_configs = {
-        "mean_va",
-        "audio_va",
-        "lyrics_va",
-        "mean_va_diff",
-        "va_geometry",
-        "metadata_only",
-        "proposed_no_diff",
-        "proposed_no_metadata",
-        "proposed_full",
-    }
     baseline = pd.read_csv(run_dir / "baseline_comparison.csv")
     ablation = pd.read_csv(run_dir / "ablation_report.csv")
     observed = set(baseline.get("config", pd.Series(dtype=str)).astype(str).tolist())
     observed |= set(ablation.get("config", pd.Series(dtype=str)).astype(str).tolist())
-    missing_configs = sorted(required_configs - observed)
+    missing_configs = sorted(REQUIRED_ABLATION_CONFIGS - observed)
     if missing_configs:
         return _gate(
             FAIL,
@@ -203,7 +341,7 @@ def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
         )
     if "status" in baseline.columns:
         status = baseline["status"].astype(str).str.lower()
-        required_rows = baseline[baseline["config"].astype(str).isin(required_configs)]
+        required_rows = baseline[baseline["config"].astype(str).isin(REQUIRED_ABLATION_CONFIGS)]
         failed_required = required_rows[~status.loc[required_rows.index].isin({"ok", "pass", "success", "completed"})]
         if not failed_required.empty:
             value: Dict[str, Any] = {"failed_configs": failed_required["config"].astype(str).tolist()}
@@ -219,27 +357,27 @@ def _required_ablations_gate(run_dir: Path) -> Dict[str, Any]:
             )
     score_column = "claim_score" if "claim_score" in baseline.columns else "score"
     if score_column in baseline.columns:
-        proposed = baseline.loc[baseline["config"].astype(str) == "proposed_full", score_column]
+        proposed = baseline.loc[baseline["config"].astype(str) == MAIN_ABLATION_CONFIG, score_column]
         if proposed.empty or pd.isna(proposed.iloc[0]):
             return _gate(
                 FAIL,
-                f"proposed_full must have a valid {score_column} before it can be claimed as the main result.",
+                f"{MAIN_ABLATION_CONFIG} must have a valid {score_column} before it can be claimed as the main result.",
             )
         proposed_score = float(proposed.iloc[0])
-        competitors = baseline[baseline["config"].astype(str) != "proposed_full"].copy()
+        competitors = baseline[baseline["config"].astype(str) != MAIN_ABLATION_CONFIG].copy()
         competitors = competitors[pd.to_numeric(competitors[score_column], errors="coerce").notna()]
         non_improved = competitors[pd.to_numeric(competitors[score_column], errors="coerce") >= proposed_score]
         if not non_improved.empty:
             return _gate(
                 FAIL,
-                "proposed_full must outperform every required baseline before it can be claimed as the main result.",
+                f"{MAIN_ABLATION_CONFIG} must outperform every required baseline before it can be claimed as the main result.",
                 {
-                    "proposed_full_score": proposed_score,
+                    f"{MAIN_ABLATION_CONFIG}_score": proposed_score,
                     "score_column": score_column,
                     "non_improved_configs": non_improved["config"].astype(str).tolist(),
                 },
             )
-    return _gate(PASS, "Required ablation/baseline matrix is present and proposed_full is above listed baselines.")
+    return _gate(PASS, f"Required ablation/baseline matrix is present and {MAIN_ABLATION_CONFIG} is above listed baselines.")
 
 
 def audit_run(run_dir: str | Path) -> Dict[str, Any]:
@@ -248,9 +386,9 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
     selection = summary.get("selection_info", {})
     metrics = _load_search_metrics(root)
     gates: Dict[str, Dict[str, Any]] = {}
+    selected_k = int(summary.get("selected_k", selection.get("selected_k", -1)))
 
     if not metrics.empty and "total_k_ok" in metrics.columns:
-        selected_k = int(summary.get("selected_k", selection.get("selected_k", -1)))
         selected_rows = metrics[metrics.get("total_clusters", pd.Series(dtype=int)) == selected_k]
         if selected_rows.empty:
             selected_rows = metrics
@@ -270,7 +408,12 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
             gates["total_k_constraint_honored"] = _gate(FAIL, "Missing total_k_ok or flat k/min_size_ok columns in cluster_search_metrics.csv.")
 
     selection_mode = str(summary.get("selection_mode", selection.get("selection_mode", ""))).lower()
-    if "macro_micro" in selection_mode:
+    if selection_mode == "balanced_va_regions":
+        stability_fields = ("seed_ari_mean", "seed_ari_std")
+        stability_present = all(field in selection for field in stability_fields)
+        if not stability_present and not metrics.empty:
+            stability_present = all(field in metrics.columns for field in stability_fields)
+    elif "macro_micro" in selection_mode:
         stability_fields = ("seed_ari_mean", "cluster_jaccard_min", "bootstrap_valid_rate")
         stability_present = all(field in selection for field in stability_fields)
         if not stability_present and not metrics.empty:
@@ -299,7 +442,24 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
         if "macro_micro" in selection_mode
         else _gate(PASS, "Split semantic consistency is not required for flat affect-first runs.")
     )
-    gates["affect_purity_gate"] = _affect_purity_gate(root, selection, metrics, int(summary.get("selected_k", selection.get("selected_k", -1))))
+    gates["balanced_va_region_stability_present"] = _balanced_va_region_stability_gate(
+        summary,
+        selection,
+        metrics,
+        selected_k,
+    )
+    gates["overlap_gate_train_val_test_all"] = _overlap_gate_train_val_test_all(root, summary, selection)
+    gates["metadata_not_used_for_clustering"] = _metadata_not_used_for_clustering(summary, selection)
+    gates["report_only_tension_present"] = _report_only_tension_present(root, summary, selection)
+    gates["alpha_search_report_present"] = _alpha_search_report_present(root, summary, selection)
+    affect_gate = _affect_purity_gate(root, selection, metrics, selected_k)
+    if _is_balanced_va_regions(summary, selection) and affect_gate["status"] == FAIL:
+        affect_gate = _gate(
+            WARN,
+            "Affect purity is diagnostic for balanced_va_regions; continuous VA-region readiness is audited by overlap and stability gates.",
+            affect_gate.get("value"),
+        )
+    gates["affect_purity_gate"] = affect_gate
     gates["required_ablations_present"] = _required_ablations_gate(root)
     cluster_head_k = int(summary.get("cluster_head_k", selection.get("cluster_head_k", 0)) or 0)
     gates["random_cluster_head_disabled"] = _gate(

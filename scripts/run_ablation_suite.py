@@ -6,52 +6,114 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import pandas as pd
 import numpy as np
 
 
 DEFAULT_CONFIGS: Tuple[str, ...] = (
-    "mean_va",
     "audio_va",
     "lyrics_va",
-    "mean_va_diff",
-    "va_geometry",
-    "metadata_only",
-    "proposed_no_diff",
-    "proposed_no_metadata",
-    "proposed_full",
+    "raw_mean_va",
+    "calibrated_mean_alpha_0_5",
+    "clusterability_alpha",
+    "raw_mean_plus_signed_diff",
+    "calibrated_va_tension_final_report_only",
+    "latent_two_view_va_gmm",
+    "metadata_only_report_diagnostic",
 )
 
 CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "mean_va": {"strategy": "mean_va", "k_strategy": "composite", "requires_run_dir": False},
-    "audio_va": {"strategy": "audio_va", "k_strategy": "composite", "requires_run_dir": False},
-    "lyrics_va": {"strategy": "lyrics_va", "k_strategy": "composite", "requires_run_dir": False},
-    "balanced_va_diff": {"strategy": "balanced_va_diff", "k_strategy": "composite", "requires_run_dir": False},
-    "mean_va_diff": {"strategy": "mean_va_diff", "k_strategy": "composite", "requires_run_dir": False},
-    "va_geometry": {"strategy": "va_geometry", "k_strategy": "composite", "requires_run_dir": False},
-    "metadata_only": {"strategy": "metadata_only", "k_strategy": "composite", "requires_run_dir": False},
-    "proposed_no_diff": {
-        "strategy": "macro_micro_diffaware",
-        "k_strategy": "macro_micro",
-        "requires_run_dir": True,
-        "diff_cluster_weight": 0.0,
+    "audio_va": {
+        "strategy": "audio_va",
+        "k_strategy": "balanced_va_regions",
+        "requires_run_dir": False,
+        "plot_va_source": "cluster_consensus",
     },
-    "proposed_no_metadata": {
-        "strategy": "macro_micro_diffaware",
-        "k_strategy": "macro_micro",
-        "requires_run_dir": True,
-        "metadata_policy": "report_only",
+    "lyrics_va": {
+        "strategy": "lyrics_va",
+        "k_strategy": "balanced_va_regions",
+        "requires_run_dir": False,
+        "plot_va_source": "cluster_consensus",
     },
-    "proposed_full": {
-        "strategy": "balanced_va_diff",
-        "k_strategy": "macro_micro",
+    "raw_mean_va": {
+        "strategy": "mean_va",
+        "k_strategy": "balanced_va_regions",
+        "requires_run_dir": False,
+        "plot_va_source": "cluster_consensus",
+    },
+    "calibrated_mean_alpha_0_5": {
+        "strategy": "calibrated_va_tension",
+        "k_strategy": "balanced_va_regions",
+        "requires_run_dir": False,
+        "plot_va_source": "cluster_consensus",
+        "extra_args": ["--consensus_mode", "global_alpha", "--consensus_alpha", "0.5"],
+    },
+    "clusterability_alpha": {
+        "strategy": "calibrated_va_tension",
+        "k_strategy": "balanced_va_regions",
+        "requires_run_dir": False,
+        "plot_va_source": "cluster_consensus",
+        "extra_args": ["--consensus_mode", "clusterability_alpha"],
+    },
+    "raw_mean_plus_signed_diff": {
+        "strategy": "mean_va_diff",
+        "k_strategy": "composite",
+        "requires_run_dir": False,
+        "plot_va_source": "mean",
+    },
+    "calibrated_va_tension_final_report_only": {
+        "strategy": "calibrated_va_tension",
+        "k_strategy": "balanced_va_regions",
         "requires_run_dir": False,
         "metadata_policy": "report_only",
-        "diff_cluster_weight": 0.2,
+        "plot_va_source": "cluster_consensus",
+        "extra_args": [
+            "--consensus_mode",
+            "clusterability_alpha",
+            "--calibration_mode",
+            "global_median_shift",
+            "--diff_residual_mode",
+            "knn",
+            "--diff_residual_neighbors",
+            "101",
+            "--tension_encoding",
+            "residual_3d",
+            "--run_tension_micro_probe",
+            "true",
+        ],
+    },
+    "latent_two_view_va_gmm": {
+        "strategy": "latent_two_view_va",
+        "k_strategy": "latent_va_gmm",
+        "requires_run_dir": False,
+        "metadata_policy": "report_only",
+        "plot_va_source": "latent_consensus",
+        "k_min": 4,
+        "k_max": 8,
+        "extra_args": [
+            "--latent_learn_view_bias",
+            "true",
+            "--latent_share_view_noise",
+            "false",
+            "--latent_alpha_prior_strength",
+            "0.2",
+            "--latent_max_iter",
+            "200",
+        ],
+    },
+    "metadata_only_report_diagnostic": {
+        "strategy": "metadata_only",
+        "k_strategy": "composite",
+        "requires_run_dir": False,
+        "metadata_policy": "all_metadata_upper_bound",
+        "require_both_va": False,
+        "plot_va_source": "mean",
     },
 }
+
+MAIN_CONFIG = "calibrated_va_tension_final_report_only"
 
 
 class SuiteArgs(NamedTuple):
@@ -92,6 +154,10 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         raise ValueError(f"Config '{config_name}' requires --base_run_dir.")
     metadata_policy = str(config.get("metadata_policy", args.metadata_policy))
     diff_weight = float(config.get("diff_cluster_weight", 0.35))
+    k_min = int(config.get("k_min", args.k_min))
+    k_max = int(config.get("k_max", args.k_max))
+    require_both_va = bool(config.get("require_both_va", args.require_both_va))
+    assignment_mode = "partial_likelihood" if str(config["k_strategy"]) in {"macro_micro", "constrained_macro_micro"} else "joint"
     command = [
         sys.executable,
         _repo_script_path("rerun_search.py"),
@@ -106,13 +172,13 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         "--cluster_feature_strategy",
         str(config["strategy"]),
         "--cluster_assignment_mode",
-        "partial_likelihood" if str(config["k_strategy"]) == "macro_micro" else "joint",
+        assignment_mode,
         "--k_strategy",
         str(config["k_strategy"]),
         "--total_k_min",
-        str(int(args.k_min)),
+        str(k_min),
         "--total_k_max",
-        str(int(args.k_max)),
+        str(k_max),
         "--macro_k_min",
         str(int(args.macro_k_min)),
         "--macro_k_max",
@@ -128,14 +194,17 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         "--metadata_policy",
         metadata_policy,
         "--require_both_va",
-        "true" if bool(args.require_both_va) else "false",
+        "true" if require_both_va else "false",
         "--diff_cluster_weight",
         f"{diff_weight:g}",
         "--covariance_type",
         "diag",
         "--affect_gate",
         "true",
+        "--plot_va_source",
+        str(config.get("plot_va_source", "mean")),
     ]
+    command.extend([str(item) for item in config.get("extra_args", [])])
     if bool(config.get("requires_run_dir")):
         command.extend(["--run_dir", str(args.base_run_dir)])
     return command
@@ -155,14 +224,18 @@ def _selected_metric_row(metrics: pd.DataFrame, selected_k: int) -> pd.Series:
             matches = metrics[metrics[column].astype(int) == int(selected_k)]
             if not matches.empty:
                 return matches.iloc[0]
-    score_cols = [col for col in ("macro_micro_score", "composite_score", "semantic_composite_score", "silhouette") if col in metrics.columns]
+    score_cols = [
+        col
+        for col in ("balanced_region_score", "latent_va_score", "macro_micro_score", "composite_score", "semantic_composite_score", "silhouette")
+        if col in metrics.columns
+    ]
     if score_cols:
         return metrics.sort_values(score_cols[0], ascending=False).iloc[0]
     return metrics.iloc[0]
 
 
 def _score_from_row(row: pd.Series) -> float:
-    for column in ("macro_micro_score", "composite_score", "semantic_composite_score", "silhouette"):
+    for column in ("balanced_region_score", "latent_va_score", "macro_micro_score", "composite_score", "semantic_composite_score", "silhouette"):
         if column in row and pd.notna(row[column]):
             return float(row[column])
     return float("nan")
@@ -187,7 +260,13 @@ def _affect_penalty_from_row(row: pd.Series) -> float:
 def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: float) -> float:
     if row.empty:
         return float("nan")
-    if "final_silhouette" in row and pd.notna(row["final_silhouette"]):
+    if "va_mean_silhouette" in row and pd.notna(row["va_mean_silhouette"]):
+        separation = float(row["va_mean_silhouette"])
+    elif "va_silhouette" in row and pd.notna(row["va_silhouette"]):
+        separation = float(row["va_silhouette"])
+    elif "latent_consensus_silhouette" in row and pd.notna(row["latent_consensus_silhouette"]):
+        separation = float(row["latent_consensus_silhouette"])
+    elif "final_silhouette" in row and pd.notna(row["final_silhouette"]):
         separation = float(row["final_silhouette"])
     elif "silhouette" in row and pd.notna(row["silhouette"]):
         separation = float(row["silhouette"])
@@ -234,6 +313,11 @@ def _summarize_failed_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "score": float("nan"),
         "claim_score": float("nan"),
         "silhouette": float("nan"),
+        "va_silhouette": float("nan"),
+        "knn_purity_10": float("nan"),
+        "knn_purity_20": float("nan"),
+        "center_radius_sep": float("nan"),
+        "negative_silhouette_fraction": float("nan"),
         "macro_silhouette": float("nan"),
         "final_silhouette": float("nan"),
         "affect_weighted_dominant_ratio": float("nan"),
@@ -241,13 +325,39 @@ def _summarize_failed_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "affect_mixed_cluster_fraction": float("nan"),
         "affect_gate_ok": False,
         "seed_ari_mean": float("nan"),
+        "seed_ari_std": float("nan"),
+        "size_balance": float("nan"),
+        "min_cluster_size": float("nan"),
         "cluster_jaccard_min": float("nan"),
         "mask_nmi": float("nan"),
+        "metadata_policy": CONFIG_REGISTRY.get(config_name, {}).get("metadata_policy", "report_only"),
         "max_mask_enrichment": float("nan"),
         "error_type": error_payload.get("error_type"),
         "error_message": error_payload.get("error_message", f"Missing rerun summary for config '{config_name}'."),
         "returncode": error_payload.get("returncode"),
     }
+
+
+def _float_from_row(row: pd.Series, *columns: str) -> float:
+    if row.empty:
+        return float("nan")
+    for column in columns:
+        if column in row and pd.notna(row[column]):
+            return float(row[column])
+    return float("nan")
+
+
+def _metadata_policy_text(summary: Mapping[str, Any], config_name: str) -> str:
+    policy = summary.get("metadata_policy")
+    if isinstance(policy, Mapping):
+        policy_name = str(policy.get("metadata_policy", ""))
+        effective_weight = policy.get("effective_metadata_cluster_weight")
+        if effective_weight is not None:
+            return f"{policy_name}:weight={float(effective_weight):.4g}"
+        return policy_name
+    if policy:
+        return str(policy)
+    return str(CONFIG_REGISTRY.get(config_name, {}).get("metadata_policy", "report_only"))
 
 
 def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
@@ -266,6 +376,7 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
     clusters = mask_diag.get("clusters", []) or []
     mask_nmi = float(mask_diag.get("nmi", float("nan")))
     max_mask_enrichment = max([float(item.get("enrichment_vs_baseline", 0.0)) for item in clusters], default=float("nan"))
+    selection = summary.get("selection_info", {}) or {}
     return {
         "config": config_name,
         "status": "ok",
@@ -276,15 +387,24 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "score": _score_from_row(metric_row) if not metric_row.empty else float("nan"),
         "claim_score": _claim_score_from_row(metric_row, mask_nmi, max_mask_enrichment),
         "silhouette": float(metric_row.get("silhouette", float("nan"))) if not metric_row.empty else float("nan"),
+        "va_silhouette": _float_from_row(metric_row, "va_mean_silhouette", "va_silhouette", "latent_consensus_silhouette"),
+        "knn_purity_10": _float_from_row(metric_row, "va_knn_purity_10"),
+        "knn_purity_20": _float_from_row(metric_row, "va_knn_purity_20"),
+        "center_radius_sep": _float_from_row(metric_row, "va_center_radius_sep"),
+        "negative_silhouette_fraction": _float_from_row(metric_row, "va_negative_silhouette_fraction"),
         "macro_silhouette": float(metric_row.get("macro_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "final_silhouette": float(metric_row.get("final_silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "affect_weighted_dominant_ratio": float(metric_row.get("affect_weighted_dominant_ratio", float("nan"))) if not metric_row.empty else float("nan"),
         "affect_min_dominant_ratio": float(metric_row.get("affect_min_dominant_ratio", float("nan"))) if not metric_row.empty else float("nan"),
         "affect_mixed_cluster_fraction": float(metric_row.get("affect_mixed_cluster_fraction", float("nan"))) if not metric_row.empty else float("nan"),
         "affect_gate_ok": bool(metric_row.get("affect_gate_ok", False)) if not metric_row.empty and pd.notna(metric_row.get("affect_gate_ok", float("nan"))) else False,
-        "seed_ari_mean": float((summary.get("selection_info", {}) or {}).get("seed_ari_mean", metric_row.get("seed_ari_mean", float("nan")))),
-        "cluster_jaccard_min": float((summary.get("selection_info", {}) or {}).get("cluster_jaccard_min", metric_row.get("cluster_jaccard_min", float("nan")))),
+        "seed_ari_mean": float(selection.get("seed_ari_mean", metric_row.get("seed_ari_mean", float("nan")))),
+        "seed_ari_std": float(selection.get("seed_ari_std", metric_row.get("seed_ari_std", float("nan")))),
+        "size_balance": _float_from_row(metric_row, "size_balance"),
+        "min_cluster_size": _float_from_row(metric_row, "min_cluster_size"),
+        "cluster_jaccard_min": float(selection.get("cluster_jaccard_min", metric_row.get("cluster_jaccard_min", float("nan")))),
         "mask_nmi": mask_nmi,
+        "metadata_policy": _metadata_policy_text(summary, config_name),
         "max_mask_enrichment": max_mask_enrichment,
         "error_type": None,
         "error_message": None,
@@ -299,14 +419,14 @@ def write_suite_reports(out_dir: Path | str, configs: Sequence[str]) -> Tuple[Pa
     baseline_path = root / "baseline_comparison.csv"
     baseline.to_csv(baseline_path, index=False)
     score_column = "claim_score" if "claim_score" in baseline.columns else "score"
-    proposed = baseline.loc[baseline["config"] == "proposed_full", score_column]
+    proposed = baseline.loc[baseline["config"] == MAIN_CONFIG, score_column]
     proposed_score = float(proposed.iloc[0]) if not proposed.empty else float("nan")
     ablation = baseline.copy()
-    ablation["delta_claim_score_vs_proposed_full"] = pd.to_numeric(ablation[score_column], errors="coerce") - proposed_score
+    ablation[f"delta_claim_score_vs_{MAIN_CONFIG}"] = pd.to_numeric(ablation[score_column], errors="coerce") - proposed_score
     if "score" in ablation.columns:
-        proposed_internal = baseline.loc[baseline["config"] == "proposed_full", "score"]
+        proposed_internal = baseline.loc[baseline["config"] == MAIN_CONFIG, "score"]
         proposed_internal_score = float(proposed_internal.iloc[0]) if not proposed_internal.empty else float("nan")
-        ablation["delta_score_vs_proposed_full"] = pd.to_numeric(ablation["score"], errors="coerce") - proposed_internal_score
+        ablation[f"delta_score_vs_{MAIN_CONFIG}"] = pd.to_numeric(ablation["score"], errors="coerce") - proposed_internal_score
     ablation_path = root / "ablation_report.csv"
     ablation.to_csv(ablation_path, index=False)
     return baseline_path, ablation_path
