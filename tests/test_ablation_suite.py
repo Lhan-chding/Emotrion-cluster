@@ -78,6 +78,7 @@ def test_ablation_suite_uses_diff_contamination_as_composite_baseline(tmp_path):
     assert command[command.index("--cluster_feature_strategy") + 1] == "mean_va_diff"
     assert command[command.index("--k_strategy") + 1] == "composite"
     assert command[command.index("--cluster_assignment_mode") + 1] == "joint"
+    assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
 
 
 def test_ablation_suite_builds_latent_two_view_gmm_command(tmp_path):
@@ -112,6 +113,39 @@ def test_ablation_suite_builds_latent_two_view_gmm_command(tmp_path):
     assert command[command.index("--latent_alpha_prior_strength") + 1] == "0.2"
     assert command[command.index("--latent_max_iter") + 1] == "200"
     assert command[command.index("--plot_va_source") + 1] == "latent_consensus"
+    assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
+
+
+def test_ablation_suite_builds_metadata_diagnostic_with_failed_gate_override(tmp_path):
+    module = _load_ablation_suite_module()
+    args = module.SuiteArgs(
+        processed_dir="processed",
+        base_run_dir=None,
+        out_dir=str(tmp_path),
+        gpu="0",
+        batch_size=512,
+        stability_runs=80,
+        k_min=4,
+        k_max=12,
+        macro_k_min=3,
+        macro_k_max=6,
+        micro_k_min=1,
+        micro_k_max=5,
+        min_cluster_size_abs=40,
+        metadata_policy="report_only",
+        require_both_va=True,
+    )
+
+    command = module.build_rerun_command(
+        args,
+        "metadata_only_report_diagnostic",
+        tmp_path / "metadata_only_report_diagnostic",
+    )
+
+    assert command[command.index("--cluster_feature_strategy") + 1] == "metadata_only"
+    assert command[command.index("--metadata_policy") + 1] == "all_metadata_upper_bound"
+    assert command[command.index("--require_both_va") + 1] == "false"
+    assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
 
 
 def test_ablation_suite_writes_required_comparison_reports(tmp_path):

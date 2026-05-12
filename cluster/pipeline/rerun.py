@@ -254,6 +254,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--latent_max_iter", type=int, default=100)
     parser.add_argument("--region_max_iter", type=int, default=100)
     parser.add_argument("--run_tension_micro_probe", type=str, default="true")
+    parser.add_argument(
+        "--diagnostic_allow_failed_gates",
+        type=str,
+        default="false",
+        help="Diagnostic ablations only: select the best candidate even when hard gates reject every K.",
+    )
     parser.add_argument("--tension_micro_k_max", type=int, default=3)
     parser.add_argument("--tension_micro_min_cluster_size_abs", type=int, default=30)
     parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
@@ -497,6 +503,7 @@ def main() -> None:
         latent_alpha_prior_strength=float(getattr(args, "alpha_prior_strength", 0.0)),
         latent_max_iter=int(getattr(args, "latent_max_iter", 100)),
         region_max_iter=int(getattr(args, "region_max_iter", 100)),
+        diagnostic_allow_failed_gates=parse_bool_text(getattr(args, "diagnostic_allow_failed_gates", "false")),
     )
     selection_info["metadata_policy"] = dict(metadata_policy_info)
 

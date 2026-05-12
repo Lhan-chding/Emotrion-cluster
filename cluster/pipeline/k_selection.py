@@ -83,6 +83,8 @@ class KSelectionConfig:
     latent_max_iter: int = 100
     # V20 balanced VA region clustering
     region_max_iter: int = 100
+    # Diagnostic ablations
+    diagnostic_allow_failed_gates: bool = False
 
 
 @dataclass
@@ -392,6 +394,21 @@ def _select_best_index(
     if "affect_gate_ok" in metrics.columns:
         eligible = eligible & metrics["affect_gate_ok"].to_numpy(dtype=bool)
     if not bool(eligible.any()):
+        if bool(config.diagnostic_allow_failed_gates):
+            fallback_pool = metrics["min_size_ok"].to_numpy(dtype=bool)
+            if not bool(fallback_pool.any()):
+                fallback_pool = np.ones(len(metrics), dtype=bool)
+            masked_scores = np.where(fallback_pool, scores, -np.inf)
+            selected_idx = int(np.argmax(masked_scores))
+            metrics.attrs["diagnostic_failed_gate_override"] = {
+                "selection_mode": selection_mode,
+                "selected_k": int(metrics.loc[selected_idx, "k"]),
+                "selected_index": selected_idx,
+                "eligible_candidate_count": int(eligible.sum()),
+                "fallback_candidate_count": int(fallback_pool.sum()),
+                "reason": "No candidate satisfied hard gates; selected the best-scoring candidate for diagnostic ablation only.",
+            }
+            return selected_idx
         threshold = _min_size_threshold(config, int(metrics.attrs.get("n_samples", 0)))
         min_sizes = ", ".join(
             f"K={int(row.k)}:{int(row.min_cluster_size)}"
@@ -424,6 +441,15 @@ def _select_best_index(
         )
     masked_scores = np.where(eligible, scores, -np.inf)
     return int(np.argmax(masked_scores))
+
+
+def _copy_diagnostic_override_info(info: Dict[str, Any], metrics: pd.DataFrame) -> None:
+    override = metrics.attrs.get("diagnostic_failed_gate_override")
+    if not override:
+        return
+    info["diagnostic_failed_gate_override"] = True
+    for key, value in dict(override).items():
+        info[f"diagnostic_failed_gate_{key}"] = value
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +966,7 @@ def search_gmm_composite(
         selection_info["mask_penalty_applied"] = float(config.w_mask_purity * mask_penalty_arr[best_idx])
     if config.affect_gate_enabled:
         _add_affect_selection_info(selection_info, metrics.loc[best_idx], config)
+    _copy_diagnostic_override_info(selection_info, metrics)
 
     return KSearchResult(
         best_k=best_result["k"],

@@ -328,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="V20 balanced_va_regions constrained assignment iterations.")
     parser.add_argument("--run_tension_micro_probe", type=str, default="true",
                         help="Write report-only within-region tension micro-split diagnostics.")
+    parser.add_argument(
+        "--diagnostic_allow_failed_gates",
+        type=str,
+        default="false",
+        help="Diagnostic ablations only: select the best candidate even when hard gates reject every K.",
+    )
     parser.add_argument("--tension_micro_k_max", type=int, default=3)
     parser.add_argument("--tension_micro_min_cluster_size_abs", type=int, default=30)
     parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
@@ -1160,6 +1166,7 @@ def run_k_selection(
     latent_alpha_prior_strength: float = 0.0,
     latent_max_iter: int = 100,
     region_max_iter: int = 100,
+    diagnostic_allow_failed_gates: bool = False,
 ) -> Tuple[Any, pd.DataFrame, Dict[str, Any]]:
     """Dispatch to the appropriate K-selection strategy.
 
@@ -1212,6 +1219,7 @@ def run_k_selection(
         latent_alpha_prior_strength=float(latent_alpha_prior_strength),
         latent_max_iter=int(latent_max_iter),
         region_max_iter=int(region_max_iter),
+        diagnostic_allow_failed_gates=bool(diagnostic_allow_failed_gates),
     )
     assignment_mode = str(assignment_mode or "joint").strip().lower()
     if k_strategy == "balanced_va_regions":
@@ -3801,6 +3809,7 @@ def main() -> None:
         latent_alpha_prior_strength=float(getattr(args, "alpha_prior_strength", 0.0)),
         latent_max_iter=int(getattr(args, "latent_max_iter", 100)),
         region_max_iter=int(getattr(args, "region_max_iter", 100)),
+        diagnostic_allow_failed_gates=parse_bool_text(getattr(args, "diagnostic_allow_failed_gates", "false")),
     )
     selection_info["metadata_policy"] = selection_info_metadata_policy
 

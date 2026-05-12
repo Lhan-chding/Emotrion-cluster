@@ -62,6 +62,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
         "k_strategy": "composite",
         "requires_run_dir": False,
         "plot_va_source": "mean",
+        "diagnostic_allow_failed_gates": True,
     },
     "calibrated_va_tension_final_report_only": {
         "strategy": "calibrated_va_tension",
@@ -102,6 +103,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
             "--latent_max_iter",
             "200",
         ],
+        "diagnostic_allow_failed_gates": True,
     },
     "metadata_only_report_diagnostic": {
         "strategy": "metadata_only",
@@ -110,6 +112,7 @@ CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
         "metadata_policy": "all_metadata_upper_bound",
         "require_both_va": False,
         "plot_va_source": "mean",
+        "diagnostic_allow_failed_gates": True,
     },
 }
 
@@ -204,6 +207,8 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         "--plot_va_source",
         str(config.get("plot_va_source", "mean")),
     ]
+    if bool(config.get("diagnostic_allow_failed_gates", False)):
+        command.extend(["--diagnostic_allow_failed_gates", "true"])
     command.extend([str(item) for item in config.get("extra_args", [])])
     if bool(config.get("requires_run_dir")):
         command.extend(["--run_dir", str(args.base_run_dir)])
@@ -332,6 +337,7 @@ def _summarize_failed_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "mask_nmi": float("nan"),
         "metadata_policy": CONFIG_REGISTRY.get(config_name, {}).get("metadata_policy", "report_only"),
         "max_mask_enrichment": float("nan"),
+        "diagnostic_failed_gate_override": False,
         "error_type": error_payload.get("error_type"),
         "error_message": error_payload.get("error_message", f"Missing rerun summary for config '{config_name}'."),
         "returncode": error_payload.get("returncode"),
@@ -406,6 +412,7 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "mask_nmi": mask_nmi,
         "metadata_policy": _metadata_policy_text(summary, config_name),
         "max_mask_enrichment": max_mask_enrichment,
+        "diagnostic_failed_gate_override": bool(selection.get("diagnostic_failed_gate_override", False)),
         "error_type": None,
         "error_message": None,
         "returncode": None,

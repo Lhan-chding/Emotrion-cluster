@@ -179,23 +179,38 @@ def search_latent_va_gmm(
     if bool(config.overlap_gate_enabled):
         eligible &= metrics["overlap_gate_ok"].to_numpy(dtype=bool)
     if not eligible.any():
-        candidates_text = ", ".join(
-            (
-                f"k={int(row.k)}:min_size={int(row.min_cluster_size)},"
-                f"min_ok={bool(row.min_size_ok)},"
-                f"overlap_ok={bool(getattr(row, 'overlap_gate_ok', True))},"
-                f"va_purity20={float(getattr(row, 'va_knn_purity_20', float('nan'))):.3f},"
-                f"va_sep={float(getattr(row, 'va_center_radius_sep', float('nan'))):.3f},"
-                f"score={float(getattr(row, 'latent_va_score', float('nan'))):.3f}"
+        if bool(config.diagnostic_allow_failed_gates):
+            fallback_pool = metrics["min_size_ok"].to_numpy(dtype=bool)
+            if not bool(fallback_pool.any()):
+                fallback_pool = np.ones(len(metrics), dtype=bool)
+            selected_idx = int(metrics[fallback_pool]["latent_va_score"].idxmax())
+            metrics.attrs["diagnostic_failed_gate_override"] = {
+                "selection_mode": "latent_va_gmm",
+                "selected_k": int(metrics.loc[selected_idx, "k"]),
+                "selected_index": selected_idx,
+                "eligible_candidate_count": int(eligible.sum()),
+                "fallback_candidate_count": int(fallback_pool.sum()),
+                "reason": "No candidate satisfied hard gates; selected the best-scoring candidate for diagnostic ablation only.",
+            }
+        else:
+            candidates_text = ", ".join(
+                (
+                    f"k={int(row.k)}:min_size={int(row.min_cluster_size)},"
+                    f"min_ok={bool(row.min_size_ok)},"
+                    f"overlap_ok={bool(getattr(row, 'overlap_gate_ok', True))},"
+                    f"va_purity20={float(getattr(row, 'va_knn_purity_20', float('nan'))):.3f},"
+                    f"va_sep={float(getattr(row, 'va_center_radius_sep', float('nan'))):.3f},"
+                    f"score={float(getattr(row, 'latent_va_score', float('nan'))):.3f}"
+                )
+                for row in metrics.itertuples(index=False)
             )
-            for row in metrics.itertuples(index=False)
-        )
-        raise ValueError(
-            "No latent_va_gmm candidate satisfied min-size and overlap hard gates "
-            f"(k_min={int(config.k_min)}, k_max={int(config.k_max)}, "
-            f"min_cluster_size_threshold={min_size_threshold}). Candidates: {candidates_text}."
-        )
-    selected_idx = int(metrics[eligible]["latent_va_score"].idxmax())
+            raise ValueError(
+                "No latent_va_gmm candidate satisfied min-size and overlap hard gates "
+                f"(k_min={int(config.k_min)}, k_max={int(config.k_max)}, "
+                f"min_cluster_size_threshold={min_size_threshold}). Candidates: {candidates_text}."
+            )
+    else:
+        selected_idx = int(metrics[eligible]["latent_va_score"].idxmax())
     selected_row = metrics.loc[selected_idx]
     selected_k = int(selected_row["k"])
     best_model = candidates[selected_k]
@@ -229,6 +244,11 @@ def search_latent_va_gmm(
         "device": str(config.device),
         "affect_gate_diagnostic_only": bool(config.affect_gate_enabled),
     }
+    override = metrics.attrs.get("diagnostic_failed_gate_override")
+    if override:
+        selection_info["diagnostic_failed_gate_override"] = True
+        for key, value in dict(override).items():
+            selection_info[f"diagnostic_failed_gate_{key}"] = value
     if config.affect_gate_enabled:
         for field in (
             "affect_valid_fraction",
