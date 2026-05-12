@@ -216,6 +216,43 @@ def test_ablation_suite_writes_required_comparison_reports(tmp_path):
     )
 
 
+def test_ablation_suite_balanced_va_claim_score_ignores_diagnostic_affect_penalty(tmp_path):
+    module = _load_ablation_suite_module()
+    run_dir = tmp_path / "clusterability_alpha"
+    all_dir = run_dir / "all"
+    all_dir.mkdir(parents=True)
+    (run_dir / "rerun_summary.json").write_text(
+        json.dumps(
+            {
+                "selected_k": 4,
+                "k_strategy": "balanced_va_regions",
+                "selection_mode": "balanced_va_regions",
+                "cluster_feature_strategy": "calibrated_va_tension",
+                "metadata_policy": {"metadata_policy": "report_only", "effective_metadata_cluster_weight": 0.0},
+                "selection_info": {"seed_ari_mean": 0.9, "seed_ari_std": 0.01},
+                "mask_purity_diagnostics": {"nmi": 0.0, "clusters": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "k": 4,
+                "balanced_region_score": 0.7,
+                "va_mean_silhouette": 0.38,
+                "affect_weighted_dominant_ratio": 0.50,
+                "affect_min_dominant_ratio": 0.40,
+                "affect_mixed_cluster_fraction": 0.60,
+            }
+        ]
+    ).to_csv(all_dir / "cluster_search_metrics.csv", index=False)
+
+    row = module.summarize_run(run_dir, "clusterability_alpha")
+
+    assert row["claim_score"] == 0.38
+
+
 def test_ablation_suite_records_failed_configs_without_stopping_report(tmp_path):
     module = _load_ablation_suite_module()
     ok_dir = tmp_path / "raw_mean_va"

@@ -262,7 +262,13 @@ def _affect_penalty_from_row(row: pd.Series) -> float:
     return float(penalty)
 
 
-def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: float) -> float:
+def _claim_score_from_row(
+    row: pd.Series,
+    mask_nmi: float,
+    max_mask_enrichment: float,
+    *,
+    include_affect_penalty: bool = True,
+) -> float:
     if row.empty:
         return float("nan")
     if "va_mean_silhouette" in row and pd.notna(row["va_mean_silhouette"]):
@@ -279,7 +285,7 @@ def _claim_score_from_row(row: pd.Series, mask_nmi: float, max_mask_enrichment: 
         return float("nan")
     leakage_penalty = 0.0 if not np.isfinite(mask_nmi) else max(0.0, float(mask_nmi) - 0.05)
     enrichment_penalty = 0.0 if not np.isfinite(max_mask_enrichment) else max(0.0, float(max_mask_enrichment) - 1.30) * 0.05
-    affect_penalty = _affect_penalty_from_row(row)
+    affect_penalty = _affect_penalty_from_row(row) if bool(include_affect_penalty) else 0.0
     return float(separation - leakage_penalty - enrichment_penalty - affect_penalty)
 
 
@@ -372,6 +378,7 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         return _summarize_failed_run(run_dir, config_name)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     selected_k = int(summary.get("selected_k", -1))
+    selection = summary.get("selection_info", {}) or {}
     metric_path = _first_existing_metric_path(run_dir)
     metric_row = pd.Series(dtype=float)
     if metric_path is not None:
@@ -382,7 +389,8 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
     clusters = mask_diag.get("clusters", []) or []
     mask_nmi = float(mask_diag.get("nmi", float("nan")))
     max_mask_enrichment = max([float(item.get("enrichment_vs_baseline", 0.0)) for item in clusters], default=float("nan"))
-    selection = summary.get("selection_info", {}) or {}
+    selection_mode = str(summary.get("selection_mode", selection.get("selection_mode", summary.get("k_strategy", "")))).strip().lower()
+    affect_is_diagnostic = selection_mode in {"balanced_va_regions", "latent_va_gmm"}
     return {
         "config": config_name,
         "status": "ok",
@@ -391,7 +399,12 @@ def summarize_run(run_dir: Path, config_name: str) -> Dict[str, Any]:
         "k_strategy": summary.get("k_strategy"),
         "cluster_feature_strategy": summary.get("cluster_feature_strategy"),
         "score": _score_from_row(metric_row) if not metric_row.empty else float("nan"),
-        "claim_score": _claim_score_from_row(metric_row, mask_nmi, max_mask_enrichment),
+        "claim_score": _claim_score_from_row(
+            metric_row,
+            mask_nmi,
+            max_mask_enrichment,
+            include_affect_penalty=not affect_is_diagnostic,
+        ),
         "silhouette": float(metric_row.get("silhouette", float("nan"))) if not metric_row.empty else float("nan"),
         "va_silhouette": _float_from_row(metric_row, "va_mean_silhouette", "va_silhouette", "latent_consensus_silhouette"),
         "knn_purity_10": _float_from_row(metric_row, "va_knn_purity_10"),

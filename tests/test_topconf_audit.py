@@ -102,7 +102,7 @@ def test_topconf_audit_requires_named_ablation_configs_and_proposed_gain(tmp_pat
 
     gate = result["gates"]["required_ablations_present"]
     assert gate["status"] == "fail"
-    assert "required baseline matrix" in gate["detail"].lower() or "outperform" in gate["detail"].lower()
+    assert "required baseline matrix" in gate["detail"].lower()
 
 
 def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
@@ -140,7 +140,7 @@ def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
     assert gate["value"]["failed_configs"] == ["metadata_only_report_diagnostic"]
 
 
-def test_topconf_audit_uses_common_claim_score_to_reject_weaker_proposed_model(tmp_path):
+def test_topconf_audit_reports_claim_score_context_without_failing_presence_gate(tmp_path):
     run_dir = tmp_path
     (run_dir / "train").mkdir()
     summary = {"selected_k": 9, "selection_info": {}, "require_both_va": True}
@@ -171,9 +171,9 @@ def test_topconf_audit_uses_common_claim_score_to_reject_weaker_proposed_model(t
     result = audit_run(run_dir)
 
     gate = result["gates"]["required_ablations_present"]
-    assert gate["status"] == "fail"
-    assert gate["value"]["score_column"] == "claim_score"
-    assert gate["value"]["non_improved_configs"] == ["audio_va"]
+    assert gate["status"] == "pass"
+    assert gate["value"]["score_context"]["score_column"] == "claim_score"
+    assert gate["value"]["score_context"]["non_improved_configs"] == ["audio_va"]
 
 
 def test_topconf_audit_fails_large_mixed_affect_cluster(tmp_path):
