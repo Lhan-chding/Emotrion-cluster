@@ -22,8 +22,10 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sklearn.preprocessing import StandardScaler
 
+from cluster.backends import resolve_cluster_backend
 from cluster.config import MUSIC_LABEL_NAMES, parse_split_protocol
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
+from cluster.backends.torch_metrics import torch_silhouette_score_chunked
 from cluster.features.block_scaler import BlockwiseObservedScaler
 from cluster.features.va_geometry import (
     BALANCED_VA_DIFF_DIM,
@@ -2559,7 +2561,14 @@ TENSION_MICRO_CANDIDATE_COLUMNS = [
 ]
 
 
-def _tension_micro_probe_config(feature_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _tension_micro_probe_config(
+    feature_state: Optional[Dict[str, Any]],
+    *,
+    eval_backend: str = "sklearn",
+    device: str = "cpu",
+    chunk_size: int = 4096,
+    sample_size: int = 0,
+) -> Optional[Dict[str, Any]]:
     if not isinstance(feature_state, dict):
         return None
     config = feature_state.get("tension_micro_probe_config")
@@ -2572,6 +2581,10 @@ def _tension_micro_probe_config(feature_state: Optional[Dict[str, Any]]) -> Opti
         "min_effect": float(config.get("min_effect", 0.25)),
         "stability_runs": max(1, int(config.get("stability_runs", 5))),
         "random_state": int(config.get("random_state", 42)),
+        "eval_backend": str(eval_backend),
+        "device": str(device),
+        "chunk_size": int(chunk_size),
+        "sample_size": int(sample_size),
     }
 
 
@@ -2607,6 +2620,67 @@ def _tension_micro_effect_size(matrix: np.ndarray, labels: np.ndarray) -> float:
     return float(np.sqrt(between / max(within, 1e-8)))
 
 
+def _tension_sample_indices(n: int, sample_size: int, random_state: int) -> np.ndarray:
+    if int(sample_size) <= 0 or int(n) <= int(sample_size):
+        return np.arange(int(n), dtype=np.int64)
+    rng = np.random.default_rng(int(random_state))
+    return np.sort(rng.choice(int(n), size=int(sample_size), replace=False)).astype(np.int64)
+
+
+def _tension_use_torch(config: Dict[str, Any]) -> bool:
+    backend = str(config.get("eval_backend", "sklearn") or "sklearn").strip().lower()
+    device = str(config.get("device", "cpu") or "cpu").strip()
+    if backend != "torch":
+        return False
+    try:
+        resolve_cluster_backend("torch", device=device)
+    except Exception:
+        return False
+    return True
+
+
+def _fit_tension_kmeans(matrix: np.ndarray, k: int, config: Dict[str, Any], random_state: int) -> np.ndarray:
+    if _tension_use_torch(config):
+        backend = resolve_cluster_backend("torch", device=str(config.get("device", "cpu")))
+        labels, _model = backend.fit_predict(
+            matrix.astype(np.float32),
+            algorithm="kmeans",
+            n_clusters=int(k),
+            n_init=20,
+            max_iter=300,
+            random_state=int(random_state),
+        )
+        return labels.astype(np.int64)
+    return KMeans(
+        n_clusters=int(k),
+        n_init=20,
+        max_iter=300,
+        random_state=int(random_state),
+    ).fit_predict(matrix)
+
+
+def _score_tension_silhouette(matrix: np.ndarray, labels: np.ndarray, config: Dict[str, Any], random_state: int) -> float:
+    if np.unique(labels).size <= 1:
+        return 0.0
+    sample_indices = _tension_sample_indices(
+        int(matrix.shape[0]),
+        int(config.get("sample_size", 0)),
+        int(random_state),
+    )
+    score_matrix = matrix[sample_indices]
+    score_labels = labels[sample_indices]
+    if np.unique(score_labels).size <= 1:
+        return float("nan")
+    if _tension_use_torch(config):
+        return torch_silhouette_score_chunked(
+            score_matrix.astype(np.float32),
+            score_labels.astype(np.int64),
+            chunk_size=int(config.get("chunk_size", 4096)),
+            device=str(config.get("device", "cpu")),
+        )
+    return float(silhouette_score(score_matrix.astype(np.float64), score_labels))
+
+
 def _canonical_tension_labels(tension: np.ndarray, labels: np.ndarray) -> np.ndarray:
     unique = sorted(np.unique(labels).astype(int).tolist())
     if len(unique) <= 1:
@@ -2626,21 +2700,29 @@ def _tension_seed_ari(
     matrix: np.ndarray,
     base_labels: np.ndarray,
     k: int,
-    stability_runs: int,
+    config: Dict[str, Any],
     random_state: int,
 ) -> float:
+    stability_runs = int(config.get("stability_runs", 1))
     if stability_runs <= 1:
         return float("nan")
+    sample_indices = _tension_sample_indices(
+        int(matrix.shape[0]),
+        int(config.get("sample_size", 0)),
+        int(random_state) + 104729,
+    )
+    score_matrix = matrix[sample_indices]
+    score_base = base_labels[sample_indices]
     scores: List[float] = []
     for run_idx in range(1, stability_runs):
-        labels = KMeans(
-            n_clusters=k,
-            n_init=10,
-            max_iter=300,
-            random_state=int(random_state) + run_idx * 1009,
-        ).fit_predict(matrix)
+        labels = _fit_tension_kmeans(
+            score_matrix,
+            int(k),
+            config,
+            int(random_state) + run_idx * 1009,
+        )
         if np.unique(labels).size == k:
-            scores.append(float(adjusted_rand_score(base_labels, labels)))
+            scores.append(float(adjusted_rand_score(score_base, labels)))
     return float(np.mean(scores)) if scores else float("nan")
 
 
@@ -2708,12 +2790,8 @@ def _probe_one_cluster_tension_micro(
     candidates: List[Dict[str, Any]] = []
     accepted: List[Tuple[Dict[str, Any], np.ndarray]] = []
     for k in range(2, min(int(config["k_max"]), n) + 1):
-        labels = KMeans(
-            n_clusters=k,
-            n_init=20,
-            max_iter=300,
-            random_state=int(config["random_state"]) + int(cluster_id) * 4099 + k,
-        ).fit_predict(scaled)
+        candidate_seed = int(config["random_state"]) + int(cluster_id) * 4099 + k
+        labels = _fit_tension_kmeans(scaled, int(k), config, candidate_seed)
         labels = _canonical_tension_labels(tension, labels)
         sizes = np.bincount(labels, minlength=k)
         min_micro_size = int(sizes.min()) if sizes.size else 0
@@ -2731,17 +2809,19 @@ def _probe_one_cluster_tension_micro(
                 }
             )
             continue
-        silhouette = float(silhouette_score(scaled, labels)) if np.unique(labels).size > 1 else 0.0
+        silhouette = _score_tension_silhouette(scaled, labels, config, candidate_seed)
         effect = _tension_micro_effect_size(scaled, labels)
         seed_ari = _tension_seed_ari(
             scaled,
             labels,
             k,
-            int(config["stability_runs"]),
+            config,
             int(config["random_state"]) + int(cluster_id) * 4099,
         )
         reasons = []
-        if silhouette < float(config["min_silhouette"]):
+        if not np.isfinite(float(silhouette)):
+            reasons.append("silhouette=nan")
+        elif silhouette < float(config["min_silhouette"]):
             reasons.append(f"silhouette={silhouette:.3f}<{float(config['min_silhouette']):.3f}")
         if effect < float(config["min_effect"]):
             reasons.append(f"effect={effect:.3f}<{float(config['min_effect']):.3f}")
@@ -2790,8 +2870,20 @@ def _write_tension_micro_probe_artifacts(
     dataset,
     assignments: np.ndarray,
     feature_state: Optional[Dict[str, Any]],
+    *,
+    eval_backend: str = "sklearn",
+    device: str = "cpu",
+    silhouette_sample_size: int = 0,
+    silhouette_chunk_size: int = 4096,
 ) -> Dict[str, Any]:
-    config = _tension_micro_probe_config(feature_state)
+    probe_sample_size = min(int(silhouette_sample_size), 20000) if int(silhouette_sample_size) > 0 else 20000
+    config = _tension_micro_probe_config(
+        feature_state,
+        eval_backend=eval_backend,
+        device=device,
+        chunk_size=int(silhouette_chunk_size),
+        sample_size=int(probe_sample_size),
+    )
     if config is None:
         return {}
     probe_dir = os.path.join(out_dir, "tension_micro_probe")
@@ -3206,6 +3298,10 @@ def _write_split_outputs(
         dataset=dataset,
         assignments=assignments,
         feature_state=feature_state,
+        eval_backend=str(eval_backend),
+        device=str(device),
+        silhouette_sample_size=int(silhouette_sample_size),
+        silhouette_chunk_size=int(silhouette_chunk_size),
     )
     canonical_region_outputs = _write_canonical_affect_region_artifacts(out_dir=out_dir, summary=summary)
     tension_substructure_outputs = _write_tension_substructure_artifacts(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -102,31 +103,37 @@ class BalancedVARegionClusterer:
             generator.manual_seed(int(self.random_state) + 9973 * init_idx)
             indices = torch.randperm(features.shape[0], generator=generator, device=features.device)[: self.n_components]
             centers = features[indices].clone()
-            labels = np.full(matrix.shape[0], -1, dtype=np.int64)
+            labels_t = torch.full((features.shape[0],), -1, device=features.device, dtype=torch.long)
             for _ in range(max(1, self.max_iter)):
                 distances_t = self._torch_distances(features, centers)
-                new_labels = torch.argmin(distances_t, dim=1).detach().cpu().numpy().astype(np.int64)
-                if np.bincount(new_labels, minlength=self.n_components).min() < self.min_cluster_size:
-                    new_labels = self._repair_min_size(
-                        new_labels,
-                        distances_t.detach().cpu().numpy().astype(np.float64),
-                    )
-                labels_t = torch.as_tensor(new_labels, device=features.device, dtype=torch.long)
+                new_labels_t = torch.argmin(distances_t, dim=1).to(dtype=torch.long)
                 new_centers = centers.clone()
+                for cluster_id in range(self.n_components):
+                    mask = new_labels_t == int(cluster_id)
+                    if bool(mask.any()):
+                        new_centers[cluster_id] = features[mask].mean(dim=0)
+                if bool(torch.equal(new_labels_t, labels_t)):
+                    centers = new_centers
+                    labels_t = new_labels_t
+                    break
+                centers = new_centers
+                labels_t = new_labels_t
+            final_distances = self._torch_distances(features, centers)
+            sizes_t = torch.bincount(labels_t, minlength=self.n_components)
+            if int(sizes_t.min().detach().cpu().item()) < self.min_cluster_size:
+                repaired = self._repair_min_size(
+                    labels_t.detach().cpu().numpy().astype(np.int64),
+                    final_distances.detach().cpu().numpy().astype(np.float64),
+                )
+                labels_t = torch.as_tensor(repaired, device=features.device, dtype=torch.long)
                 for cluster_id in range(self.n_components):
                     mask = labels_t == int(cluster_id)
                     if bool(mask.any()):
-                        new_centers[cluster_id] = features[mask].mean(dim=0)
-                if np.array_equal(new_labels, labels):
-                    centers = new_centers
-                    labels = new_labels
-                    break
-                centers = new_centers
-                labels = new_labels
-            labels_t = torch.as_tensor(labels, device=features.device, dtype=torch.long)
-            final_distances = self._torch_distances(features, centers)
+                        centers[cluster_id] = features[mask].mean(dim=0)
+                final_distances = self._torch_distances(features, centers)
             inertia = float(final_distances[torch.arange(features.shape[0], device=features.device), labels_t].sum().detach().cpu().item())
             centers_np = centers.detach().cpu().numpy().astype(np.float64)
+            labels = labels_t.detach().cpu().numpy().astype(np.int64)
             if best is None or inertia < best[0]:
                 best = (inertia, centers_np.copy(), labels.copy())
         if best is None:
@@ -335,6 +342,7 @@ def search_balanced_va_regions(
     candidates: Dict[int, BalancedVARegionClusterer] = {}
 
     for k in range(int(config.k_min), int(config.k_max) + 1):
+        started_at = time.perf_counter()
         if int(k) <= 1 or int(k) * min_size_threshold > int(matrix.shape[0]):
             rows.append(
                 {
@@ -347,6 +355,14 @@ def search_balanced_va_regions(
                 }
             )
             continue
+        if matrix.shape[0] >= 20000:
+            print(
+                f"[BalancedVA] evaluating k={int(k)} "
+                f"(backend={_balanced_backend_name(config)}, n={int(matrix.shape[0])}, "
+                f"stability_runs={int(config.stability_runs)})",
+                flush=True,
+            )
+        model_started_at = time.perf_counter()
         model = BalancedVARegionClusterer(
             n_components=int(k),
             min_cluster_size=int(min_size_threshold),
@@ -356,12 +372,16 @@ def search_balanced_va_regions(
             backend=_balanced_backend_name(config),
             device=str(config.device),
         ).fit(va)
+        model_seconds = time.perf_counter() - model_started_at
         labels = model.labels_.astype(np.int64)
         sizes = np.bincount(labels, minlength=int(k))
+        silhouette_started_at = time.perf_counter()
         try:
             silhouette = _score_balanced_silhouette(va, labels, config)
         except Exception:
             silhouette = float("nan")
+        silhouette_seconds = time.perf_counter() - silhouette_started_at
+        stability_started_at = time.perf_counter()
         stability_mean, stability_std = _stability(
             va,
             labels,
@@ -369,6 +389,8 @@ def search_balanced_va_regions(
             min_cluster_size=int(min_size_threshold),
             config=config,
         )
+        stability_seconds = time.perf_counter() - stability_started_at
+        overlap_started_at = time.perf_counter()
         overlap_metrics = compute_overlap_gate_metrics(
             va,
             labels,
@@ -381,6 +403,7 @@ def search_balanced_va_regions(
             chunk_size=int(config.silhouette_chunk_size),
             random_state=int(config.random_state),
         )
+        overlap_seconds = time.perf_counter() - overlap_started_at
         tension_metrics = _tension_diagnostics(tension, labels)
         affect_metrics: Dict[str, Any] = {}
         if config.affect_gate_enabled:
@@ -419,6 +442,16 @@ def search_balanced_va_regions(
                 **affect_metrics,
             }
         )
+        if matrix.shape[0] >= 20000:
+            elapsed = time.perf_counter() - started_at
+            print(
+                f"[BalancedVA] finished k={int(k)} in {elapsed:.1f}s "
+                f"(fit={model_seconds:.1f}s, sil={silhouette_seconds:.1f}s, "
+                f"stability={stability_seconds:.1f}s, overlap={overlap_seconds:.1f}s) "
+                f"(score={score:.4f}, min_size={int(sizes.min())}, "
+                f"overlap_ok={bool(overlap_metrics.get('overlap_gate_ok', True))})",
+                flush=True,
+            )
 
     metrics = pd.DataFrame(rows).sort_values("k", kind="stable").reset_index(drop=True)
     eligible = (~metrics.get("skipped", False).to_numpy(dtype=bool)) & metrics["min_size_ok"].to_numpy(dtype=bool)
