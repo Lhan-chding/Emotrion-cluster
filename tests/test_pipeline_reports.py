@@ -1253,6 +1253,8 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
             np.linalg.norm(tension * 0.25, axis=1),
         ]
     ).astype(np.float32)
+    weighted_cluster_features = residual_tension.copy()
+    weighted_cluster_features[:, 2:5] = 0.0
 
     payload = _write_split_outputs(
         out_dir=str(tmp_path),
@@ -1263,7 +1265,8 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
         metadata_feature_names=["numeric::zero"],
         selected_k=2,
         feature_dim=2,
-        cluster_features=residual_tension,
+        cluster_features=weighted_cluster_features,
+        tension_features=residual_tension,
         plot_va_source="cluster_consensus",
         plot_va_override=consensus,
         feature_state={

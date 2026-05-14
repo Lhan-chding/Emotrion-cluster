@@ -764,6 +764,7 @@ def main() -> None:
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
             cluster_features=features,
+            tension_features=features_raw,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,

@@ -2837,6 +2837,8 @@ def _plot_tension_micro_scatter(
     labels: np.ndarray,
     out_path: str,
     title: str,
+    *,
+    source: str = "raw_delta",
 ) -> None:
     _ensure_dir(os.path.dirname(out_path))
     plt.figure(figsize=(7, 6))
@@ -2854,8 +2856,13 @@ def _plot_tension_micro_scatter(
         )
     plt.axhline(0.0, color="#999999", linewidth=1.0, linestyle="--", alpha=0.7)
     plt.axvline(0.0, color="#999999", linewidth=1.0, linestyle="--", alpha=0.7)
-    plt.xlabel("Lyrics minus Audio Valence")
-    plt.ylabel("Lyrics minus Audio Arousal")
+    source_name = str(source or "raw_delta").strip().lower()
+    if source_name == "residualized":
+        plt.xlabel("Residualized Lyric-Audio Valence Tension")
+        plt.ylabel("Residualized Lyric-Audio Arousal Tension")
+    else:
+        plt.xlabel("Lyrics minus Audio Valence")
+        plt.ylabel("Lyrics minus Audio Arousal")
     plt.title(title)
     plt.legend(frameon=False)
     plt.tight_layout()
@@ -2978,6 +2985,7 @@ def _write_tension_micro_probe_artifacts(
     assignments: np.ndarray,
     feature_state: Optional[Dict[str, Any]],
     cluster_features: Optional[np.ndarray] = None,
+    tension_features: Optional[np.ndarray] = None,
     *,
     eval_backend: str = "sklearn",
     device: str = "cpu",
@@ -2997,9 +3005,10 @@ def _write_tension_micro_probe_artifacts(
     probe_dir = os.path.join(out_dir, "tension_micro_probe")
     _ensure_dir(probe_dir)
     requested_source = str(config.get("source", "residualized") or "residualized").strip().lower()
+    source_features = tension_features if tension_features is not None else cluster_features
     actual_source = (
         "residualized"
-        if requested_source == "residualized" and _has_residualized_tension_features(cluster_features, len(assignments))
+        if requested_source == "residualized" and _has_residualized_tension_features(source_features, len(assignments))
         else "raw_delta"
     )
     config = dict(config)
@@ -3008,7 +3017,7 @@ def _write_tension_micro_probe_artifacts(
     tension_matrix, observed = _dataset_tension_matrix(
         dataset,
         source=actual_source,
-        cluster_features=cluster_features,
+        cluster_features=source_features,
     )
     view_mask = getattr(dataset, "view_mask", np.ones((len(assignments), 3), dtype=np.float32))
     view_mask = np.asarray(view_mask, dtype=np.float32)
@@ -3036,6 +3045,7 @@ def _write_tension_micro_probe_artifacts(
                 local_labels.astype(np.int64),
                 plot_path,
                 title=f"Cluster {cluster_id} Tension Micro Probe",
+                source=actual_source,
             )
             plot_paths[str(cluster_id)] = plot_path
 
@@ -3284,6 +3294,7 @@ def _write_split_outputs(
     selected_k: int,
     feature_dim: int,
     cluster_features: Optional[np.ndarray] = None,
+    tension_features: Optional[np.ndarray] = None,
     search_metrics: Optional[pd.DataFrame] = None,
     plot_va_source: str = "mean",
     cluster_label_names: Optional[Dict[Any, Any]] = None,
@@ -3465,6 +3476,7 @@ def _write_split_outputs(
         assignments=assignments,
         feature_state=feature_state,
         cluster_features=cluster_features,
+        tension_features=tension_features,
         eval_backend=str(eval_backend),
         device=str(device),
         silhouette_sample_size=int(silhouette_sample_size),
@@ -4362,6 +4374,7 @@ def main() -> None:
             selected_k=selected_k,
             feature_dim=int(features.shape[1]),
             cluster_features=features,
+            tension_features=features_raw,
             search_metrics=search_metrics if split == search_split else None,
             plot_va_source=str(args.plot_va_source),
             cluster_label_names=cluster_output_label_names,
