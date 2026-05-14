@@ -1125,8 +1125,87 @@ def test_write_split_outputs_uses_cluster_consensus_as_balanced_va(tmp_path):
         "top_tokens",
         "representative_tracks",
     }.issubset(region_frame.columns)
-    assert region_frame.loc[region_frame["cluster_id"] == 0, "canonical_name"].iloc[0] == "Melancholic Low-Arousal"
+    assert region_frame.loc[region_frame["cluster_id"] == 0, "canonical_name"].iloc[0] == "Restorative Calm"
     assert payload["output_files"]["canonical_affect_regions_csv"] == str(region_csv)
+
+
+def test_canonical_affect_region_names_are_inferred_from_dataset_l_geometry(tmp_path):
+    summary = [
+        {
+            "cluster_id": 0,
+            "num_samples": 100,
+            "balanced_valence": 0.96,
+            "balanced_arousal": 0.90,
+            "mean_audio_valence": 0.95,
+            "mean_audio_arousal": 0.88,
+            "mean_lyrics_valence": 0.97,
+            "mean_lyrics_arousal": 0.91,
+            "top_metadata_tokens": [{"feature": "Moods::exciting"}, {"feature": "MoodsAll::exciting"}],
+            "example_tracks": [{"identifier": "track-a"}],
+        },
+        {
+            "cluster_id": 1,
+            "num_samples": 100,
+            "balanced_valence": 0.53,
+            "balanced_arousal": 0.37,
+            "mean_audio_valence": 0.56,
+            "mean_audio_arousal": 0.40,
+            "mean_lyrics_valence": 0.50,
+            "mean_lyrics_arousal": 0.34,
+            "top_metadata_tokens": [{"feature": "Moods::nostalgic"}],
+            "example_tracks": [{"identifier": "track-b"}],
+        },
+        {
+            "cluster_id": 2,
+            "num_samples": 100,
+            "balanced_valence": 0.84,
+            "balanced_arousal": 0.59,
+            "mean_audio_valence": 0.84,
+            "mean_audio_arousal": 0.59,
+            "mean_lyrics_valence": 0.85,
+            "mean_lyrics_arousal": 0.60,
+            "top_metadata_tokens": [{"feature": "Moods::romantic"}],
+            "example_tracks": [{"identifier": "track-c"}],
+        },
+        {
+            "cluster_id": 3,
+            "num_samples": 100,
+            "balanced_valence": 0.11,
+            "balanced_arousal": 0.36,
+            "mean_audio_valence": 0.12,
+            "mean_audio_arousal": 0.36,
+            "mean_lyrics_valence": 0.10,
+            "mean_lyrics_arousal": 0.35,
+            "top_metadata_tokens": [{"feature": "Moods::lonely"}],
+            "example_tracks": [{"identifier": "track-d"}],
+        },
+        {
+            "cluster_id": 4,
+            "num_samples": 100,
+            "balanced_valence": 0.74,
+            "balanced_arousal": 0.08,
+            "mean_audio_valence": 0.74,
+            "mean_audio_arousal": 0.09,
+            "mean_lyrics_valence": 0.73,
+            "mean_lyrics_arousal": 0.07,
+            "top_metadata_tokens": [{"feature": "Moods::peaceful"}],
+            "example_tracks": [{"identifier": "track-e"}],
+        },
+    ]
+
+    from cluster.pipeline.train import _write_canonical_affect_region_artifacts
+
+    _write_canonical_affect_region_artifacts(str(tmp_path), summary)
+
+    regions = pd.read_csv(tmp_path / "canonical_affect_regions.csv")
+    assert regions.set_index("cluster_id")["canonical_name"].to_dict() == {
+        0: "Euphoric Excitement",
+        1: "Bittersweet Nostalgia",
+        2: "Bright Romantic Vitality",
+        3: "Lonely Melancholy",
+        4: "Restorative Calm",
+    }
+    assert regions.loc[regions["cluster_id"] == 0, "top_tokens"].iloc[0] == "exciting"
 
 
 def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
@@ -1166,6 +1245,15 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
         "z_fused": rng.standard_normal((24, 4)).astype(np.float32),
     }
 
+    residual_tension = np.column_stack(
+        [
+            consensus,
+            tension[:, 0] * 0.25,
+            tension[:, 1] * 0.25,
+            np.linalg.norm(tension * 0.25, axis=1),
+        ]
+    ).astype(np.float32)
+
     payload = _write_split_outputs(
         out_dir=str(tmp_path),
         split="all",
@@ -1175,12 +1263,13 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
         metadata_feature_names=["numeric::zero"],
         selected_k=2,
         feature_dim=2,
-        cluster_features=consensus,
+        cluster_features=residual_tension,
         plot_va_source="cluster_consensus",
         plot_va_override=consensus,
         feature_state={
             "tension_micro_probe_config": {
                 "enabled": True,
+                "source": "residualized",
                 "k_max": 2,
                 "min_cluster_size": 4,
                 "min_silhouette": -1.0,
@@ -1216,8 +1305,13 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
     assert set(probe["selected_micro_k"].tolist()) == {2}
     assert {"tension_silhouette", "tension_effect_size", "seed_ari_mean"}.issubset(probe.columns)
     assert set(tension_assignments["tension_micro_id"].tolist()) == {0, 1}
+    np.testing.assert_allclose(
+        tension_assignments["tension_dv"].to_numpy(dtype=np.float32),
+        residual_tension[:, 2],
+        atol=1e-6,
+    )
     assert {"subtype_label", "mean_tension_norm", "top_tokens"}.issubset(subtype_enrichment.columns)
-    assert "modality-consistent" in set(subtype_enrichment["subtype_label"].astype(str))
+    assert "Affective Concordance" in set(subtype_enrichment["subtype_label"].astype(str))
     assert {"tension_micro_id", "tension_subtype_label"}.issubset(subtype_assignments.columns)
     assert "tension_micro_id" not in final_assignments.columns
 

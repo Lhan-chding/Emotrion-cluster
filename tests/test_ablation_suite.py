@@ -119,6 +119,57 @@ def test_ablation_suite_builds_latent_two_view_gmm_command(tmp_path):
     assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
 
 
+def test_ablation_suite_accepts_dataset_l_required_configs_and_builds_sensitivity_commands(tmp_path):
+    module = _load_ablation_suite_module()
+    expected = {
+        "audio_va",
+        "lyrics_va",
+        "raw_mean_va",
+        "calibrated_mean_alpha_0_5",
+        "fixed_alpha_0_60",
+        "clusterability_alpha",
+        "raw_mean_plus_signed_diff",
+        "residual_tension_weak_concat",
+        "calibrated_va_tension_final_report_only",
+        "metadata_only_report_diagnostic",
+        "k4_sensitivity",
+        "k5_sensitivity",
+        "k6_sensitivity",
+    }
+    assert expected.issubset(set(module.DEFAULT_CONFIGS))
+
+    args = module.SuiteArgs(
+        processed_dir="processed",
+        base_run_dir=None,
+        out_dir=str(tmp_path),
+        gpu="3",
+        batch_size=4096,
+        stability_runs=40,
+        stability_sample_size=50000,
+        k_min=4,
+        k_max=16,
+        macro_k_min=3,
+        macro_k_max=6,
+        micro_k_min=1,
+        micro_k_max=5,
+        min_cluster_size_abs=800,
+        metadata_policy="report_only",
+        require_both_va=True,
+    )
+
+    fixed_alpha = module.build_rerun_command(args, "fixed_alpha_0_60", tmp_path / "fixed_alpha_0_60")
+    residual = module.build_rerun_command(args, "residual_tension_weak_concat", tmp_path / "residual_tension_weak_concat")
+    k6 = module.build_rerun_command(args, "k6_sensitivity", tmp_path / "k6_sensitivity")
+
+    assert fixed_alpha[fixed_alpha.index("--consensus_mode") + 1] == "global_alpha"
+    assert fixed_alpha[fixed_alpha.index("--consensus_alpha") + 1] == "0.6"
+    assert residual[residual.index("--k_strategy") + 1] == "composite"
+    assert residual[residual.index("--cluster_feature_strategy") + 1] == "calibrated_va_tension"
+    assert residual[residual.index("--diff_cluster_weight") + 1] == "0.1"
+    assert k6[k6.index("--total_k_min") + 1] == "6"
+    assert k6[k6.index("--total_k_max") + 1] == "6"
+
+
 def test_ablation_suite_builds_metadata_diagnostic_with_failed_gate_override(tmp_path):
     module = _load_ablation_suite_module()
     args = module.SuiteArgs(

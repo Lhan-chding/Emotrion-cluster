@@ -119,8 +119,10 @@ def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
         {"config": "lyrics_va", "status": "ok", "score": 0.10},
         {"config": "raw_mean_va", "status": "ok", "score": 0.10},
         {"config": "calibrated_mean_alpha_0_5", "status": "ok", "score": 0.11},
+        {"config": "fixed_alpha_0_60", "status": "ok", "score": 0.11},
         {"config": "clusterability_alpha", "status": "ok", "score": 0.12},
         {"config": "raw_mean_plus_signed_diff", "status": "ok", "score": 0.13},
+        {"config": "residual_tension_weak_concat", "status": "ok", "score": 0.13},
         {"config": "calibrated_va_tension_final_report_only", "status": "ok", "score": 0.30},
         {"config": "latent_two_view_va_gmm", "status": "ok", "score": 0.14},
         {
@@ -129,6 +131,9 @@ def test_topconf_audit_fails_when_required_ablation_config_failed(tmp_path):
             "score": float("nan"),
             "error_message": "No K candidate satisfied min_cluster_size_threshold=40",
         },
+        {"config": "k4_sensitivity", "status": "ok", "score": 0.12},
+        {"config": "k5_sensitivity", "status": "ok", "score": 0.12},
+        {"config": "k6_sensitivity", "status": "ok", "score": 0.12},
     ]
     pd.DataFrame(rows).to_csv(run_dir / "baseline_comparison.csv", index=False)
     pd.DataFrame(rows).to_csv(run_dir / "ablation_report.csv", index=False)
@@ -154,8 +159,10 @@ def test_topconf_audit_reports_claim_score_context_without_failing_presence_gate
         {"config": "lyrics_va", "status": "ok", "score": 0.10, "claim_score": 0.06},
         {"config": "raw_mean_va", "status": "ok", "score": 0.10, "claim_score": 0.08},
         {"config": "calibrated_mean_alpha_0_5", "status": "ok", "score": 0.11, "claim_score": 0.07},
+        {"config": "fixed_alpha_0_60", "status": "ok", "score": 0.11, "claim_score": 0.07},
         {"config": "clusterability_alpha", "status": "ok", "score": 0.12, "claim_score": 0.05},
         {"config": "raw_mean_plus_signed_diff", "status": "ok", "score": 0.13, "claim_score": 0.09},
+        {"config": "residual_tension_weak_concat", "status": "ok", "score": 0.13, "claim_score": 0.09},
         {
             "config": "calibrated_va_tension_final_report_only",
             "status": "ok",
@@ -164,6 +171,9 @@ def test_topconf_audit_reports_claim_score_context_without_failing_presence_gate
         },
         {"config": "latent_two_view_va_gmm", "status": "ok", "score": 0.14, "claim_score": 0.10},
         {"config": "metadata_only_report_diagnostic", "status": "ok", "score": 0.12, "claim_score": 0.04},
+        {"config": "k4_sensitivity", "status": "ok", "score": 0.12, "claim_score": 0.04},
+        {"config": "k5_sensitivity", "status": "ok", "score": 0.12, "claim_score": 0.04},
+        {"config": "k6_sensitivity", "status": "ok", "score": 0.12, "claim_score": 0.04},
     ]
     pd.DataFrame(rows).to_csv(run_dir / "baseline_comparison.csv", index=False)
     pd.DataFrame(rows).to_csv(run_dir / "ablation_report.csv", index=False)
@@ -241,12 +251,20 @@ def test_topconf_audit_balanced_va_region_gates_and_affect_diagnostic(tmp_path):
                 }
             ]
         ).to_csv(run_dir / split / "cluster_overlap_audit.csv", index=False)
-    (run_dir / "all" / "tension_micro_probe").mkdir()
-    (run_dir / "all" / "tension_micro_probe" / "tension_micro_probe.csv").write_text(
-        "cluster_id,selected_micro_k\n0,2\n",
+        (run_dir / split / "tension_micro_probe").mkdir()
+        (run_dir / split / "tension_micro_probe" / "tension_micro_probe.csv").write_text(
+            "cluster_id,tension_micro_source,selected_micro_k\n0,residualized,2\n",
+            encoding="utf-8",
+        )
+    (run_dir / "all" / "tension_substructure_report.md").write_text("# Tension\n", encoding="utf-8")
+    (run_dir / "all" / "tension_substructure_enrichment.csv").write_text(
+        "cluster_id,tension_micro_id,subtype_label\n0,0,Affective Concordance\n",
         encoding="utf-8",
     )
-    (run_dir / "all" / "tension_substructure_report.md").write_text("# Tension\n", encoding="utf-8")
+    (run_dir / "all" / "tension_subtype_assignments.csv").write_text(
+        "identifier,cluster_id,tension_micro_id,tension_subtype_label\nx,0,0,Affective Concordance\n",
+        encoding="utf-8",
+    )
     (run_dir / "all" / "balance_alpha_report.csv").write_text("alpha,score\n0.6,0.9\n", encoding="utf-8")
     summary = {
         "selected_k": 4,
@@ -289,11 +307,16 @@ def test_topconf_audit_balanced_va_region_gates_and_affect_diagnostic(tmp_path):
         "lyrics_va",
         "raw_mean_va",
         "calibrated_mean_alpha_0_5",
+        "fixed_alpha_0_60",
         "clusterability_alpha",
         "raw_mean_plus_signed_diff",
+        "residual_tension_weak_concat",
         "calibrated_va_tension_final_report_only",
         "latent_two_view_va_gmm",
         "metadata_only_report_diagnostic",
+        "k4_sensitivity",
+        "k5_sensitivity",
+        "k6_sensitivity",
     ]
     rows = [{"config": name, "status": "ok", "claim_score": 0.1 + idx * 0.01} for idx, name in enumerate(required)]
     pd.DataFrame(rows).to_csv(run_dir / "baseline_comparison.csv", index=False)
@@ -305,6 +328,7 @@ def test_topconf_audit_balanced_va_region_gates_and_affect_diagnostic(tmp_path):
     assert result["gates"]["overlap_gate_train_val_test_all"]["status"] == "pass"
     assert result["gates"]["metadata_not_used_for_clustering"]["status"] == "pass"
     assert result["gates"]["report_only_tension_present"]["status"] == "pass"
+    assert result["gates"]["tension_split_reproducibility"]["status"] == "pass"
     assert result["gates"]["alpha_search_report_present"]["status"] == "pass"
     assert result["gates"]["affect_purity_gate"]["status"] == "warn"
     assert "affect purity is diagnostic" in result["gates"]["affect_purity_gate"]["detail"].lower()

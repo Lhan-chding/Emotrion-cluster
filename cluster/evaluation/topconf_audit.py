@@ -16,11 +16,16 @@ REQUIRED_ABLATION_CONFIGS = {
     "lyrics_va",
     "raw_mean_va",
     "calibrated_mean_alpha_0_5",
+    "fixed_alpha_0_60",
     "clusterability_alpha",
     "raw_mean_plus_signed_diff",
+    "residual_tension_weak_concat",
     "calibrated_va_tension_final_report_only",
     "latent_two_view_va_gmm",
     "metadata_only_report_diagnostic",
+    "k4_sensitivity",
+    "k5_sensitivity",
+    "k6_sensitivity",
 }
 MAIN_ABLATION_CONFIG = "calibrated_va_tension_final_report_only"
 
@@ -299,12 +304,34 @@ def _report_only_tension_present(run_dir: Path, summary: Mapping[str, Any], sele
     required = [
         run_dir / "all" / "tension_micro_probe" / "tension_micro_probe.csv",
         run_dir / "all" / "tension_substructure_report.md",
+        run_dir / "all" / "tension_substructure_enrichment.csv",
+        run_dir / "all" / "tension_subtype_assignments.csv",
     ]
     missing = [str(path.relative_to(run_dir)) for path in required if not path.exists()]
+    if missing:
+        return _gate(
+            FAIL,
+            "Report-only residual tension micro/subtype artifacts must be present for ACL reporting.",
+            {"missing_files": missing},
+        )
+    probe = pd.read_csv(run_dir / "all" / "tension_micro_probe" / "tension_micro_probe.csv")
+    if "tension_micro_source" not in probe.columns:
+        return _gate(
+            FAIL,
+            "Report-only tension probe must declare tension_micro_source='residualized'.",
+            {"missing_column": "tension_micro_source"},
+        )
+    source_values = set(probe.get("tension_micro_source", pd.Series(dtype=str)).astype(str).str.lower().tolist())
+    if source_values and source_values != {"residualized"}:
+        return _gate(
+            FAIL,
+            "Report-only tension probe must use residualized calibrated tension rather than raw lyrics-audio delta.",
+            {"tension_micro_sources": sorted(source_values)},
+        )
     return _gate(
-        PASS if not missing else FAIL,
-        "Report-only tension micro/subtype artifacts must be present for ACL reporting.",
-        {"missing_files": missing},
+        PASS,
+        "Report-only residual tension micro/subtype artifacts are present for ACL reporting.",
+        {"tension_micro_sources": sorted(source_values) if source_values else []},
     )
 
 
@@ -316,6 +343,68 @@ def _alpha_search_report_present(run_dir: Path, summary: Mapping[str, Any], sele
         PASS if path.exists() else FAIL,
         "all/balance_alpha_report.csv must be present for the balanced VA alpha audit.",
         str(path.relative_to(run_dir)) if path.exists() else None,
+    )
+
+
+def _tension_split_reproducibility_gate(run_dir: Path, summary: Mapping[str, Any], selection: Mapping[str, Any]) -> Dict[str, Any]:
+    if not _is_balanced_va_regions(summary, selection):
+        return _gate(PASS, "Tension split reproducibility is only required for balanced_va_regions main runs.")
+    split_rows: Dict[str, Any] = {}
+    missing = []
+    for split in ("train", "val", "test", "all"):
+        path = run_dir / split / "tension_micro_probe" / "tension_micro_probe.csv"
+        if not path.exists():
+            missing.append(split)
+            continue
+        frame = pd.read_csv(path)
+        if frame.empty:
+            missing.append(split)
+            continue
+        if "tension_micro_source" not in frame.columns:
+            split_rows[split] = {"missing_column": "tension_micro_source"}
+            continue
+        selected = pd.to_numeric(frame.get("selected_micro_k", pd.Series(dtype=float)), errors="coerce")
+        split_rows[split] = {
+            "clusters": int(len(frame)),
+            "clusters_with_micro_split": int((selected > 1).sum()),
+            "max_selected_micro_k": int(selected.max()) if selected.notna().any() else 1,
+            "source_values": sorted(set(frame.get("tension_micro_source", pd.Series(dtype=str)).astype(str).str.lower().tolist())),
+        }
+    if missing:
+        return _gate(
+            FAIL,
+            "Residual tension micro probe must be emitted for train/val/test/all splits.",
+            {"missing_splits": missing, "splits": split_rows},
+        )
+    missing_source_column = [
+        split
+        for split, row in split_rows.items()
+        if bool(row.get("missing_column"))
+    ]
+    if missing_source_column:
+        return _gate(
+            FAIL,
+            "Residual tension split probes must declare tension_micro_source for every split.",
+            {"missing_source_column_splits": missing_source_column, "splits": split_rows},
+        )
+    source_failures = [
+        split
+        for split, row in split_rows.items()
+        if row["source_values"] and row["source_values"] != ["residualized"]
+    ]
+    if source_failures:
+        return _gate(
+            FAIL,
+            "Residual tension split probes must use residualized source for every split.",
+            {"source_failed_splits": source_failures, "splits": split_rows},
+        )
+    all_count = int(split_rows["all"]["clusters_with_micro_split"])
+    split_counts = [int(split_rows[split]["clusters_with_micro_split"]) for split in ("train", "val", "test")]
+    stable = all(abs(count - all_count) <= max(1, int(round(0.25 * max(all_count, 1)))) for count in split_counts)
+    return _gate(
+        PASS if stable else WARN,
+        "Train/val/test residual tension subtype counts should be broadly reproducible against all split.",
+        {"splits": split_rows},
     )
 
 
@@ -452,6 +541,7 @@ def audit_run(run_dir: str | Path) -> Dict[str, Any]:
     gates["overlap_gate_train_val_test_all"] = _overlap_gate_train_val_test_all(root, summary, selection)
     gates["metadata_not_used_for_clustering"] = _metadata_not_used_for_clustering(summary, selection)
     gates["report_only_tension_present"] = _report_only_tension_present(root, summary, selection)
+    gates["tension_split_reproducibility"] = _tension_split_reproducibility_gate(root, summary, selection)
     gates["alpha_search_report_present"] = _alpha_search_report_present(root, summary, selection)
     affect_gate = _affect_purity_gate(root, selection, metrics, selected_k)
     if _is_balanced_va_regions(summary, selection) and affect_gate["status"] == FAIL:

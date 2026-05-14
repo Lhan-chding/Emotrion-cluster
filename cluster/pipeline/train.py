@@ -5,6 +5,7 @@ import colorsys
 import json
 import os
 import pickle
+import re
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -343,6 +344,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
     parser.add_argument("--tension_micro_min_effect", type=float, default=0.25)
     parser.add_argument("--tension_micro_stability_runs", type=int, default=5)
+    parser.add_argument(
+        "--tension_micro_source",
+        choices=["residualized", "raw_delta"],
+        default="residualized",
+        help="Source for report-only tension micro probe. Use residualized calibrated tension when available.",
+    )
     return parser
 
 
@@ -1107,6 +1114,7 @@ def parse_bool_text(value: Any) -> bool:
 def _tension_micro_probe_config_from_args(args: Any) -> Dict[str, Any]:
     return {
         "enabled": parse_bool_text(getattr(args, "run_tension_micro_probe", "true")),
+        "source": str(getattr(args, "tension_micro_source", "residualized") or "residualized"),
         "k_max": int(getattr(args, "tension_micro_k_max", 3)),
         "min_cluster_size": int(getattr(args, "tension_micro_min_cluster_size_abs", 30)),
         "min_silhouette": float(getattr(args, "tension_micro_min_silhouette", 0.10)),
@@ -2104,9 +2112,11 @@ def _cluster_summary(
                 "lyric_identifier": str(dataset.lyric_identifiers[idx]),
             }
             if not dataset.canonical_metadata.empty:
-                for field in ("Artist", "Title", "Quadrant"):
+                for field in ("Artist", "Title", "Audio_Song", "Lyric_Song", "Quadrant", "source_id", "language", "ActualYear"):
                     if field in dataset.canonical_metadata.columns:
-                        item[field.lower()] = str(dataset.canonical_metadata.iloc[idx][field])
+                        value = _clean_report_text(dataset.canonical_metadata.iloc[idx][field])
+                        if value:
+                            item[field.lower()] = value
             example_tracks.append(item)
 
         both_mask = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
@@ -2266,9 +2276,12 @@ def _build_assignment_frame(
         frame["micro_id"] = [row["micro_id"] for row in label_rows]
         frame["micro_label"] = [row["micro_label"] for row in label_rows]
     if not dataset.canonical_metadata.empty:
-        for field in ("Artist", "Title", "Quadrant"):
+        for field in ("Artist", "Title", "Audio_Song", "Lyric_Song", "Quadrant", "source_id", "language", "ActualYear"):
             if field in dataset.canonical_metadata.columns:
-                frame[field.lower()] = dataset.canonical_metadata[field].astype(str).tolist()
+                frame[field.lower()] = [
+                    _clean_report_text(value)
+                    for value in dataset.canonical_metadata[field].tolist()
+                ]
     return frame
 
 
@@ -2284,12 +2297,62 @@ def _metadata_token_stats_text(tokens: Sequence[Dict[str, Any]], limit: int = 5)
     )
 
 
-CANONICAL_AFFECT_REGION_NAMES: Dict[int, Tuple[str, str]] = {
-    0: ("Melancholic Low-Arousal", "melancholic-low-arousal"),
-    1: ("Warm Calm-Positive", "warm-calm-positive"),
-    2: ("Aggressive Negative-Active", "aggressive-negative-active"),
-    3: ("Playful Energetic-Positive", "playful-energetic-positive"),
-}
+def _slugify_label(text: str) -> str:
+    cleaned = str(text).strip().lower()
+    cleaned = re.sub(r"[^a-z0-9]+", "-", cleaned)
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+    return cleaned or "affect-region"
+
+
+def _clean_report_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "null", "<na>"}:
+        return ""
+    return text
+
+
+def _display_token_from_feature(feature: Any) -> str:
+    text = _clean_report_text(feature)
+    if "::" in text:
+        text = text.split("::", 1)[1]
+    return text.strip()
+
+
+def _dedup_display_tokens(tokens: Sequence[Any], limit: int = 5) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for token in tokens:
+        feature = token.get("feature", "") if isinstance(token, Mapping) else token
+        display = _display_token_from_feature(feature)
+        key = display.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(display)
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+def _format_representative_track(track: Mapping[str, Any]) -> str:
+    title = _clean_report_text(track.get("title") or track.get("Title"))
+    artist = _clean_report_text(track.get("artist") or track.get("Artist"))
+    identifier = _clean_report_text(track.get("identifier"))
+    lyric_identifier = _clean_report_text(track.get("lyric_identifier"))
+    if title and artist:
+        return f"{artist} - {title}"
+    if title:
+        return title
+    if artist and identifier:
+        return f"{artist} - {identifier}"
+    return identifier or lyric_identifier
 
 
 def _format_va_pair(first: Any, second: Any) -> str:
@@ -2303,10 +2366,34 @@ def _format_va_pair(first: Any, second: Any) -> str:
     return f"{first_value:.4f},{second_value:.4f}"
 
 
-def _canonical_region_name(cluster_id: int) -> Tuple[str, str]:
-    if int(cluster_id) in CANONICAL_AFFECT_REGION_NAMES:
-        return CANONICAL_AFFECT_REGION_NAMES[int(cluster_id)]
-    return (f"Affect Region {int(cluster_id)}", f"affect-region-{int(cluster_id)}")
+def _canonical_region_name(item: Mapping[str, Any]) -> Tuple[str, str]:
+    cluster_id = int(item.get("cluster_id", -1))
+    valence = float(item.get("balanced_valence", item.get("mean_valence", float("nan"))))
+    arousal = float(item.get("balanced_arousal", item.get("mean_arousal", float("nan"))))
+    tokens = " ".join(_dedup_display_tokens(item.get("top_metadata_tokens", []), limit=10)).lower()
+
+    if np.isfinite(valence) and np.isfinite(arousal):
+        if valence >= 0.88 and arousal >= 0.75:
+            name = "Euphoric Excitement"
+        elif valence >= 0.68 and arousal >= 0.45:
+            name = "Bright Romantic Vitality"
+        elif valence >= 0.60 and arousal < 0.35:
+            name = "Restorative Calm"
+        elif valence < 0.35 and arousal < 0.50:
+            name = "Lonely Melancholy"
+        elif arousal < 0.50 and ("nostalgic" in tokens or "missing" in tokens or "melancholic" in tokens):
+            name = "Bittersweet Nostalgia"
+        elif arousal < 0.50 and valence >= 0.35:
+            name = "Bittersweet Nostalgia"
+        elif valence < 0.50 and arousal >= 0.50:
+            name = "Agitated Negative-Active"
+        elif valence >= 0.50 and arousal >= 0.50:
+            name = "Positive Energetic"
+        else:
+            name = f"Affect Region {cluster_id}"
+    else:
+        name = f"Affect Region {cluster_id}"
+    return name, _slugify_label(name)
 
 
 def _write_canonical_affect_region_artifacts(
@@ -2318,15 +2405,13 @@ def _write_canonical_affect_region_artifacts(
     rows: List[Dict[str, Any]] = []
     for item in sorted(summary, key=lambda row: int(row.get("cluster_id", 0))):
         cluster_id = int(item["cluster_id"])
-        canonical_name, short_name = _canonical_region_name(cluster_id)
-        top_tokens = ", ".join(
-            str(token.get("feature", "")).split("::", 1)[-1]
-            for token in list(item.get("top_metadata_tokens", []))[:5]
-            if str(token.get("feature", ""))
-        )
+        canonical_name, short_name = _canonical_region_name(item)
+        top_tokens = ", ".join(_dedup_display_tokens(item.get("top_metadata_tokens", []), limit=5))
         representative_tracks = "; ".join(
-            str(track.get("title") or track.get("identifier") or track.get("lyric_identifier") or "")
+            display
             for track in list(item.get("example_tracks", []))[:5]
+            for display in [_format_representative_track(track)]
+            if display
         )
         raw_audio_mean = _format_va_pair(item.get("mean_audio_valence"), item.get("mean_audio_arousal"))
         raw_lyrics_mean = _format_va_pair(item.get("mean_lyrics_valence"), item.get("mean_lyrics_arousal"))
@@ -2534,6 +2619,7 @@ def _write_macro_micro_artifacts(
 
 TENSION_MICRO_PROBE_COLUMNS = [
     "cluster_id",
+    "tension_micro_source",
     "total_cluster_samples",
     "observed_pair_samples",
     "selected_micro_k",
@@ -2575,6 +2661,7 @@ def _tension_micro_probe_config(
     if not isinstance(config, dict) or not parse_bool_text(config.get("enabled", False)):
         return None
     return {
+        "source": str(config.get("source", "residualized") or "residualized"),
         "k_max": max(1, int(config.get("k_max", 3))),
         "min_cluster_size": max(1, int(config.get("min_cluster_size", 30))),
         "min_silhouette": float(config.get("min_silhouette", 0.10)),
@@ -2588,7 +2675,12 @@ def _tension_micro_probe_config(
     }
 
 
-def _dataset_tension_matrix(dataset) -> Tuple[np.ndarray, np.ndarray]:
+def _dataset_tension_matrix(
+    dataset,
+    *,
+    source: str = "raw_delta",
+    cluster_features: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     raw_audio = np.asarray(dataset.raw_audio, dtype=np.float32)
     raw_lyrics = np.asarray(dataset.raw_lyrics, dtype=np.float32)
     if raw_audio.shape != raw_lyrics.shape or raw_audio.ndim != 2 or raw_audio.shape[1] < 2:
@@ -2596,11 +2688,25 @@ def _dataset_tension_matrix(dataset) -> Tuple[np.ndarray, np.ndarray]:
     view_mask = getattr(dataset, "view_mask", np.ones((raw_audio.shape[0], 3), dtype=np.float32))
     view_mask = np.asarray(view_mask, dtype=np.float32)
     observed = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
+    source_name = str(source or "raw_delta").strip().lower()
+    if source_name == "residualized" and cluster_features is not None:
+        features = np.asarray(cluster_features, dtype=np.float32)
+        if features.ndim == 2 and features.shape[0] == raw_audio.shape[0] and features.shape[1] >= 5:
+            matrix = features[:, 2:5].astype(np.float32)
+            matrix[~observed] = 0.0
+            return matrix, observed
     delta = raw_lyrics[:, :2] - raw_audio[:, :2]
     norm = np.linalg.norm(delta, axis=1, keepdims=True)
     matrix = np.concatenate([delta, norm], axis=1).astype(np.float32)
     matrix[~observed] = 0.0
     return matrix, observed
+
+
+def _has_residualized_tension_features(cluster_features: Optional[np.ndarray], n_samples: int) -> bool:
+    if cluster_features is None:
+        return False
+    features = np.asarray(cluster_features)
+    return bool(features.ndim == 2 and features.shape[0] == int(n_samples) and features.shape[1] >= 5)
 
 
 def _tension_micro_effect_size(matrix: np.ndarray, labels: np.ndarray) -> float:
@@ -2767,6 +2873,7 @@ def _probe_one_cluster_tension_micro(
     selected_labels = np.zeros(n, dtype=np.int64)
     base_row = {
         "cluster_id": int(cluster_id),
+        "tension_micro_source": str(config.get("source", "raw_delta")),
         "total_cluster_samples": int(total_cluster_samples),
         "observed_pair_samples": n,
         "selected_micro_k": 1,
@@ -2870,6 +2977,7 @@ def _write_tension_micro_probe_artifacts(
     dataset,
     assignments: np.ndarray,
     feature_state: Optional[Dict[str, Any]],
+    cluster_features: Optional[np.ndarray] = None,
     *,
     eval_backend: str = "sklearn",
     device: str = "cpu",
@@ -2888,7 +2996,20 @@ def _write_tension_micro_probe_artifacts(
         return {}
     probe_dir = os.path.join(out_dir, "tension_micro_probe")
     _ensure_dir(probe_dir)
-    tension_matrix, observed = _dataset_tension_matrix(dataset)
+    requested_source = str(config.get("source", "residualized") or "residualized").strip().lower()
+    actual_source = (
+        "residualized"
+        if requested_source == "residualized" and _has_residualized_tension_features(cluster_features, len(assignments))
+        else "raw_delta"
+    )
+    config = dict(config)
+    config["requested_source"] = requested_source
+    config["source"] = actual_source
+    tension_matrix, observed = _dataset_tension_matrix(
+        dataset,
+        source=actual_source,
+        cluster_features=cluster_features,
+    )
     view_mask = getattr(dataset, "view_mask", np.ones((len(assignments), 3), dtype=np.float32))
     view_mask = np.asarray(view_mask, dtype=np.float32)
     micro_ids = np.full(len(assignments), -1, dtype=np.int64)
@@ -2941,6 +3062,7 @@ def _write_tension_micro_probe_artifacts(
                 f"C{int(cluster_id)}-T{int(micro_id)}" if int(micro_id) >= 0 else ""
                 for cluster_id, micro_id in zip(assignments.tolist(), micro_ids.tolist())
             ],
+            "tension_micro_source": str(config.get("source", "residualized")),
             "has_audio": (view_mask[:, 0] > 0).astype(bool),
             "has_lyrics": (view_mask[:, 1] > 0).astype(bool),
             "tension_dv": tension_matrix[:, 0],
@@ -2970,22 +3092,44 @@ def _write_tension_micro_probe_artifacts(
 
 def _tension_subtype_label(micro_id: int, mean_dv: float, mean_da: float, mean_norm: float) -> str:
     del micro_id
-    if np.isfinite(mean_norm) and float(mean_norm) <= 0.20:
-        return "modality-consistent"
+    if (
+        np.isfinite(mean_norm)
+        and np.isfinite(mean_dv)
+        and np.isfinite(mean_da)
+        and float(mean_norm) < 0.08
+        and abs(float(mean_dv)) < 0.05
+        and abs(float(mean_da)) < 0.05
+    ):
+        return "Affective Concordance"
+    if np.isfinite(mean_norm) and float(mean_norm) >= 0.18:
+        return "High Cross-Modal Tension"
     labels: List[str] = []
     if np.isfinite(mean_dv):
         if float(mean_dv) >= 0.05:
-            labels.append("lyric-brightened")
+            labels.append("Lyric Valence Uplift")
         elif float(mean_dv) <= -0.05:
-            labels.append("lyric-darkened")
+            labels.append("Lyric Valence Tempering")
     if np.isfinite(mean_da):
         if float(mean_da) >= 0.05:
-            labels.append("lyric-intensified")
+            labels.append("Lyric Arousal Intensification")
         elif float(mean_da) <= -0.05:
-            labels.append("lyric-softened")
-    if not labels or (np.isfinite(mean_norm) and float(mean_norm) >= 0.30):
-        labels.append("high cross-modal tension")
+            labels.append("Lyric Arousal Softening")
+    if not labels:
+        labels.append("Affective Concordance")
     return " + ".join(dict.fromkeys(labels))
+
+
+def _bootstrap_mean_ci(values: Sequence[float], *, seed: int = 42, n_bootstrap: int = 200) -> Tuple[float, float]:
+    arr = pd.to_numeric(pd.Series(list(values)), errors="coerce").dropna().to_numpy(dtype=np.float64)
+    if arr.size == 0:
+        return float("nan"), float("nan")
+    if arr.size == 1:
+        value = float(arr[0])
+        return value, value
+    rng = np.random.default_rng(int(seed))
+    samples = rng.choice(arr, size=(int(n_bootstrap), arr.size), replace=True).mean(axis=1)
+    low, high = np.percentile(samples, [2.5, 97.5])
+    return float(low), float(high)
 
 
 def _top_metadata_tokens_for_mask(
@@ -3009,11 +3153,17 @@ def _top_metadata_tokens_for_mask(
     means = np.asarray(values, dtype=np.float64).mean(axis=0)
     ordered = np.argsort(-means)[:limit].tolist()
     tokens = []
+    seen = set()
     for rel_idx in ordered:
         if float(means[rel_idx]) <= 0.0:
             continue
         feature = str(metadata_feature_names[token_indices[rel_idx]])
-        tokens.append(feature.split("::", 1)[-1])
+        display = _display_token_from_feature(feature)
+        key = display.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        tokens.append(display)
     return ", ".join(tokens)
 
 
@@ -3047,6 +3197,9 @@ def _write_tension_substructure_artifacts(
         mean_dv = float(pd.to_numeric(group["tension_dv"], errors="coerce").mean())
         mean_da = float(pd.to_numeric(group["tension_da"], errors="coerce").mean())
         mean_norm = float(pd.to_numeric(group["tension_norm"], errors="coerce").mean())
+        dv_ci = _bootstrap_mean_ci(group["tension_dv"].tolist(), seed=42 + cluster_int * 1009 + micro_int)
+        da_ci = _bootstrap_mean_ci(group["tension_da"].tolist(), seed=43 + cluster_int * 1009 + micro_int)
+        norm_ci = _bootstrap_mean_ci(group["tension_norm"].tolist(), seed=44 + cluster_int * 1009 + micro_int)
         label = _tension_subtype_label(micro_int, mean_dv, mean_da, mean_norm)
         subtype_labels[(cluster_int, micro_int)] = label
         row_mask = np.asarray(assignment_frame.index.isin(group.index), dtype=bool)
@@ -3059,6 +3212,12 @@ def _write_tension_substructure_artifacts(
                 "mean_tension_dv": mean_dv,
                 "mean_tension_da": mean_da,
                 "mean_tension_norm": mean_norm,
+                "mean_tension_dv_ci_low": dv_ci[0],
+                "mean_tension_dv_ci_high": dv_ci[1],
+                "mean_tension_da_ci_low": da_ci[0],
+                "mean_tension_da_ci_high": da_ci[1],
+                "mean_tension_norm_ci_low": norm_ci[0],
+                "mean_tension_norm_ci_high": norm_ci[1],
                 "top_tokens": _top_metadata_tokens_for_mask(raw_metadata, metadata_feature_names, row_mask),
             }
         )
@@ -3084,19 +3243,27 @@ def _write_tension_substructure_artifacts(
             "mean_tension_dv",
             "mean_tension_da",
             "mean_tension_norm",
+            "mean_tension_dv_ci_low",
+            "mean_tension_dv_ci_high",
+            "mean_tension_da_ci_low",
+            "mean_tension_da_ci_high",
+            "mean_tension_norm_ci_low",
+            "mean_tension_norm_ci_high",
             "top_tokens",
         ],
     ).to_csv(enrichment_path, index=False, encoding="utf-8")
     subtype_assignment_frame.to_csv(assignment_path, index=False, encoding="utf-8")
 
     lines = ["# Report-Only Tension Substructure", ""]
-    lines.append("| cluster_id | tension_micro_id | subtype_label | size | mean_tension_dv | mean_tension_da | mean_tension_norm | top_tokens |")
-    lines.append("|---:|---:|---|---:|---:|---:|---:|---|")
+    lines.append("| cluster_id | tension_micro_id | subtype_label | size | mean_tension_dv | mean_tension_da | mean_tension_norm | 95% CI norm | top_tokens |")
+    lines.append("|---:|---:|---|---:|---:|---:|---:|---|---|")
     for row in enrichment_rows:
         lines.append(
             f"| {row['cluster_id']} | {row['tension_micro_id']} | {row['subtype_label']} | {row['size']} | "
             f"{float(row['mean_tension_dv']):.4f} | {float(row['mean_tension_da']):.4f} | "
-            f"{float(row['mean_tension_norm']):.4f} | {row['top_tokens']} |"
+            f"{float(row['mean_tension_norm']):.4f} | "
+            f"[{float(row['mean_tension_norm_ci_low']):.4f}, {float(row['mean_tension_norm_ci_high']):.4f}] | "
+            f"{row['top_tokens']} |"
         )
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).strip() + "\n")
@@ -3165,8 +3332,7 @@ def _write_split_outputs(
                 "raw_mean_arousal": float(item["raw_mean_arousal"]),
                 "balance_alpha": float(item["balance_alpha"]),
                 "top_metadata_tokens": ", ".join(
-                    str(entry["feature"]).split("::", 1)[-1]
-                    for entry in item.get("top_metadata_tokens", [])[:5]
+                    _dedup_display_tokens(item.get("top_metadata_tokens", []), limit=5)
                 ),
                 "top_metadata_token_stats": _metadata_token_stats_text(item.get("top_metadata_tokens", [])),
             }
@@ -3298,6 +3464,7 @@ def _write_split_outputs(
         dataset=dataset,
         assignments=assignments,
         feature_state=feature_state,
+        cluster_features=cluster_features,
         eval_backend=str(eval_backend),
         device=str(device),
         silhouette_sample_size=int(silhouette_sample_size),

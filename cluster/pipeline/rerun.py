@@ -267,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tension_micro_min_silhouette", type=float, default=0.10)
     parser.add_argument("--tension_micro_min_effect", type=float, default=0.25)
     parser.add_argument("--tension_micro_stability_runs", type=int, default=5)
+    parser.add_argument("--tension_micro_source", choices=["residualized", "raw_delta"], default="residualized")
     return parser
 
 
