@@ -133,6 +133,8 @@ def search_latent_va_gmm(
             min_va_knn_purity=float(config.min_va_knn_purity),
             min_va_center_sep=float(config.min_va_center_sep),
             max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
+            silhouette_sample_size=int(getattr(config, "silhouette_sample_size", 0)),
+            random_state=int(config.random_state),
         )
         affect_metrics: Dict[str, Any] = {}
         if config.affect_gate_enabled:

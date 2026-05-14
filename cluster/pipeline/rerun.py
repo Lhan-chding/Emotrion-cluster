@@ -137,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--covariance_type", type=str, default="diag",
                         choices=["full", "diag", "tied", "spherical"])
     parser.add_argument("--stability_runs", type=int, default=5)
+    parser.add_argument("--stability_sample_size", type=int, default=0,
+                        help="Sample size for expensive stability estimates; 0 uses all samples.")
     parser.add_argument("--cluster_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"])
     parser.add_argument("--eval_backend", type=str, default="auto",
@@ -457,6 +459,7 @@ def main() -> None:
         min_cluster_size_ratio=float(args.min_cluster_size_ratio),
         covariance_type=str(args.covariance_type),
         stability_runs=int(args.stability_runs),
+        stability_sample_size=int(getattr(args, "stability_sample_size", 0)),
         cluster_backend=str(args.cluster_backend),
         eval_backend=str(args.eval_backend),
         device=str(device),

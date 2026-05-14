@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from cluster.preprocessing.prepare_unimodal_dataset import prepare_unimodal_dataset
+from cluster.preprocessing.prepare_unimodal_dataset import build_parser, prepare_unimodal_dataset
 from cluster.data.metadata import build_canonical_metadata, build_metadata_features
 
 
@@ -92,6 +92,10 @@ def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
         {"track_id": "song-b", "has_audio": True, "has_lyrics": False, "has_metadata": True},
         {"track_id": "song-c", "has_audio": False, "has_lyrics": True, "has_metadata": False},
     ]
+    assert {"Genres", "Moods"}.issubset(manifest.columns)
+    canonical = pd.read_csv(out_dir / "canonical_metadata.csv")
+    assert {"Audio_Song", "Lyric_Song", "Quadrant", "Genres", "Moods"}.issubset(canonical.columns)
+    assert canonical["Audio_Song"].tolist() == ["song-a", "song-b", "song-c"]
 
     split_payload = json.loads((out_dir / "split_70_15_15.json").read_text(encoding="utf-8"))
     split_ids = [
@@ -106,6 +110,31 @@ def test_prepare_unimodal_dataset_writes_va_order_masks_and_manifest(tmp_path):
     assert schema["view_mask_columns"] == ["has_audio", "has_lyrics", "has_metadata"]
     assert "signed_va_diff.npy" in schema["derived_feature_files"]
     assert schema["schema_hash"]
+
+
+def test_prepare_cli_accepts_dataset_l_prompt_aliases(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "--input_csv",
+            str(tmp_path / "dataset_l.csv"),
+            "--output_dir",
+            str(tmp_path / "processed"),
+            "--dataset_name",
+            "Dataset-L-strict",
+            "--va_order",
+            "valence_arousal",
+            "--metadata_policy",
+            "report_only",
+            "--split_protocol",
+            "70_15_15",
+        ]
+    )
+
+    assert args.combined_csv.endswith("dataset_l.csv")
+    assert args.out_processed_dir.endswith("processed")
+    assert args.dataset_version == "Dataset-L-strict"
+    assert args.metadata_policy == "report_only"
+    assert args.split_protocol == "70_15_15"
 
 
 def test_placeholder_aligned_metadata_supports_no_meta_baseline(tmp_path):

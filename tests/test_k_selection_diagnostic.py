@@ -1,7 +1,7 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 
-from cluster.pipeline.k_selection import KSelectionConfig, _select_best_index
+from cluster.pipeline.k_selection import KSelectionConfig, _select_best_index, compute_overlap_gate_metrics
 
 
 def test_select_best_index_can_diagnose_failed_hard_gates_without_raising():
@@ -39,3 +39,25 @@ def test_select_best_index_can_diagnose_failed_hard_gates_without_raising():
     assert selected == 1
     assert metrics.attrs["diagnostic_failed_gate_override"]["selected_k"] == 5
     assert metrics.attrs["diagnostic_failed_gate_override"]["eligible_candidate_count"] == 0
+
+
+def test_overlap_gate_metrics_supports_silhouette_sampling_and_knn_purity():
+    rng = np.random.default_rng(7)
+    left = rng.normal(loc=[0.2, 0.2], scale=0.03, size=(40, 2))
+    right = rng.normal(loc=[0.8, 0.8], scale=0.03, size=(40, 2))
+    coords = np.vstack([left, right]).astype(np.float32)
+    labels = np.asarray([0] * 40 + [1] * 40, dtype=np.int64)
+
+    metrics = compute_overlap_gate_metrics(
+        coords,
+        labels,
+        min_va_knn_purity=0.9,
+        min_va_center_sep=0.7,
+        max_negative_silhouette_fraction=0.1,
+        silhouette_sample_size=24,
+        random_state=7,
+    )
+
+    assert metrics["va_silhouette_sample_size"] == 24
+    assert metrics["va_knn_purity_20"] >= 0.9
+    assert metrics["overlap_gate_ok"] is True

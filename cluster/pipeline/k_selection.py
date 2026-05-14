@@ -14,6 +14,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalized_mutual_info_score, pairwise_distances, silhouette_samples, silhouette_score
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
 
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
@@ -37,6 +38,7 @@ class KSelectionConfig:
     w_min_size: float = 0.20
     w_stability: float = 0.20
     stability_runs: int = 5
+    stability_sample_size: int = 0
     cluster_backend: str = "auto"
     eval_backend: str = "auto"
     device: str = "cpu"
@@ -264,6 +266,8 @@ def compute_overlap_gate_metrics(
     min_va_knn_purity: float = 0.90,
     min_va_center_sep: float = 0.70,
     max_negative_silhouette_fraction: float = 0.10,
+    silhouette_sample_size: int = 0,
+    random_state: int = 42,
 ) -> Dict[str, Any]:
     """Measure final-label overlap on the primary continuous VA plane."""
     coords = np.asarray(primary_va, dtype=np.float32)
@@ -286,7 +290,19 @@ def compute_overlap_gate_metrics(
     purity_20 = _knn_label_purity(coords, y, 20)
     center_sep = _min_center_radius_separation(coords, y)
     try:
-        samples = silhouette_samples(coords.astype(np.float64), y)
+        silhouette_coords = coords
+        silhouette_labels = y
+        effective_sample_size = int(silhouette_sample_size)
+        if effective_sample_size <= 0 and coords.shape[0] > 20000:
+            effective_sample_size = 10000
+        if effective_sample_size > 0 and coords.shape[0] > effective_sample_size:
+            rng = np.random.default_rng(int(random_state))
+            sample_idx = np.sort(rng.choice(coords.shape[0], size=int(effective_sample_size), replace=False))
+            silhouette_coords = coords[sample_idx]
+            silhouette_labels = y[sample_idx]
+        if np.unique(silhouette_labels).size < 2 or np.unique(silhouette_labels).size >= silhouette_labels.shape[0]:
+            raise ValueError("sampled silhouette requires at least two labels and fewer labels than samples.")
+        samples = silhouette_samples(silhouette_coords.astype(np.float64), silhouette_labels)
         negative_fraction = float(np.mean(samples < 0.0))
         mean_silhouette = float(np.mean(samples))
     except Exception:
@@ -306,6 +322,7 @@ def compute_overlap_gate_metrics(
         "va_center_radius_sep": float(center_sep),
         "va_negative_silhouette_fraction": float(negative_fraction),
         "va_mean_silhouette": float(mean_silhouette),
+        "va_silhouette_sample_size": int(min(coords.shape[0], int(effective_sample_size))) if "effective_sample_size" in locals() and int(effective_sample_size) > 0 else 0,
         "overlap_gate_ok": bool(gate_ok),
     }
 
@@ -315,9 +332,9 @@ def _knn_label_purity(coords: np.ndarray, labels: np.ndarray, k: int) -> float:
     if n <= 1:
         return float("nan")
     n_neighbors = min(int(k), n - 1)
-    distances = pairwise_distances(coords.astype(np.float64), metric="euclidean")
-    np.fill_diagonal(distances, np.inf)
-    nearest = np.argpartition(distances, n_neighbors - 1, axis=1)[:, :n_neighbors]
+    model = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean")
+    model.fit(coords.astype(np.float64))
+    nearest = model.kneighbors(return_distance=False)
     same = labels[nearest] == labels.reshape(-1, 1)
     return float(np.mean(same.mean(axis=1)))
 

@@ -126,6 +126,7 @@ class SuiteArgs(NamedTuple):
     gpu: str
     batch_size: int
     stability_runs: int
+    stability_sample_size: int
     k_min: int
     k_max: int
     macro_k_min: int
@@ -194,6 +195,8 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         str(int(args.min_cluster_size_abs)),
         "--stability_runs",
         str(int(args.stability_runs)),
+        "--stability_sample_size",
+        str(int(args.stability_sample_size)),
         "--metadata_policy",
         metadata_policy,
         "--require_both_va",
@@ -475,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--stability_runs", type=int, default=80)
+    parser.add_argument("--stability_sample_size", type=int, default=0)
     parser.add_argument("--total_k_min", "--k_min", dest="k_min", type=int, default=8)
     parser.add_argument("--total_k_max", "--k_max", dest="k_max", type=int, default=16)
     parser.add_argument("--macro_k_min", type=int, default=3)
@@ -510,6 +514,7 @@ def main() -> None:
         gpu=str(ns.gpu),
         batch_size=int(ns.batch_size),
         stability_runs=int(ns.stability_runs),
+        stability_sample_size=int(ns.stability_sample_size),
         k_min=int(ns.k_min),
         k_max=int(ns.k_max),
         macro_k_min=int(ns.macro_k_min),

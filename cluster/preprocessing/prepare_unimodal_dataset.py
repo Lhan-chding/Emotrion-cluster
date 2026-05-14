@@ -732,9 +732,38 @@ def prepare_unimodal_dataset(
             "quadrant": quadrants,
         }
     )
-    manifest.to_csv(os.path.join(out_processed_dir, "dataset_manifest.csv"), index=False, encoding="utf-8")
+    for source_field in ("Artist", "Title"):
+        column = _optional_column(metadata_frame.columns, [source_field.lower(), source_field])
+        if column is not None:
+            manifest[source_field.lower()] = metadata_frame[column].fillna("").astype(str).tolist()
 
-    track_index = manifest[["index", "identifier", "lyric_identifier", "quadrant"]].copy()
+    canonical_columns = ["index", "identifier", "lyric_identifier", "quadrant"]
+    for source_field in ("Artist", "Title", "Genres", "Moods", "MoodsAll", "Themes", "Styles"):
+        column = _optional_column(metadata_frame.columns, [source_field.lower(), source_field])
+        if column is not None:
+            manifest_name = source_field.lower() if source_field in {"Artist", "Title"} else source_field
+            if manifest_name not in manifest.columns:
+                manifest[manifest_name] = metadata_frame[column].fillna("").astype(str).tolist()
+            canonical_columns.append(manifest_name)
+    manifest.to_csv(os.path.join(out_processed_dir, "dataset_manifest.csv"), index=False, encoding="utf-8")
+    canonical_columns = [column for column in dict.fromkeys(canonical_columns) if column in manifest.columns]
+    canonical = manifest[canonical_columns].copy()
+    canonical = canonical.rename(
+        columns={
+            "identifier": "Audio_Song",
+            "lyric_identifier": "Lyric_Song",
+            "quadrant": "Quadrant",
+            "artist": "Artist",
+            "title": "Title",
+        }
+    )
+    canonical.to_csv(os.path.join(out_processed_dir, "canonical_metadata.csv"), index=False, encoding="utf-8")
+
+    track_columns = ["index", "identifier", "lyric_identifier", "quadrant"]
+    for optional in ("artist", "title"):
+        if optional in manifest.columns:
+            track_columns.append(optional)
+    track_index = manifest[track_columns].copy()
     track_index.to_csv(os.path.join(out_processed_dir, "track_index.tsv"), sep="\t", index=False, encoding="utf-8")
     _write_split_json(out_processed_dir, track_ids, splits)
     _write_aligned_placeholders(out_aligned_root, track_ids, lyric_ids, labels.tolist())
@@ -771,16 +800,22 @@ def prepare_unimodal_dataset(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare upstream unimodal VA CSV for CVCL clustering.")
-    parser.add_argument("--combined_csv", required=True)
+    parser.add_argument("--combined_csv", "--input_csv", dest="combined_csv", required=True)
     parser.add_argument("--audio_split_dir", default=None)
     parser.add_argument("--lyrics_split_dir", default=None)
     parser.add_argument("--metadata_csv", default=None)
     parser.add_argument("--previous_manifest", default=None)
-    parser.add_argument("--out_processed_dir", required=True)
+    parser.add_argument("--out_processed_dir", "--output_dir", dest="out_processed_dir", required=True)
     parser.add_argument("--out_aligned_root", default=None)
     parser.add_argument("--split_policy", default="preserve_then_hash")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--dataset_version", default="v1")
+    parser.add_argument("--dataset_version", "--dataset_name", dest="dataset_version", default="v1")
+    parser.add_argument("--va_order", default="valence_arousal", choices=["valence_arousal"],
+                        help="Input/output VA order. Only valence_arousal is supported.")
+    parser.add_argument("--metadata_policy", default="report_only",
+                        help="Accepted for run-script compatibility; metadata is prepared as report-only downstream.")
+    parser.add_argument("--split_protocol", default="70_15_15",
+                        help="Accepted for run-script compatibility; current strict processor writes split_70_15_15.json.")
     parser.add_argument("--max_tokens_per_field", type=int, default=512)
     parser.add_argument("--metadata_use_artist", default="false")
     parser.add_argument("--metadata_representation", default="binary", choices=["binary", "tfidf", "tfidf_svd"])

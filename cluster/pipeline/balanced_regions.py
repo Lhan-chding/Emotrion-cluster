@@ -191,17 +191,28 @@ def _stability(
     runs = max(0, int(config.stability_runs))
     if runs <= 1:
         return 1.0, 0.0
+    fit_va = primary_va
+    fit_labels = labels
+    fit_min_cluster_size = int(min_cluster_size)
+    sample_size = int(getattr(config, "stability_sample_size", 0))
+    if sample_size > 0 and primary_va.shape[0] > sample_size:
+        rng = np.random.default_rng(int(config.random_state) + 7919)
+        indices = np.sort(rng.choice(primary_va.shape[0], size=int(sample_size), replace=False))
+        fit_va = primary_va[indices]
+        fit_labels = labels[indices]
+        scale = float(fit_va.shape[0]) / float(primary_va.shape[0])
+        fit_min_cluster_size = max(1, int(np.floor(float(min_cluster_size) * scale)))
     scores: List[float] = []
     for run_idx in range(1, runs):
         try:
             model = BalancedVARegionClusterer(
                 n_components=int(k),
-                min_cluster_size=int(min_cluster_size),
+                min_cluster_size=int(fit_min_cluster_size),
                 random_state=int(config.random_state) + 1543 * run_idx,
                 n_init=max(1, min(5, int(config.n_init))),
                 max_iter=max(10, int(config.region_max_iter)),
-            ).fit(primary_va)
-            scores.append(float(adjusted_rand_score(labels, model.labels_)))
+            ).fit(fit_va)
+            scores.append(float(adjusted_rand_score(fit_labels, model.labels_)))
         except Exception:
             continue
     if not scores:
@@ -250,7 +261,27 @@ def search_balanced_va_regions(
         sizes = np.bincount(labels, minlength=int(k))
         if np.unique(labels).size > 1:
             try:
-                silhouette = float(silhouette_score(va.astype(np.float64), labels))
+                sample_size = int(getattr(config, "silhouette_sample_size", 0))
+                if sample_size > 0 and va.shape[0] > sample_size:
+                    silhouette = float(
+                        silhouette_score(
+                            va.astype(np.float64),
+                            labels,
+                            sample_size=int(sample_size),
+                            random_state=int(config.random_state),
+                        )
+                    )
+                elif sample_size <= 0 and va.shape[0] > 20000:
+                    silhouette = float(
+                        silhouette_score(
+                            va.astype(np.float64),
+                            labels,
+                            sample_size=10000,
+                            random_state=int(config.random_state),
+                        )
+                    )
+                else:
+                    silhouette = float(silhouette_score(va.astype(np.float64), labels))
             except Exception:
                 silhouette = float("nan")
         else:
@@ -268,6 +299,8 @@ def search_balanced_va_regions(
             min_va_knn_purity=float(config.min_va_knn_purity),
             min_va_center_sep=float(config.min_va_center_sep),
             max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
+            silhouette_sample_size=int(getattr(config, "silhouette_sample_size", 0)),
+            random_state=int(config.random_state),
         )
         tension_metrics = _tension_diagnostics(tension, labels)
         affect_metrics: Dict[str, Any] = {}
@@ -347,6 +380,9 @@ def search_balanced_va_regions(
         "tension_diagnostic_only": True,
         "tension_norm_mean": float(selected_row.get("tension_norm_mean", float("nan"))),
         "tension_effect_ratio": float(selected_row.get("tension_effect_ratio", float("nan"))),
+        "stability_sample_size": int(config.stability_sample_size),
+        "silhouette_sample_size": int(config.silhouette_sample_size),
+        "va_silhouette_sample_size": int(selected_row.get("va_silhouette_sample_size", 0)),
         "overlap_gate_enabled": bool(config.overlap_gate_enabled),
         "overlap_gate_ok": bool(selected_row.get("overlap_gate_ok", True)),
         "va_knn_purity_10": float(selected_row.get("va_knn_purity_10", float("nan"))),

@@ -177,6 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="GMM covariance type (diag recommended; full prone to overfitting with missingness artifacts)")
     parser.add_argument("--stability_runs", type=int, default=5,
                         help="Number of GMM runs for stability scoring (composite strategy)")
+    parser.add_argument("--stability_sample_size", type=int, default=0,
+                        help="Sample size for expensive stability estimates; 0 uses all samples.")
     parser.add_argument("--cluster_backend", type=str, default="auto",
                         choices=["auto", "sklearn", "torch", "cuml"],
                         help="Clustering backend. auto uses GPU-capable backends when compatible with the algorithm.")
@@ -1123,6 +1125,7 @@ def run_k_selection(
     min_cluster_size_ratio: float,
     covariance_type: str = "diag",
     stability_runs: int = 5,
+    stability_sample_size: int = 0,
     cluster_backend: str = "auto",
     eval_backend: str = "auto",
     device: str = "cpu",
@@ -1182,6 +1185,7 @@ def run_k_selection(
         min_cluster_size=min_cluster_size_abs,
         min_cluster_size_ratio=min_cluster_size_ratio,
         stability_runs=stability_runs,
+        stability_sample_size=int(stability_sample_size),
         cluster_backend=cluster_backend,
         eval_backend=eval_backend,
         device=device,
@@ -3763,6 +3767,7 @@ def main() -> None:
         min_cluster_size_ratio=float(args.min_cluster_size_ratio),
         covariance_type=str(args.covariance_type),
         stability_runs=int(args.stability_runs),
+        stability_sample_size=int(getattr(args, "stability_sample_size", 0)),
         cluster_backend=str(args.cluster_backend),
         eval_backend=str(args.eval_backend),
         device=str(device),
