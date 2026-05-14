@@ -26,23 +26,23 @@ def torch_pairwise_distances_chunked(
         yield start, torch.cdist(features[start : start + step], features)
 
 
-def torch_silhouette_score_chunked(
+def torch_silhouette_samples_chunked(
     X: np.ndarray | torch.Tensor,
     labels: np.ndarray | torch.Tensor,
     *,
     chunk_size: int = 4096,
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
-) -> float:
+) -> np.ndarray:
     features = _as_tensor(X, device=device, dtype=dtype)
     y = torch.as_tensor(labels, device=features.device, dtype=torch.long)
     unique = torch.unique(y)
     if int(unique.numel()) < 2:
-        return float("nan")
+        return np.full((int(features.shape[0]),), np.nan, dtype=np.float32)
 
     n_rows = int(features.shape[0])
     if n_rows <= 1:
-        return float("nan")
+        return np.full((n_rows,), np.nan, dtype=np.float32)
 
     cluster_masks = [(y == cluster_id) for cluster_id in unique]
     cluster_counts = [int(mask.sum().item()) for mask in cluster_masks]
@@ -82,4 +82,24 @@ def torch_silhouette_score_chunked(
         scores = torch.where(singleton, torch.zeros_like(scores), scores)
         silhouettes[start:end] = scores
 
-    return float(silhouettes.mean().detach().cpu().item())
+    return silhouettes.detach().cpu().numpy().astype(np.float32)
+
+
+def torch_silhouette_score_chunked(
+    X: np.ndarray | torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    *,
+    chunk_size: int = 4096,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> float:
+    samples = torch_silhouette_samples_chunked(
+        X,
+        labels,
+        chunk_size=chunk_size,
+        device=device,
+        dtype=dtype,
+    )
+    if not np.isfinite(samples).any():
+        return float("nan")
+    return float(np.nanmean(samples))

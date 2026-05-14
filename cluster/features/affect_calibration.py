@@ -4,8 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sklearn.mixture import GaussianMixture
+
+from cluster.backends.torch_gmm_backend import TorchGaussianMixture
+from cluster.backends.torch_metrics import torch_silhouette_score_chunked
 
 
 @dataclass
@@ -103,6 +107,9 @@ class BalanceAlphaLearner:
     search_k_max: int = 8
     regularization: float = 0.05
     random_state: int = 42
+    device: str = "cpu"
+    chunk_size: int = 4096
+    score_sample_size: int = 0
     alpha_: Optional[float] = None
     scores_: List[Dict[str, float]] = field(default_factory=list, repr=False)
     _fitted: bool = field(default=False, repr=False)
@@ -137,7 +144,7 @@ class BalanceAlphaLearner:
         self.scores_ = []
         for alpha in _alpha_grid(float(self.alpha_min), float(self.alpha_max), float(self.alpha_step)):
             consensus = _balanced_consensus(audio, lyrics, view_mask, alpha)
-            matrix = consensus[has_any].astype(np.float64)
+            matrix = consensus[has_any].astype(np.float32)
             alpha_best_score = -float("inf")
             alpha_best_k = -1
             alpha_best_silhouette = float("nan")
@@ -204,6 +211,9 @@ class BalanceAlphaLearner:
             "search_k_max": int(self.search_k_max),
             "regularization": float(self.regularization),
             "random_state": int(self.random_state),
+            "device": str(self.device),
+            "chunk_size": int(self.chunk_size),
+            "score_sample_size": int(self.score_sample_size),
             "alpha": float(self.alpha_) if self.alpha_ is not None else None,
             "fitted": bool(self._fitted),
         }
@@ -219,14 +229,35 @@ class BalanceAlphaLearner:
             search_k_max=int(data.get("search_k_max", 8)),
             regularization=float(data.get("regularization", 0.05)),
             random_state=int(data.get("random_state", 42)),
+            device=str(data.get("device", "cpu")),
+            chunk_size=int(data.get("chunk_size", 4096)),
+            score_sample_size=int(data.get("score_sample_size", 0)),
             alpha_=data.get("alpha"),
         )
         obj._fitted = bool(data.get("fitted", obj.alpha_ is not None))
         return obj
 
+    def _use_torch_score(self) -> bool:
+        device_name = str(self.device or "cpu").strip().lower()
+        if device_name.startswith("cuda"):
+            return bool(torch.cuda.is_available())
+        return False
+
+    def _sample_for_score(self, matrix: np.ndarray, labels: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
+        sample_size = int(self.score_sample_size)
+        if sample_size <= 0 or matrix.shape[0] <= sample_size:
+            return matrix, labels
+        if sample_size <= k:
+            return matrix, labels
+        rng = np.random.default_rng(int(self.random_state) + 7919 * int(k))
+        sample_idx = np.sort(rng.choice(matrix.shape[0], size=sample_size, replace=False))
+        return matrix[sample_idx], labels[sample_idx]
+
     def _score_candidate(self, matrix: np.ndarray, k: int, alpha: float) -> Optional[Dict[str, float]]:
         if matrix.shape[0] <= k:
             return None
+        if self._use_torch_score():
+            return self._score_candidate_torch(matrix.astype(np.float32), k, alpha)
         try:
             model = GaussianMixture(
                 n_components=int(k),
@@ -238,8 +269,11 @@ class BalanceAlphaLearner:
             labels = model.predict(matrix)
             if np.unique(labels).size < 2:
                 return None
-            silhouette = float(silhouette_score(matrix, labels))
+            score_matrix, score_labels = self._sample_for_score(matrix, labels, int(k))
+            silhouette = float(silhouette_score(score_matrix.astype(np.float64), score_labels))
         except Exception:
+            return None
+        if not np.isfinite(silhouette):
             return None
 
         counts = np.bincount(labels, minlength=int(k)).astype(np.float64)
@@ -275,6 +309,69 @@ class BalanceAlphaLearner:
             "size_balance": float(size_balance),
         }
 
+    def _score_candidate_torch(self, matrix: np.ndarray, k: int, alpha: float) -> Optional[Dict[str, float]]:
+        if matrix.shape[0] <= k:
+            return None
+        try:
+            model = TorchGaussianMixture(
+                n_components=int(k),
+                covariance_type="diag",
+                reg_covar=1e-5,
+                n_init=3,
+                max_iter=100,
+                random_state=int(self.random_state) + int(k),
+                device=str(self.device),
+            ).fit(matrix)
+            labels = model.predict(matrix)
+            if np.unique(labels).size < 2:
+                return None
+            score_matrix, score_labels = self._sample_for_score(matrix, labels, int(k))
+            silhouette = torch_silhouette_score_chunked(
+                score_matrix.astype(np.float32),
+                score_labels,
+                chunk_size=int(self.chunk_size),
+                device=str(self.device),
+            )
+        except Exception:
+            return None
+        if not np.isfinite(float(silhouette)):
+            return None
+
+        counts = np.bincount(labels, minlength=int(k)).astype(np.float64)
+        if counts.min() <= 0:
+            return None
+        size_balance = float(counts.min() / max(counts.max(), 1.0))
+        stability_scores: List[float] = []
+        for run_idx in range(1, 4):
+            try:
+                alt = TorchGaussianMixture(
+                    n_components=int(k),
+                    covariance_type="diag",
+                    reg_covar=1e-5,
+                    n_init=1,
+                    max_iter=100,
+                    random_state=int(self.random_state) + int(k) * 100 + run_idx,
+                    device=str(self.device),
+                ).fit(matrix)
+                alt_labels = alt.predict(matrix)
+                if np.unique(alt_labels).size >= 2:
+                    stability_scores.append(float(adjusted_rand_score(labels, alt_labels)))
+            except Exception:
+                continue
+        stability = float(np.mean(stability_scores)) if stability_scores else 0.0
+        score = (
+            float(silhouette)
+            + 0.20 * stability
+            + 0.10 * size_balance
+            - float(self.regularization) * float((alpha - 0.5) ** 2)
+        )
+        return {
+            "score": float(score),
+            "silhouette": float(silhouette),
+            "stability": float(stability),
+            "size_balance": float(size_balance),
+        }
+
 
 @dataclass
 class DiffResidualizer:
@@ -290,6 +387,8 @@ class DiffResidualizer:
 
     mode: str = "knn"
     n_neighbors: int = 101
+    device: str = "cpu"
+    chunk_size: int = 4096
     _ref_consensus: Optional[np.ndarray] = field(default=None, repr=False)
     _ref_delta: Optional[np.ndarray] = field(default=None, repr=False)
     _fitted: bool = field(default=False, repr=False)
@@ -341,6 +440,13 @@ class DiffResidualizer:
 
         k = min(self.n_neighbors, self._ref_consensus.shape[0])
         obs_idx = np.where(has_both)[0]
+        if self._use_torch_knn():
+            result[obs_idx] = self._transform_knn_torch(
+                consensus[obs_idx],
+                delta[obs_idx],
+                k=int(k),
+            )
+            return result.astype(np.float32)
 
         ref_c = self._ref_consensus.astype(np.float64)
         ref_d = self._ref_delta.astype(np.float64)
@@ -353,6 +459,29 @@ class DiffResidualizer:
             result[idx] = (delta[idx].astype(np.float64) - local_mean).astype(np.float32)
 
         return result.astype(np.float32)
+
+    def _use_torch_knn(self) -> bool:
+        device_name = str(self.device or "cpu").strip().lower()
+        if not device_name.startswith("cuda"):
+            return False
+        return bool(torch.cuda.is_available())
+
+    def _transform_knn_torch(self, query_consensus: np.ndarray, query_delta: np.ndarray, *, k: int) -> np.ndarray:
+        device = torch.device(str(self.device))
+        ref_c = torch.as_tensor(self._ref_consensus.astype(np.float32), device=device)
+        ref_d = torch.as_tensor(self._ref_delta.astype(np.float32), device=device)
+        query_c = torch.as_tensor(query_consensus.astype(np.float32), device=device)
+        query_d = torch.as_tensor(query_delta.astype(np.float32), device=device)
+        outputs: List[np.ndarray] = []
+        step = max(int(self.chunk_size), 1)
+        for start in range(0, int(query_c.shape[0]), step):
+            end = min(start + step, int(query_c.shape[0]))
+            distances = torch.cdist(query_c[start:end], ref_c)
+            nearest = torch.topk(distances, k=int(k), dim=1, largest=False).indices
+            local_mean = ref_d[nearest].mean(dim=1)
+            residual = query_d[start:end] - local_mean
+            outputs.append(residual.detach().cpu().numpy().astype(np.float32))
+        return np.vstack(outputs).astype(np.float32) if outputs else np.zeros_like(query_delta, dtype=np.float32)
 
     def fit_transform(
         self,
@@ -367,13 +496,20 @@ class DiffResidualizer:
         return {
             "mode": self.mode,
             "n_neighbors": self.n_neighbors,
+            "device": self.device,
+            "chunk_size": self.chunk_size,
             "ref_consensus_shape": list(self._ref_consensus.shape) if self._ref_consensus is not None else None,
             "fitted": self._fitted,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DiffResidualizer":
-        obj = cls(mode=data["mode"], n_neighbors=data.get("n_neighbors", 101))
+        obj = cls(
+            mode=data["mode"],
+            n_neighbors=data.get("n_neighbors", 101),
+            device=str(data.get("device", "cpu")),
+            chunk_size=int(data.get("chunk_size", 4096)),
+        )
         obj._fitted = bool(data.get("fitted", False))
         return obj
 

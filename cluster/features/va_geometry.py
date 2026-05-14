@@ -354,6 +354,9 @@ def build_calibrated_va_tension_features(
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
+    compute_device: str = "cpu",
+    compute_chunk_size: int = 4096,
+    compute_sample_size: int = 0,
     tension_encoding: str = "residual_3d",
     fitted_sigma: Optional[Tuple[float, float]] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -406,7 +409,14 @@ def build_calibrated_va_tension_features(
                 alpha_step=float(alpha_search_step),
                 search_k_min=int(alpha_search_k_min),
                 search_k_max=int(alpha_search_k_max),
+                device=str(compute_device),
+                chunk_size=int(compute_chunk_size),
+                score_sample_size=int(compute_sample_size),
             )
+        else:
+            balance_learner.device = str(compute_device)
+            balance_learner.chunk_size = int(compute_chunk_size)
+            balance_learner.score_sample_size = int(compute_sample_size)
         if fit:
             balance_learner.fit(audio_cal, lyrics_cal, mask)
         consensus = balance_learner.transform(audio_cal, lyrics_cal, mask)
@@ -424,7 +434,15 @@ def build_calibrated_va_tension_features(
     raw_delta = (lyrics_cal - audio_cal) * has_both.reshape(-1, 1).astype(np.float32)
 
     if residualizer is None:
-        residualizer = DiffResidualizer(mode=diff_residual_mode, n_neighbors=diff_residual_neighbors)
+        residualizer = DiffResidualizer(
+            mode=diff_residual_mode,
+            n_neighbors=diff_residual_neighbors,
+            device=str(compute_device),
+            chunk_size=int(compute_chunk_size),
+        )
+    else:
+        residualizer.device = str(compute_device)
+        residualizer.chunk_size = int(compute_chunk_size)
     if fit:
         residualizer.fit(consensus, raw_delta, mask)
     d_res = residualizer.transform(consensus, raw_delta, mask)

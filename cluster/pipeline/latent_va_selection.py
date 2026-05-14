@@ -134,6 +134,9 @@ def search_latent_va_gmm(
             min_va_center_sep=float(config.min_va_center_sep),
             max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
             silhouette_sample_size=int(getattr(config, "silhouette_sample_size", 0)),
+            eval_backend=str(config.eval_backend),
+            device=str(config.device),
+            chunk_size=int(config.silhouette_chunk_size),
             random_state=int(config.random_state),
         )
         affect_metrics: Dict[str, Any] = {}

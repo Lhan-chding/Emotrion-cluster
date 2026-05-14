@@ -392,6 +392,12 @@ def main() -> None:
                 f"in search split '{search_split}', but none found."
             )
 
+    print(
+        "[Rerun] Building cluster features "
+        f"(strategy={feature_strategy}, device={device}, chunk_size={int(args.silhouette_chunk_size)}, "
+        f"sample_size={int(args.silhouette_sample_size)})",
+        flush=True,
+    )
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=effective_metadata_cluster_weight,
@@ -411,6 +417,9 @@ def main() -> None:
         calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
         diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
         diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+        compute_device=str(device),
+        compute_chunk_size=int(args.silhouette_chunk_size),
+        compute_sample_size=int(args.silhouette_sample_size),
         tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
     )
     search_block_mask = cluster_feature_block_mask(feature_strategy, search_view_mask, int(search_features_raw.shape[0]))
@@ -448,6 +457,12 @@ def main() -> None:
         search_primary_va
         if plot_source_name in {"cluster_consensus", "latent_consensus"} and search_primary_va is not None
         else _dataset_plot_va(eval_datasets[search_split], plot_source_name)
+    )
+    print(
+        "[Rerun] Running K search "
+        f"(strategy={k_strategy}, cluster_backend={args.cluster_backend}, eval_backend={args.eval_backend}, "
+        f"silhouette_mode={args.silhouette_mode}, device={device})",
+        flush=True,
     )
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
@@ -675,6 +690,9 @@ def main() -> None:
             calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
             diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
             diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+            compute_device=str(device),
+            compute_chunk_size=int(args.silhouette_chunk_size),
+            compute_sample_size=int(args.silhouette_sample_size),
             tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
         )
         split_block_mask = cluster_feature_block_mask(
@@ -750,6 +768,10 @@ def main() -> None:
             cluster_label_names=cluster_output_label_names,
             plot_va_override=plot_va_override,
             feature_state=_feature_state_with_tension_micro_probe_config(split_feature_state, args),
+            eval_backend=str(args.eval_backend),
+            device=str(device),
+            silhouette_sample_size=int(args.silhouette_sample_size),
+            silhouette_chunk_size=int(args.silhouette_chunk_size),
         )
         split_outputs[split] = payload
         if split == search_split:

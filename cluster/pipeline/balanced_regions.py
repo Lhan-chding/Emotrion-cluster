@@ -4,8 +4,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score, silhouette_score
+from cluster.backends.torch_metrics import torch_silhouette_score_chunked
 
 from cluster.pipeline.k_selection import (
     KSearchResult,
@@ -26,12 +28,17 @@ class BalancedVARegionClusterer:
         random_state: int = 42,
         n_init: int = 10,
         max_iter: int = 100,
+        backend: str = "sklearn",
+        device: str = "cpu",
     ) -> None:
         self.n_components = int(n_components)
         self.min_cluster_size = int(min_cluster_size)
         self.random_state = int(random_state)
         self.n_init = int(n_init)
         self.max_iter = int(max_iter)
+        self.backend = str(backend or "sklearn").strip().lower()
+        self.device = str(device or "cpu")
+        self.actual_backend_ = "balanced_va_region_kmeans"
 
     def fit(self, values: np.ndarray) -> "BalancedVARegionClusterer":
         matrix = self._primary_va(values)
@@ -42,7 +49,11 @@ class BalancedVARegionClusterer:
                 f"Cannot fit {self.n_components} clusters with min_cluster_size={self.min_cluster_size} "
                 f"from {matrix.shape[0]} samples."
             )
+        if self.backend == "torch":
+            return self._fit_torch(matrix)
+        return self._fit_sklearn(matrix)
 
+    def _fit_sklearn(self, matrix: np.ndarray) -> "BalancedVARegionClusterer":
         best: Optional[Tuple[float, np.ndarray, np.ndarray]] = None
         rng = np.random.default_rng(self.random_state)
         for init_idx in range(max(1, self.n_init)):
@@ -79,6 +90,51 @@ class BalancedVARegionClusterer:
         self.inertia_ = float(best[0])
         self.cluster_centers_ = best[1].astype(np.float64)
         self.labels_ = best[2].astype(np.int64)
+        self.actual_backend_ = "balanced_va_region_kmeans"
+        return self
+
+    def _fit_torch(self, matrix: np.ndarray) -> "BalancedVARegionClusterer":
+        device = torch.device(self.device if str(self.device).startswith("cuda") and torch.cuda.is_available() else "cpu")
+        features = torch.as_tensor(matrix.astype(np.float32), device=device)
+        best: Optional[Tuple[float, np.ndarray, np.ndarray]] = None
+        for init_idx in range(max(1, self.n_init)):
+            generator = torch.Generator(device=features.device)
+            generator.manual_seed(int(self.random_state) + 9973 * init_idx)
+            indices = torch.randperm(features.shape[0], generator=generator, device=features.device)[: self.n_components]
+            centers = features[indices].clone()
+            labels = np.full(matrix.shape[0], -1, dtype=np.int64)
+            for _ in range(max(1, self.max_iter)):
+                distances_t = self._torch_distances(features, centers)
+                new_labels = torch.argmin(distances_t, dim=1).detach().cpu().numpy().astype(np.int64)
+                if np.bincount(new_labels, minlength=self.n_components).min() < self.min_cluster_size:
+                    new_labels = self._repair_min_size(
+                        new_labels,
+                        distances_t.detach().cpu().numpy().astype(np.float64),
+                    )
+                labels_t = torch.as_tensor(new_labels, device=features.device, dtype=torch.long)
+                new_centers = centers.clone()
+                for cluster_id in range(self.n_components):
+                    mask = labels_t == int(cluster_id)
+                    if bool(mask.any()):
+                        new_centers[cluster_id] = features[mask].mean(dim=0)
+                if np.array_equal(new_labels, labels):
+                    centers = new_centers
+                    labels = new_labels
+                    break
+                centers = new_centers
+                labels = new_labels
+            labels_t = torch.as_tensor(labels, device=features.device, dtype=torch.long)
+            final_distances = self._torch_distances(features, centers)
+            inertia = float(final_distances[torch.arange(features.shape[0], device=features.device), labels_t].sum().detach().cpu().item())
+            centers_np = centers.detach().cpu().numpy().astype(np.float64)
+            if best is None or inertia < best[0]:
+                best = (inertia, centers_np.copy(), labels.copy())
+        if best is None:
+            raise RuntimeError("BalancedVARegionClusterer torch backend failed to fit.")
+        self.inertia_ = float(best[0])
+        self.cluster_centers_ = best[1].astype(np.float64)
+        self.labels_ = best[2].astype(np.int64)
+        self.actual_backend_ = "balanced_va_region_torch_kmeans"
         return self
 
     def predict(self, values: np.ndarray) -> np.ndarray:
@@ -140,6 +196,11 @@ class BalancedVARegionClusterer:
     def _distances(values: np.ndarray, centers: np.ndarray) -> np.ndarray:
         diff = values[:, None, :] - centers[None, :, :]
         return np.sum(diff**2, axis=2)
+
+    @staticmethod
+    def _torch_distances(values: torch.Tensor, centers: torch.Tensor) -> torch.Tensor:
+        diff = values[:, None, :] - centers[None, :, :]
+        return torch.sum(diff * diff, dim=2)
 
 
 def _min_size_threshold(config: KSelectionConfig, n_samples: int) -> int:
@@ -211,6 +272,8 @@ def _stability(
                 random_state=int(config.random_state) + 1543 * run_idx,
                 n_init=max(1, min(5, int(config.n_init))),
                 max_iter=max(10, int(config.region_max_iter)),
+                backend=_balanced_backend_name(config),
+                device=str(config.device),
             ).fit(fit_va)
             scores.append(float(adjusted_rand_score(fit_labels, model.labels_)))
         except Exception:
@@ -218,6 +281,40 @@ def _stability(
     if not scores:
         return 0.0, 0.0
     return float(np.mean(scores)), float(np.std(scores))
+
+
+def _balanced_backend_name(config: KSelectionConfig) -> str:
+    backend = str(getattr(config, "cluster_backend", "sklearn") or "sklearn").strip().lower()
+    return "torch" if backend == "torch" else "sklearn"
+
+
+def _score_balanced_silhouette(va: np.ndarray, labels: np.ndarray, config: KSelectionConfig) -> float:
+    if np.unique(labels).size <= 1:
+        return 0.0
+    sample_size = int(getattr(config, "silhouette_sample_size", 0))
+    eval_va = va
+    eval_labels = labels
+    if sample_size > 0 and va.shape[0] > sample_size:
+        rng = np.random.default_rng(int(config.random_state))
+        sample_idx = np.sort(rng.choice(va.shape[0], size=int(sample_size), replace=False))
+        eval_va = va[sample_idx]
+        eval_labels = labels[sample_idx]
+    elif sample_size <= 0 and va.shape[0] > 20000:
+        rng = np.random.default_rng(int(config.random_state))
+        sample_idx = np.sort(rng.choice(va.shape[0], size=10000, replace=False))
+        eval_va = va[sample_idx]
+        eval_labels = labels[sample_idx]
+    if np.unique(eval_labels).size < 2:
+        return float("nan")
+    use_torch = str(config.eval_backend).strip().lower() == "torch" or str(config.silhouette_mode).strip().lower() == "torch_chunked"
+    if use_torch:
+        return torch_silhouette_score_chunked(
+            eval_va.astype(np.float32),
+            eval_labels,
+            chunk_size=int(config.silhouette_chunk_size),
+            device=str(config.device),
+        )
+    return float(silhouette_score(eval_va.astype(np.float64), eval_labels))
 
 
 def search_balanced_va_regions(
@@ -256,36 +353,15 @@ def search_balanced_va_regions(
             random_state=int(config.random_state),
             n_init=max(1, int(config.n_init)),
             max_iter=max(10, int(config.region_max_iter)),
+            backend=_balanced_backend_name(config),
+            device=str(config.device),
         ).fit(va)
         labels = model.labels_.astype(np.int64)
         sizes = np.bincount(labels, minlength=int(k))
-        if np.unique(labels).size > 1:
-            try:
-                sample_size = int(getattr(config, "silhouette_sample_size", 0))
-                if sample_size > 0 and va.shape[0] > sample_size:
-                    silhouette = float(
-                        silhouette_score(
-                            va.astype(np.float64),
-                            labels,
-                            sample_size=int(sample_size),
-                            random_state=int(config.random_state),
-                        )
-                    )
-                elif sample_size <= 0 and va.shape[0] > 20000:
-                    silhouette = float(
-                        silhouette_score(
-                            va.astype(np.float64),
-                            labels,
-                            sample_size=10000,
-                            random_state=int(config.random_state),
-                        )
-                    )
-                else:
-                    silhouette = float(silhouette_score(va.astype(np.float64), labels))
-            except Exception:
-                silhouette = float("nan")
-        else:
-            silhouette = 0.0
+        try:
+            silhouette = _score_balanced_silhouette(va, labels, config)
+        except Exception:
+            silhouette = float("nan")
         stability_mean, stability_std = _stability(
             va,
             labels,
@@ -300,6 +376,9 @@ def search_balanced_va_regions(
             min_va_center_sep=float(config.min_va_center_sep),
             max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
             silhouette_sample_size=int(getattr(config, "silhouette_sample_size", 0)),
+            eval_backend=str(config.eval_backend),
+            device=str(config.device),
+            chunk_size=int(config.silhouette_chunk_size),
             random_state=int(config.random_state),
         )
         tension_metrics = _tension_diagnostics(tension, labels)
@@ -390,10 +469,10 @@ def search_balanced_va_regions(
         "va_center_radius_sep": float(selected_row.get("va_center_radius_sep", float("nan"))),
         "va_negative_silhouette_fraction": float(selected_row.get("va_negative_silhouette_fraction", float("nan"))),
         "va_mean_silhouette": float(selected_row.get("va_mean_silhouette", float("nan"))),
-        "cluster_backend": "balanced_va_region_kmeans",
+        "cluster_backend": str(config.cluster_backend),
         "eval_backend": config.eval_backend,
-        "actual_cluster_backend": "balanced_va_region_kmeans",
-        "actual_eval_backend": config.eval_backend,
+        "actual_cluster_backend": str(getattr(best_model, "actual_backend_", "balanced_va_region_kmeans")),
+        "actual_eval_backend": "torch" if str(config.eval_backend).strip().lower() == "torch" else config.eval_backend,
         "device": str(config.device),
         "region_max_iter": int(config.region_max_iter),
         "affect_gate_diagnostic_only": bool(config.affect_gate_enabled),

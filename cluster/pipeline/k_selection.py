@@ -15,10 +15,12 @@ from joblib import Parallel, delayed
 from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, normalized_mutual_info_score, pairwise_distances, silhouette_samples, silhouette_score
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
+import torch
 
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.gmm_convergence import fit_gaussian_mixture_robust
 from cluster.backends.masked_diag_gmm import MaskedDiagonalGMM
+from cluster.backends.torch_metrics import torch_silhouette_samples_chunked
 from cluster.evaluation.metrics import masked_silhouette_score
 from cluster.pipeline.macro_micro import MacroMicroClusterer, MicroSplitValidator
 
@@ -267,6 +269,9 @@ def compute_overlap_gate_metrics(
     min_va_center_sep: float = 0.70,
     max_negative_silhouette_fraction: float = 0.10,
     silhouette_sample_size: int = 0,
+    eval_backend: str = "sklearn",
+    device: str = "cpu",
+    chunk_size: int = 4096,
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """Measure final-label overlap on the primary continuous VA plane."""
@@ -286,8 +291,9 @@ def compute_overlap_gate_metrics(
             "overlap_gate_ok": False,
         }
 
-    purity_10 = _knn_label_purity(coords, y, 10)
-    purity_20 = _knn_label_purity(coords, y, 20)
+    use_torch_eval = _use_torch_overlap_backend(eval_backend=eval_backend, device=device)
+    purity_10 = _knn_label_purity_torch(coords, y, 10, device=device, chunk_size=chunk_size) if use_torch_eval else _knn_label_purity(coords, y, 10)
+    purity_20 = _knn_label_purity_torch(coords, y, 20, device=device, chunk_size=chunk_size) if use_torch_eval else _knn_label_purity(coords, y, 20)
     center_sep = _min_center_radius_separation(coords, y)
     try:
         silhouette_coords = coords
@@ -302,7 +308,15 @@ def compute_overlap_gate_metrics(
             silhouette_labels = y[sample_idx]
         if np.unique(silhouette_labels).size < 2 or np.unique(silhouette_labels).size >= silhouette_labels.shape[0]:
             raise ValueError("sampled silhouette requires at least two labels and fewer labels than samples.")
-        samples = silhouette_samples(silhouette_coords.astype(np.float64), silhouette_labels)
+        if use_torch_eval:
+            samples = torch_silhouette_samples_chunked(
+                silhouette_coords.astype(np.float32),
+                silhouette_labels,
+                chunk_size=int(chunk_size),
+                device=str(device),
+            )
+        else:
+            samples = silhouette_samples(silhouette_coords.astype(np.float64), silhouette_labels)
         negative_fraction = float(np.mean(samples < 0.0))
         mean_silhouette = float(np.mean(samples))
     except Exception:
@@ -337,6 +351,45 @@ def _knn_label_purity(coords: np.ndarray, labels: np.ndarray, k: int) -> float:
     nearest = model.kneighbors(return_distance=False)
     same = labels[nearest] == labels.reshape(-1, 1)
     return float(np.mean(same.mean(axis=1)))
+
+
+def _use_torch_overlap_backend(*, eval_backend: str, device: str) -> bool:
+    backend = str(eval_backend or "sklearn").strip().lower()
+    device_name = str(device or "cpu").strip().lower()
+    if backend != "torch":
+        return False
+    if device_name.startswith("cuda"):
+        return bool(torch.cuda.is_available())
+    return True
+
+
+def _knn_label_purity_torch(
+    coords: np.ndarray,
+    labels: np.ndarray,
+    k: int,
+    *,
+    device: str,
+    chunk_size: int,
+) -> float:
+    n = int(coords.shape[0])
+    if n <= 1:
+        return float("nan")
+    n_neighbors = min(int(k), n - 1)
+    features = torch.as_tensor(coords.astype(np.float32), device=str(device))
+    y = torch.as_tensor(labels, device=features.device, dtype=torch.long)
+    step = max(int(chunk_size), 1)
+    total = 0.0
+    count = 0
+    for start in range(0, n, step):
+        end = min(start + step, n)
+        distances = torch.cdist(features[start:end], features)
+        row_ids = torch.arange(end - start, device=features.device)
+        distances[row_ids, torch.arange(start, end, device=features.device)] = float("inf")
+        nearest = torch.topk(distances, k=n_neighbors, dim=1, largest=False).indices
+        same = y[nearest] == y[start:end].reshape(-1, 1)
+        total += float(same.float().mean(dim=1).sum().detach().cpu().item())
+        count += int(end - start)
+    return float(total / max(count, 1))
 
 
 def _min_center_radius_separation(coords: np.ndarray, labels: np.ndarray) -> float:
@@ -1330,6 +1383,11 @@ def search_macro_micro_diffaware(
             min_va_knn_purity=float(config.min_va_knn_purity),
             min_va_center_sep=float(config.min_va_center_sep),
             max_negative_silhouette_fraction=float(config.max_va_negative_silhouette_fraction),
+            silhouette_sample_size=int(getattr(config, "silhouette_sample_size", 0)),
+            eval_backend=str(config.eval_backend),
+            device=str(config.device),
+            chunk_size=int(config.silhouette_chunk_size),
+            random_state=int(config.random_state),
         )
         affect_metrics: Dict[str, Any] = {}
         if config.affect_gate_enabled:

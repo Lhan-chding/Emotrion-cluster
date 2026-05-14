@@ -81,3 +81,33 @@ def test_balanced_va_regions_selects_k_without_small_tail_clusters():
     assert info["min_cluster_size"] >= 50
     assert {"balanced_region_score", "size_balance", "tension_effect_ratio"}.issubset(metrics.columns)
     assert metrics.loc[0, "min_size_ok"] is True or bool(metrics.loc[0, "min_size_ok"]) is True
+
+
+def test_balanced_va_regions_can_use_torch_backend_and_torch_eval():
+    features = _four_region_fixture()
+
+    model, metrics, info = run_k_selection(
+        features=features,
+        k_strategy="balanced_va_regions",
+        k_min=4,
+        k_max=4,
+        random_state=44,
+        min_cluster_size_abs=50,
+        min_cluster_size_ratio=0.0,
+        stability_runs=2,
+        cluster_backend="torch",
+        eval_backend="torch",
+        device="cpu",
+        silhouette_mode="torch_chunked",
+        silhouette_chunk_size=32,
+        primary_va=features[:, :2],
+        region_max_iter=80,
+    )
+
+    labels = model.predict(features)
+    sizes = np.bincount(labels, minlength=4)
+    assert info["selection_mode"] == "balanced_va_regions"
+    assert info["actual_cluster_backend"] == "balanced_va_region_torch_kmeans"
+    assert info["actual_eval_backend"] == "torch"
+    assert int(sizes.min()) >= 50
+    assert np.isfinite(float(metrics.loc[0, "va_mean_silhouette"]))

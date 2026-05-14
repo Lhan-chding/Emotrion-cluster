@@ -510,6 +510,9 @@ def _calibrated_va_tension_features(
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
+    compute_device: str = "cpu",
+    compute_chunk_size: int = 4096,
+    compute_sample_size: int = 0,
     tension_encoding: str = "residual_3d",
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     audio = embeddings.get("audio_va")
@@ -541,6 +544,9 @@ def _calibrated_va_tension_features(
         calibration_mode=calibration_mode,
         diff_residual_mode=diff_residual_mode,
         diff_residual_neighbors=diff_residual_neighbors,
+        compute_device=compute_device,
+        compute_chunk_size=compute_chunk_size,
+        compute_sample_size=compute_sample_size,
         tension_encoding=tension_encoding,
         fitted_sigma=fitted_sigma,
     )
@@ -677,6 +683,9 @@ def build_cluster_features(
     calibration_mode: str = "global_median_shift",
     diff_residual_mode: str = "knn",
     diff_residual_neighbors: int = 101,
+    compute_device: str = "cpu",
+    compute_chunk_size: int = 4096,
+    compute_sample_size: int = 0,
     tension_encoding: str = "residual_3d",
 ) -> Tuple[np.ndarray, Optional[PCA], Optional[Any]]:
     """Build clustering features from embeddings using the specified strategy.
@@ -761,6 +770,9 @@ def build_cluster_features(
             calibration_mode=calibration_mode,
             diff_residual_mode=diff_residual_mode,
             diff_residual_neighbors=diff_residual_neighbors,
+            compute_device=compute_device,
+            compute_chunk_size=compute_chunk_size,
+            compute_sample_size=compute_sample_size,
             tension_encoding=tension_encoding,
         )
     elif base_strategy == "latent_two_view_va":
@@ -3018,6 +3030,10 @@ def _write_split_outputs(
     cluster_label_names: Optional[Dict[Any, Any]] = None,
     plot_va_override: Optional[np.ndarray] = None,
     feature_state: Optional[Dict[str, Any]] = None,
+    eval_backend: str = "sklearn",
+    device: str = "cpu",
+    silhouette_sample_size: int = 0,
+    silhouette_chunk_size: int = 4096,
 ) -> Dict[str, Any]:
     _ensure_dir(out_dir)
     mean_va = _resolve_plot_va(dataset, plot_va_source, plot_va_override)
@@ -3160,7 +3176,14 @@ def _write_split_outputs(
         palette,
     )
     _plot_mask_distribution(assignments, _dataset_view_mask, mask_dist_path, palette)
-    overlap_metrics = compute_overlap_gate_metrics(mean_va, assignments)
+    overlap_metrics = compute_overlap_gate_metrics(
+        mean_va,
+        assignments,
+        silhouette_sample_size=int(silhouette_sample_size),
+        eval_backend=str(eval_backend),
+        device=str(device),
+        chunk_size=int(silhouette_chunk_size),
+    )
     pd.DataFrame([{key: value for key, value in overlap_metrics.items()}]).to_csv(
         overlap_audit_path,
         index=False,
@@ -3705,6 +3728,12 @@ def main() -> None:
         diff_cluster_weight=float(args.diff_cluster_weight),
     )
 
+    print(
+        "[Pipeline] Building cluster features "
+        f"(strategy={feature_strategy}, device={device}, chunk_size={int(args.silhouette_chunk_size)}, "
+        f"sample_size={int(args.silhouette_sample_size)})",
+        flush=True,
+    )
     search_features_raw, search_pca, search_imputation = build_cluster_features(
         embeddings=embeddings_by_split[search_split],
         metadata_cluster_weight=effective_metadata_cluster_weight,
@@ -3724,6 +3753,9 @@ def main() -> None:
         calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
         diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
         diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+        compute_device=str(device),
+        compute_chunk_size=int(args.silhouette_chunk_size),
+        compute_sample_size=int(args.silhouette_sample_size),
         tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
     )
     raw_block_slices = cluster_feature_block_slices(feature_strategy, int(search_features_raw.shape[1]))
@@ -3757,6 +3789,12 @@ def main() -> None:
         else _dataset_plot_va(eval_datasets[search_split], plot_source_name)
     )
     selection_info_metadata_policy = dict(metadata_policy_info)
+    print(
+        "[Pipeline] Running K search "
+        f"(strategy={k_strategy}, cluster_backend={args.cluster_backend}, eval_backend={args.eval_backend}, "
+        f"silhouette_mode={args.silhouette_mode}, device={device})",
+        flush=True,
+    )
     k_result, search_metrics, selection_info = run_k_selection(
         features=search_features,
         k_strategy=k_strategy,
@@ -3983,6 +4021,9 @@ def main() -> None:
             calibration_mode=str(getattr(args, "calibration_mode", "global_median_shift")),
             diff_residual_mode=str(getattr(args, "diff_residual_mode", "knn")),
             diff_residual_neighbors=int(getattr(args, "diff_residual_neighbors", 101)),
+            compute_device=str(device),
+            compute_chunk_size=int(args.silhouette_chunk_size),
+            compute_sample_size=int(args.silhouette_sample_size),
             tension_encoding=str(getattr(args, "tension_encoding", "residual_3d")),
         )
         split_block_mask = cluster_feature_block_mask(
@@ -4063,6 +4104,10 @@ def main() -> None:
             cluster_label_names=cluster_output_label_names,
             plot_va_override=plot_va_override,
             feature_state=_feature_state_with_tension_micro_probe_config(split_feature_state, args),
+            eval_backend=str(args.eval_backend),
+            device=str(device),
+            silhouette_sample_size=int(args.silhouette_sample_size),
+            silhouette_chunk_size=int(args.silhouette_chunk_size),
         )
         split_outputs[split] = payload
 

@@ -322,6 +322,37 @@ def test_calibrated_va_tension_clusterability_alpha_reuses_fitted_alpha():
     assert reused_state["balance_alpha"] == state["balance_alpha"]
 
 
+def test_calibrated_va_tension_passes_compute_settings_to_alpha_and_residualizer():
+    rng = np.random.default_rng(789)
+    audio = rng.uniform(0.15, 0.85, size=(24, 2)).astype(np.float32)
+    lyrics = np.clip(audio + rng.normal(0.0, 0.04, size=(24, 2)), 0.0, 1.0).astype(np.float32)
+    mask = np.ones((24, 3), dtype=np.float32)
+
+    _, state = build_calibrated_va_tension_features(
+        audio,
+        lyrics,
+        mask,
+        fit=True,
+        consensus_mode="clusterability_alpha",
+        calibration_mode="identity",
+        diff_residual_mode="knn",
+        diff_residual_neighbors=5,
+        alpha_search_k_min=2,
+        alpha_search_k_max=2,
+        compute_device="cuda:0",
+        compute_chunk_size=17,
+        compute_sample_size=12,
+    )
+
+    learner_state = state["balance_learner"].to_dict()
+    residualizer_state = state["residualizer"].to_dict()
+    assert learner_state["device"] == "cuda:0"
+    assert learner_state["chunk_size"] == 17
+    assert learner_state["score_sample_size"] == 12
+    assert residualizer_state["device"] == "cuda:0"
+    assert residualizer_state["chunk_size"] == 17
+
+
 def test_va_geometry_features_treat_missing_pair_conflict_as_unknown_not_agreement():
     audio = np.asarray([[0.7, 0.4], [0.0, 0.0]], dtype=np.float32)
     lyrics = np.asarray([[0.0, 0.0], [0.2, 0.8]], dtype=np.float32)

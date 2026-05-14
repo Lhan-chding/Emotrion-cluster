@@ -41,7 +41,7 @@ def audit_raw_csv(csv_path: Path | str, out_dir: Path | str) -> Dict[str, Any]:
     if not source.exists():
         raise FileNotFoundError(f"Missing CSV file: {source}")
 
-    df = pd.read_csv(source)
+    df = pd.read_csv(source, low_memory=False)
     columns = list(df.columns)
     song_col = _find_column(columns, ["Song", "song", "track_id", "identifier", "id"])
     if song_col is None:

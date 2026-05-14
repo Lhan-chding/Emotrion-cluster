@@ -61,3 +61,28 @@ def test_overlap_gate_metrics_supports_silhouette_sampling_and_knn_purity():
     assert metrics["va_silhouette_sample_size"] == 24
     assert metrics["va_knn_purity_20"] >= 0.9
     assert metrics["overlap_gate_ok"] is True
+
+
+def test_overlap_gate_metrics_can_use_torch_eval_backend_on_cpu():
+    rng = np.random.default_rng(13)
+    left = rng.normal(loc=[0.2, 0.75], scale=0.03, size=(30, 2))
+    right = rng.normal(loc=[0.82, 0.25], scale=0.03, size=(30, 2))
+    coords = np.vstack([left, right]).astype(np.float32)
+    labels = np.asarray([0] * 30 + [1] * 30, dtype=np.int64)
+
+    metrics = compute_overlap_gate_metrics(
+        coords,
+        labels,
+        min_va_knn_purity=0.9,
+        min_va_center_sep=0.7,
+        max_negative_silhouette_fraction=0.1,
+        silhouette_sample_size=20,
+        eval_backend="torch",
+        device="cpu",
+        chunk_size=16,
+        random_state=13,
+    )
+
+    assert metrics["va_silhouette_sample_size"] == 20
+    assert metrics["va_knn_purity_10"] >= 0.9
+    assert metrics["overlap_gate_ok"] is True

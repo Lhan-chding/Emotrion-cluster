@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 import torch
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_samples, silhouette_score
 
 from cluster.backends import resolve_cluster_backend
 from cluster.backends.torch_gmm_backend import TorchGaussianMixture
-from cluster.backends.torch_metrics import torch_silhouette_score_chunked
+from cluster.backends.torch_metrics import torch_silhouette_samples_chunked, torch_silhouette_score_chunked
 from cluster.pipeline.k_selection import KSelectionConfig, _score_silhouette, search_gmm_bic_only, search_gmm_composite
 
 
@@ -87,6 +87,16 @@ def test_torch_chunked_silhouette_matches_sklearn():
     actual = torch_silhouette_score_chunked(features, labels, chunk_size=2)
 
     assert abs(actual - expected) < 1e-5
+
+
+def test_torch_chunked_silhouette_samples_match_sklearn():
+    features = _two_blob_features()
+    labels = np.asarray([0, 0, 0, 1, 1, 1], dtype=np.int64)
+
+    expected = silhouette_samples(features, labels)
+    actual = torch_silhouette_samples_chunked(features, labels, chunk_size=2)
+
+    np.testing.assert_allclose(actual, expected, atol=1e-5)
 
 
 def test_sampled_silhouette_for_torch_eval_uses_sklearn_sampling():

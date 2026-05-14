@@ -74,7 +74,7 @@ def _read_csv(path: str) -> pd.DataFrame:
         raise ValueError("CSV path is required.")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing CSV file '{path}'.")
-    return pd.read_csv(path)
+    return pd.read_csv(path, low_memory=False)
 
 
 def _optional_column(columns: Sequence[str], candidates: Sequence[str]) -> Optional[str]:
