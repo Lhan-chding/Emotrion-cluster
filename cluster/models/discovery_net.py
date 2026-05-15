@@ -44,7 +44,7 @@ def _canonical_metadata_frame(data_dir: str, indices: np.ndarray) -> pd.DataFram
     path = os.path.join(data_dir, "canonical_metadata.csv")
     if not os.path.exists(path):
         return pd.DataFrame()
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, low_memory=False)
     return df.iloc[indices].reset_index(drop=True)
 
 

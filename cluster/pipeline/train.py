@@ -983,7 +983,8 @@ def resolve_metadata_policy(
     if requested_policy not in METADATA_POLICY_CHOICES:
         raise ValueError(f"Unsupported metadata_policy={metadata_policy!r}; expected one of {METADATA_POLICY_CHOICES}.")
     policy = "affective_va_only" if requested_policy == "report_only" else requested_policy
-    requested_weight = float(requested_metadata_cluster_weight)
+    input_weight = float(requested_metadata_cluster_weight)
+    requested_weight = 0.0 if requested_policy == "report_only" else input_weight
     affective_features = _affective_metadata_features(metadata_feature_names)
     if policy == "non_affective_metadata" and affective_features:
         examples = ", ".join(affective_features[:8])
@@ -995,6 +996,7 @@ def resolve_metadata_policy(
     return {
         "metadata_policy": requested_policy,
         "effective_metadata_policy": policy,
+        "input_metadata_cluster_weight": input_weight,
         "requested_metadata_cluster_weight": requested_weight,
         "effective_metadata_cluster_weight": float(effective_weight),
         "metadata_block_used_for_clustering": bool(effective_weight > 0.0),
@@ -2976,6 +2978,21 @@ def _probe_one_cluster_tension_micro(
             int(config["random_state"]) + int(cluster_id) * 4099,
         )
         reasons = []
+        subtype_names = []
+        for micro_label in sorted(np.unique(labels).astype(int).tolist()):
+            group = tension[labels == micro_label]
+            if group.size == 0:
+                continue
+            subtype_names.append(
+                _tension_subtype_label(
+                    int(micro_label),
+                    float(group[:, 0].mean()),
+                    float(group[:, 1].mean()),
+                    float(group[:, 2].mean()),
+                )
+            )
+        if len(set(subtype_names)) <= 1:
+            reasons.append("directional_subtypes_not_distinct")
         if not np.isfinite(float(silhouette)):
             reasons.append("silhouette=nan")
         elif silhouette < float(config["min_silhouette"]):
@@ -3151,17 +3168,6 @@ def _write_tension_micro_probe_artifacts(
 
 def _tension_subtype_label(micro_id: int, mean_dv: float, mean_da: float, mean_norm: float) -> str:
     del micro_id
-    if (
-        np.isfinite(mean_norm)
-        and np.isfinite(mean_dv)
-        and np.isfinite(mean_da)
-        and float(mean_norm) < 0.08
-        and abs(float(mean_dv)) < 0.05
-        and abs(float(mean_da)) < 0.05
-    ):
-        return "Affective Concordance"
-    if np.isfinite(mean_norm) and float(mean_norm) >= 0.18:
-        return "High Cross-Modal Tension"
     labels: List[str] = []
     if np.isfinite(mean_dv):
         if float(mean_dv) >= 0.05:
@@ -3173,6 +3179,18 @@ def _tension_subtype_label(micro_id: int, mean_dv: float, mean_da: float, mean_n
             labels.append("Lyric Arousal Intensification")
         elif float(mean_da) <= -0.05:
             labels.append("Lyric Arousal Softening")
+    if (
+        np.isfinite(mean_norm)
+        and np.isfinite(mean_dv)
+        and np.isfinite(mean_da)
+        and float(mean_norm) < 0.08
+        and abs(float(mean_dv)) < 0.05
+        and abs(float(mean_da)) < 0.05
+    ):
+        return "Affective Concordance"
+    if np.isfinite(mean_norm) and float(mean_norm) >= 0.18:
+        direction = " + ".join(dict.fromkeys(labels)) if labels else "Directionally Mixed"
+        return f"High Cross-Modal Tension: {direction}"
     if not labels:
         labels.append("Affective Concordance")
     return " + ".join(dict.fromkeys(labels))
@@ -4281,7 +4299,8 @@ def main() -> None:
                     "affect_boundary_margin": float(args.affect_boundary_margin),
                     "metadata_policy": metadata_policy_info,
                     "metadata_cluster_weight": effective_metadata_cluster_weight,
-                    "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
+                    "requested_metadata_cluster_weight": float(metadata_policy_info["requested_metadata_cluster_weight"]),
+                    "input_metadata_cluster_weight": float(args.metadata_cluster_weight),
                     "conflict_cluster_weight": float(args.conflict_cluster_weight),
                     "gate_cluster_weight": float(args.gate_cluster_weight),
                     "cluster_feature_strategy": feature_strategy,
@@ -4459,7 +4478,8 @@ def main() -> None:
         "metadata_feature_dim": int(metadata_summary["feature_dim"]),
         "metadata_policy": metadata_policy_info,
         "metadata_cluster_weight": effective_metadata_cluster_weight,
-        "requested_metadata_cluster_weight": float(args.metadata_cluster_weight),
+        "requested_metadata_cluster_weight": float(metadata_policy_info["requested_metadata_cluster_weight"]),
+        "input_metadata_cluster_weight": float(args.metadata_cluster_weight),
         "checkpoint_path": checkpoint_path,
         "gmm_bundle_path": gmm_bundle_path,
         "history_path": history_path,

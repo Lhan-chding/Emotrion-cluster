@@ -86,13 +86,84 @@ def _assignments_for_split(run_dir: Path, split: str, expected_n: int) -> np.nda
     path = run_dir / split / "cluster_assignments.csv"
     if not path.exists():
         raise FileNotFoundError(f"Missing cluster assignments: {path}")
-    frame = pd.read_csv(path)
+    frame = pd.read_csv(path, low_memory=False)
     if "cluster_id" not in frame.columns:
         raise ValueError(f"{path} must contain a cluster_id column.")
     labels = frame["cluster_id"].to_numpy(dtype=np.int64)
     if labels.shape[0] != int(expected_n):
         raise ValueError(f"{path} has {labels.shape[0]} rows but split dataset has {expected_n}.")
     return labels
+
+
+def _merge_output_files(
+    payload: Mapping[str, Any],
+    tension_micro_outputs: Mapping[str, Any],
+    tension_substructure_outputs: Mapping[str, Any],
+) -> Dict[str, Any]:
+    output_files = dict(payload.get("output_files", {})) if isinstance(payload.get("output_files"), dict) else {}
+    micro_files = tension_micro_outputs.get("output_files", {}) if isinstance(tension_micro_outputs, Mapping) else {}
+    if isinstance(micro_files, Mapping):
+        output_files.update(dict(micro_files))
+    if isinstance(tension_substructure_outputs, Mapping):
+        output_files.update(dict(tension_substructure_outputs))
+    return output_files
+
+
+def _update_repaired_summary_jsons(
+    run_dir: Path,
+    split: str,
+    *,
+    tension_micro_outputs: Mapping[str, Any],
+    tension_substructure_outputs: Mapping[str, Any],
+) -> Dict[str, bool]:
+    split_dir = Path(run_dir) / str(split)
+    fresh_probe = tension_micro_outputs.get("tension_micro_probe") if isinstance(tension_micro_outputs, Mapping) else None
+    updated = {
+        "split_cluster_summary": False,
+        "rerun_summary": False,
+        "pipeline_summary": False,
+    }
+
+    split_summary_path = split_dir / "cluster_summary.json"
+    split_payload: Dict[str, Any] = {}
+    if split_summary_path.exists():
+        split_payload = _load_json(split_summary_path)
+        split_payload["tension_micro_probe"] = fresh_probe
+        split_payload["output_files"] = _merge_output_files(
+            split_payload,
+            tension_micro_outputs,
+            tension_substructure_outputs,
+        )
+        split_summary_path.write_text(json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        updated["split_cluster_summary"] = True
+
+    for summary_name in ("rerun_summary.json", "pipeline_summary.json"):
+        summary_path = Path(run_dir) / summary_name
+        if not summary_path.exists():
+            continue
+        root_payload = _load_json(summary_path)
+        split_outputs = root_payload.get("split_outputs")
+        if not isinstance(split_outputs, dict):
+            continue
+        current_split_payload = split_outputs.get(str(split), {})
+        if not isinstance(current_split_payload, dict):
+            current_split_payload = {}
+        replacement = dict(current_split_payload)
+        replacement["tension_micro_probe"] = fresh_probe
+        replacement["output_files"] = _merge_output_files(
+            replacement,
+            tension_micro_outputs,
+            tension_substructure_outputs,
+        )
+        if split_payload:
+            for key in ("split", "selected_k", "feature_dim", "num_samples", "plot_va_source", "balance_alpha"):
+                if key in split_payload:
+                    replacement[key] = split_payload[key]
+        split_outputs[str(split)] = replacement
+        root_payload["split_outputs"] = split_outputs
+        summary_path.write_text(json.dumps(root_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        updated["rerun_summary" if summary_name == "rerun_summary.json" else "pipeline_summary"] = True
+    return updated
 
 
 def _build_features_for_split(
@@ -223,13 +294,21 @@ def main() -> None:
             metadata_feature_names=datasets.metadata_feature_names,
             tension_micro_outputs=outputs,
         )
+        updated_jsons = _update_repaired_summary_jsons(
+            run_dir,
+            split,
+            tension_micro_outputs=outputs,
+            tension_substructure_outputs=subtype_outputs,
+        )
         assignment_path = split_dir / "tension_micro_probe" / "tension_micro_assignments.csv"
-        frame = pd.read_csv(assignment_path)
+        frame = pd.read_csv(assignment_path, low_memory=False)
+        probe_frame = pd.read_csv(split_dir / "tension_micro_probe" / "tension_micro_probe.csv", low_memory=False)
         print(
             f"[repair] {split}: rows={len(frame)} source={frame['tension_micro_source'].iloc[0]} "
             f"norm_mean={frame['tension_norm'].mean():.4f} norm_std={frame['tension_norm'].std():.4f} "
-            f"micro_splits={int((pd.read_csv(split_dir / 'tension_micro_probe' / 'tension_micro_probe.csv')['selected_micro_k'] > 1).sum())} "
-            f"subtype_report={bool(subtype_outputs)}",
+            f"micro_splits={int((probe_frame['selected_micro_k'] > 1).sum())} "
+            f"subtype_report={bool(subtype_outputs)} "
+            f"summary_jsons={','.join(name for name, ok in updated_jsons.items() if ok) or 'none'}",
             flush=True,
         )
 

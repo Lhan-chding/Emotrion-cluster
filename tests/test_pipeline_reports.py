@@ -4,6 +4,7 @@ import pandas as pd
 from cluster.pipeline.rerun import build_parser as build_rerun_parser
 from cluster.pipeline.train import (
     _canonical_tension_labels,
+    _tension_subtype_label,
     _cluster_label_names_for_outputs,
     _cluster_scatter_labels,
     _dataset_plot_va,
@@ -517,6 +518,20 @@ def test_affective_va_policy_removes_metadata_from_cluster_mask_and_weight():
         dtype=bool,
     )
     np.testing.assert_array_equal(block_mask, expected)
+
+
+def test_report_only_metadata_policy_reports_zero_requested_cluster_weight():
+    policy = resolve_metadata_policy(
+        "report_only",
+        metadata_feature_names=["MoodsAll::happy", "Themes::party", "Genres::rock"],
+        requested_metadata_cluster_weight=0.75,
+    )
+
+    assert policy["metadata_policy"] == "report_only"
+    assert policy["input_metadata_cluster_weight"] == 0.75
+    assert policy["requested_metadata_cluster_weight"] == 0.0
+    assert policy["effective_metadata_cluster_weight"] == 0.0
+    assert policy["metadata_block_used_for_clustering"] is False
 
 
 def test_zero_diff_weight_removes_diff_block_from_cluster_mask():
@@ -1370,6 +1385,52 @@ def test_tension_micro_probe_rejects_norm_only_artifacts():
     assert row["selected_micro_k"] == 1
     assert row["status"] == "no_signed_tension_variation"
     assert candidates == []
+    assert set(labels.tolist()) == {0}
+
+
+def test_tension_subtype_label_preserves_high_tension_direction():
+    assert (
+        _tension_subtype_label(0, mean_dv=0.21, mean_da=0.19, mean_norm=0.29)
+        == "High Cross-Modal Tension: Lyric Valence Uplift + Lyric Arousal Intensification"
+    )
+    assert (
+        _tension_subtype_label(1, mean_dv=-0.22, mean_da=-0.18, mean_norm=0.28)
+        == "High Cross-Modal Tension: Lyric Valence Tempering + Lyric Arousal Softening"
+    )
+
+
+def test_tension_micro_probe_rejects_duplicate_concordance_subtypes():
+    rng = np.random.default_rng(123)
+    positive = np.tile(np.asarray([[0.025, 0.015]], dtype=np.float32), (40, 1))
+    negative = np.tile(np.asarray([[-0.025, -0.015]], dtype=np.float32), (40, 1))
+    signed = np.vstack([positive, negative])
+    signed += rng.normal(0.0, 0.002, size=signed.shape).astype(np.float32)
+    tension = np.column_stack([signed, np.linalg.norm(signed, axis=1)]).astype(np.float32)
+
+    row, candidates, labels = _probe_one_cluster_tension_micro(
+        tension,
+        cluster_id=3,
+        total_cluster_samples=80,
+        config={
+            "source": "residualized",
+            "k_max": 2,
+            "min_cluster_size": 10,
+            "min_silhouette": -1.0,
+            "min_effect": 0.0,
+            "stability_runs": 1,
+            "random_state": 42,
+            "eval_backend": "sklearn",
+            "device": "cpu",
+            "chunk_size": 128,
+            "sample_size": 0,
+        },
+    )
+
+    assert row["selected_micro_k"] == 1
+    assert row["status"] == "fallback"
+    assert candidates
+    assert candidates[0]["status"] == "rejected_validator"
+    assert "directional_subtypes_not_distinct" in candidates[0]["reason"]
     assert set(labels.tolist()) == {0}
 
 

@@ -118,7 +118,7 @@ def _read_track_pairs(processed_dir: str) -> pd.DataFrame:
 def _read_aligned_metadata(path: Path, description: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Could not find {description} at '{path}'.")
-    df = pd.read_csv(path).copy()
+    df = pd.read_csv(path, low_memory=False).copy()
     audio_col = find_column(df.columns, ["audio_song"])
     lyric_col = find_column(df.columns, ["lyric_song", "lyrics_song"])
     quadrant_col = find_column(df.columns, ["quadrant"])
