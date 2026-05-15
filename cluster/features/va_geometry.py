@@ -461,6 +461,7 @@ def build_calibrated_va_tension_features(
     dv = np.clip(d_res[:, 0] / sigma_v, -3.0, 3.0).astype(np.float32)
     da = np.clip(d_res[:, 1] / sigma_a, -3.0, 3.0).astype(np.float32)
     r = np.sqrt(dv ** 2 + da ** 2).astype(np.float32)
+    raw_r = np.linalg.norm(d_res, axis=1).astype(np.float32)
 
     features = np.column_stack([
         consensus.astype(np.float32),
@@ -477,6 +478,10 @@ def build_calibrated_va_tension_features(
         "consensus_mode": normalized_consensus_mode,
         "sigma_v": sigma_v,
         "sigma_a": sigma_a,
+        "residualized_tension_matrix": np.column_stack(
+            [d_res[:, 0], d_res[:, 1], raw_r]
+        ).astype(np.float32),
+        "residualized_tension_units": "calibrated_va_delta",
     }
     if balance_learner is not None:
         scores = [dict(item) for item in getattr(balance_learner, "scores_", [])]

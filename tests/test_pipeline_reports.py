@@ -8,6 +8,7 @@ from cluster.pipeline.train import (
     _cluster_scatter_labels,
     _dataset_plot_va,
     _plot_cluster_feature_pca,
+    _probe_one_cluster_tension_micro,
     _quadrant_heatmap_matrix,
     _cluster_summary,
     _va_quadrant_labels,
@@ -1253,6 +1254,13 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
             np.linalg.norm(tension * 0.25, axis=1),
         ]
     ).astype(np.float32)
+    report_tension = np.column_stack(
+        [
+            tension[:, 0],
+            tension[:, 1],
+            np.linalg.norm(tension, axis=1),
+        ]
+    ).astype(np.float32)
     weighted_cluster_features = residual_tension.copy()
     weighted_cluster_features[:, 2:5] = 0.0
 
@@ -1279,7 +1287,9 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
                 "min_effect": 0.0,
                 "stability_runs": 3,
                 "random_state": 13,
-            }
+            },
+            "residualized_tension_matrix": report_tension,
+            "residualized_tension_units": "calibrated_va_delta",
         },
     )
 
@@ -1310,13 +1320,57 @@ def test_write_split_outputs_writes_report_only_tension_micro_probe(tmp_path):
     assert set(tension_assignments["tension_micro_id"].tolist()) == {0, 1}
     np.testing.assert_allclose(
         tension_assignments["tension_dv"].to_numpy(dtype=np.float32),
-        residual_tension[:, 2],
+        report_tension[:, 0],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        tension_assignments["tension_norm"].to_numpy(dtype=np.float32),
+        report_tension[:, 2],
         atol=1e-6,
     )
     assert {"subtype_label", "mean_tension_norm", "top_tokens"}.issubset(subtype_enrichment.columns)
-    assert "Affective Concordance" in set(subtype_enrichment["subtype_label"].astype(str))
+    assert {
+        "Lyric Valence Uplift",
+        "Lyric Valence Tempering",
+        "Lyric Arousal Intensification",
+        "Lyric Arousal Softening",
+    }.issubset(set(subtype_enrichment["subtype_label"].astype(str)))
     assert {"tension_micro_id", "tension_subtype_label"}.issubset(subtype_assignments.columns)
     assert "tension_micro_id" not in final_assignments.columns
+
+
+def test_tension_micro_probe_rejects_norm_only_artifacts():
+    tension = np.column_stack(
+        [
+            np.zeros(80, dtype=np.float32),
+            np.zeros(80, dtype=np.float32),
+            np.r_[np.zeros(40, dtype=np.float32), np.full(40, 3.0, dtype=np.float32)],
+        ]
+    )
+
+    row, candidates, labels = _probe_one_cluster_tension_micro(
+        tension,
+        cluster_id=2,
+        total_cluster_samples=80,
+        config={
+            "source": "residualized",
+            "k_max": 2,
+            "min_cluster_size": 10,
+            "min_silhouette": -1.0,
+            "min_effect": 0.0,
+            "stability_runs": 1,
+            "random_state": 42,
+            "eval_backend": "sklearn",
+            "device": "cpu",
+            "chunk_size": 128,
+            "sample_size": 0,
+        },
+    )
+
+    assert row["selected_micro_k"] == 1
+    assert row["status"] == "no_signed_tension_variation"
+    assert candidates == []
+    assert set(labels.tolist()) == {0}
 
 
 def test_calibrated_va_tension_feature_state_exposes_alpha_audit():

@@ -2680,6 +2680,7 @@ def _dataset_tension_matrix(
     *,
     source: str = "raw_delta",
     cluster_features: Optional[np.ndarray] = None,
+    feature_state: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     raw_audio = np.asarray(dataset.raw_audio, dtype=np.float32)
     raw_lyrics = np.asarray(dataset.raw_lyrics, dtype=np.float32)
@@ -2689,6 +2690,12 @@ def _dataset_tension_matrix(
     view_mask = np.asarray(view_mask, dtype=np.float32)
     observed = (view_mask[:, 0] > 0) & (view_mask[:, 1] > 0)
     source_name = str(source or "raw_delta").strip().lower()
+    if source_name == "residualized":
+        state_matrix = _feature_state_residualized_tension_matrix(feature_state, raw_audio.shape[0])
+        if state_matrix is not None:
+            matrix = state_matrix.astype(np.float32)
+            matrix[~observed] = 0.0
+            return matrix, observed
     if source_name == "residualized" and cluster_features is not None:
         features = np.asarray(cluster_features, dtype=np.float32)
         if features.ndim == 2 and features.shape[0] == raw_audio.shape[0] and features.shape[1] >= 5:
@@ -2707,6 +2714,21 @@ def _has_residualized_tension_features(cluster_features: Optional[np.ndarray], n
         return False
     features = np.asarray(cluster_features)
     return bool(features.ndim == 2 and features.shape[0] == int(n_samples) and features.shape[1] >= 5)
+
+
+def _feature_state_residualized_tension_matrix(
+    feature_state: Optional[Dict[str, Any]],
+    n_samples: int,
+) -> Optional[np.ndarray]:
+    if not isinstance(feature_state, dict):
+        return None
+    matrix = feature_state.get("residualized_tension_matrix")
+    if matrix is None:
+        return None
+    values = np.asarray(matrix, dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] != int(n_samples) or values.shape[1] < 3:
+        return None
+    return values[:, :3].astype(np.float32)
 
 
 def _tension_micro_effect_size(matrix: np.ndarray, labels: np.ndarray) -> float:
@@ -2787,6 +2809,13 @@ def _score_tension_silhouette(matrix: np.ndarray, labels: np.ndarray, config: Di
     return float(silhouette_score(score_matrix.astype(np.float64), score_labels))
 
 
+def _tension_score_matrix(tension: np.ndarray) -> np.ndarray:
+    values = np.asarray(tension, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] < 2:
+        return np.zeros((int(values.shape[0]), 2), dtype=np.float64)
+    return values[:, :2].astype(np.float64)
+
+
 def _canonical_tension_labels(tension: np.ndarray, labels: np.ndarray) -> np.ndarray:
     unique = sorted(np.unique(labels).astype(int).tolist())
     if len(unique) <= 1:
@@ -2842,15 +2871,23 @@ def _plot_tension_micro_scatter(
 ) -> None:
     _ensure_dir(os.path.dirname(out_path))
     plt.figure(figsize=(7, 6))
+    plot_tension = np.asarray(tension, dtype=np.float32)
+    plot_labels = np.asarray(labels, dtype=np.int64)
+    max_points = 8000
+    if int(plot_tension.shape[0]) > max_points:
+        rng = np.random.default_rng(42)
+        keep = np.sort(rng.choice(int(plot_tension.shape[0]), size=max_points, replace=False))
+        plot_tension = plot_tension[keep]
+        plot_labels = plot_labels[keep]
     unique = sorted(np.unique(labels).astype(int).tolist())
     cmap = plt.get_cmap("tab10")
     for color_idx, label in enumerate(unique):
-        mask = labels == label
+        mask = plot_labels == label
         plt.scatter(
-            tension[mask, 0],
-            tension[mask, 1],
-            s=34,
-            alpha=0.78,
+            plot_tension[mask, 0],
+            plot_tension[mask, 1],
+            s=10,
+            alpha=0.35,
             color=cmap(color_idx % 10),
             label=f"micro {label}",
         )
@@ -2863,7 +2900,8 @@ def _plot_tension_micro_scatter(
     else:
         plt.xlabel("Lyrics minus Audio Valence")
         plt.ylabel("Lyrics minus Audio Arousal")
-    plt.title(title)
+    subtitle = f"sampled {len(plot_tension):,}/{len(tension):,}" if len(tension) != len(plot_tension) else None
+    plt.title(f"{title}\n{subtitle}" if subtitle else title)
     plt.legend(frameon=False)
     plt.tight_layout()
     plt.savefig(out_path, dpi=180)
@@ -2900,7 +2938,12 @@ def _probe_one_cluster_tension_micro(
         row["status"] = "not_enough_observed_pairs"
         return row, [], selected_labels
 
-    scaled = StandardScaler().fit_transform(tension.astype(np.float64))
+    score_matrix = _tension_score_matrix(tension)
+    if score_matrix.shape[0] == 0 or np.all(np.nanstd(score_matrix, axis=0) < 1e-8):
+        row = dict(base_row)
+        row["status"] = "no_signed_tension_variation"
+        return row, [], selected_labels
+    scaled = StandardScaler().fit_transform(score_matrix)
     candidates: List[Dict[str, Any]] = []
     accepted: List[Tuple[Dict[str, Any], np.ndarray]] = []
     for k in range(2, min(int(config["k_max"]), n) + 1):
@@ -3006,9 +3049,14 @@ def _write_tension_micro_probe_artifacts(
     _ensure_dir(probe_dir)
     requested_source = str(config.get("source", "residualized") or "residualized").strip().lower()
     source_features = tension_features if tension_features is not None else cluster_features
+    state_tension_matrix = _feature_state_residualized_tension_matrix(feature_state, len(assignments))
     actual_source = (
         "residualized"
-        if requested_source == "residualized" and _has_residualized_tension_features(source_features, len(assignments))
+        if requested_source == "residualized"
+        and (
+            state_tension_matrix is not None
+            or _has_residualized_tension_features(source_features, len(assignments))
+        )
         else "raw_delta"
     )
     config = dict(config)
@@ -3018,6 +3066,7 @@ def _write_tension_micro_probe_artifacts(
         dataset,
         source=actual_source,
         cluster_features=source_features,
+        feature_state=feature_state,
     )
     view_mask = getattr(dataset, "view_mask", np.ones((len(assignments), 3), dtype=np.float32))
     view_mask = np.asarray(view_mask, dtype=np.float32)

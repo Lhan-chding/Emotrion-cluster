@@ -189,17 +189,20 @@ def main() -> None:
         device=str(device),
     )
     tension_config = _tension_config(summary, bundle_config, args)
-    feature_state = {"tension_micro_probe_config": tension_config}
+    search_feature_state = dict(fitted_state) if isinstance(fitted_state, dict) else {}
+    search_feature_state["tension_micro_probe_config"] = tension_config
 
     for split in eval_splits:
         dataset = dataset_by_split[split]
-        features_raw, _state = _build_features_for_split(
+        features_raw, split_state = _build_features_for_split(
             embeddings_by_split[split],
             fitted_state=fitted_state,
             config=merged_config,
             args=args,
             device=str(device),
         )
+        feature_state = dict(split_state) if isinstance(split_state, dict) else dict(search_feature_state)
+        feature_state["tension_micro_probe_config"] = tension_config
         assignments = _assignments_for_split(run_dir, split, len(dataset))
         split_dir = run_dir / split
         outputs = _write_tension_micro_probe_artifacts(
