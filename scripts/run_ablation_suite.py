@@ -198,6 +198,11 @@ class SuiteArgs(NamedTuple):
     min_cluster_size_abs: int
     metadata_policy: str
     require_both_va: bool
+    cluster_backend: str = "torch"
+    eval_backend: str = "torch"
+    silhouette_mode: str = "torch_chunked"
+    silhouette_sample_size: int = 50000
+    silhouette_chunk_size: int = 16384
 
 
 def _repo_script_path(script_name: str) -> str:
@@ -259,6 +264,16 @@ def build_rerun_command(args: SuiteArgs, config_name: str, run_out_dir: Path) ->
         str(int(args.stability_runs)),
         "--stability_sample_size",
         str(int(args.stability_sample_size)),
+        "--cluster_backend",
+        str(args.cluster_backend),
+        "--eval_backend",
+        str(args.eval_backend),
+        "--silhouette_mode",
+        str(args.silhouette_mode),
+        "--silhouette_sample_size",
+        str(int(args.silhouette_sample_size)),
+        "--silhouette_chunk_size",
+        str(int(args.silhouette_chunk_size)),
         "--metadata_policy",
         metadata_policy,
         "--require_both_va",
@@ -541,6 +556,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--stability_runs", type=int, default=80)
     parser.add_argument("--stability_sample_size", type=int, default=0)
+    parser.add_argument("--cluster_backend", default="torch", choices=["auto", "sklearn", "torch", "cuml"])
+    parser.add_argument("--eval_backend", default="torch", choices=["auto", "sklearn", "torch", "cuml"])
+    parser.add_argument(
+        "--silhouette_mode",
+        default="torch_chunked",
+        choices=["full", "sampled", "torch_chunked", "masked_torch_chunked"],
+    )
+    parser.add_argument("--silhouette_sample_size", type=int, default=50000)
+    parser.add_argument("--silhouette_chunk_size", type=int, default=16384)
     parser.add_argument("--total_k_min", "--k_min", dest="k_min", type=int, default=8)
     parser.add_argument("--total_k_max", "--k_max", dest="k_max", type=int, default=16)
     parser.add_argument("--macro_k_min", type=int, default=3)
@@ -586,6 +610,11 @@ def main() -> None:
         min_cluster_size_abs=int(ns.min_cluster_size_abs),
         metadata_policy=str(ns.metadata_policy),
         require_both_va=str(ns.require_both_va).lower() == "true",
+        cluster_backend=str(ns.cluster_backend),
+        eval_backend=str(ns.eval_backend),
+        silhouette_mode=str(ns.silhouette_mode),
+        silhouette_sample_size=int(ns.silhouette_sample_size),
+        silhouette_chunk_size=int(ns.silhouette_chunk_size),
     )
     for config in configs:
         run_out_dir = out_dir / config

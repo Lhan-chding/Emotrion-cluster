@@ -50,6 +50,11 @@ def test_ablation_suite_builds_report_only_final_command(tmp_path):
     assert command[command.index("--plot_va_source") + 1] == "cluster_consensus"
     assert command[command.index("--total_k_min") + 1] == "8"
     assert command[command.index("--total_k_max") + 1] == "16"
+    assert command[command.index("--cluster_backend") + 1] == "torch"
+    assert command[command.index("--eval_backend") + 1] == "torch"
+    assert command[command.index("--silhouette_mode") + 1] == "torch_chunked"
+    assert command[command.index("--silhouette_sample_size") + 1] == "50000"
+    assert command[command.index("--silhouette_chunk_size") + 1] == "16384"
     assert command[command.index("--affect_gate") + 1] == "true"
 
 
@@ -81,6 +86,7 @@ def test_ablation_suite_uses_diff_contamination_as_composite_baseline(tmp_path):
     assert command[command.index("--k_strategy") + 1] == "composite"
     assert command[command.index("--cluster_assignment_mode") + 1] == "joint"
     assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
+    assert command[command.index("--cluster_backend") + 1] == "torch"
 
 
 def test_ablation_suite_builds_latent_two_view_gmm_command(tmp_path):
@@ -117,6 +123,7 @@ def test_ablation_suite_builds_latent_two_view_gmm_command(tmp_path):
     assert command[command.index("--latent_max_iter") + 1] == "200"
     assert command[command.index("--plot_va_source") + 1] == "latent_consensus"
     assert command[command.index("--diagnostic_allow_failed_gates") + 1] == "true"
+    assert command[command.index("--eval_backend") + 1] == "torch"
 
 
 def test_ablation_suite_accepts_dataset_l_required_configs_and_builds_sensitivity_commands(tmp_path):
@@ -168,6 +175,7 @@ def test_ablation_suite_accepts_dataset_l_required_configs_and_builds_sensitivit
     assert residual[residual.index("--diff_cluster_weight") + 1] == "0.1"
     assert k6[k6.index("--total_k_min") + 1] == "6"
     assert k6[k6.index("--total_k_max") + 1] == "6"
+    assert fixed_alpha[fixed_alpha.index("--silhouette_sample_size") + 1] == "50000"
 
 
 def test_ablation_suite_builds_metadata_diagnostic_with_failed_gate_override(tmp_path):
