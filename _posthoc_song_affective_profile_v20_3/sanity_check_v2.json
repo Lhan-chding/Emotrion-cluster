@@ -30,9 +30,18 @@
   "selected_found_count": 31,
   "selected_missing_count": 0,
   "selected_main_text_eligible_count": 21,
+  "final_main_candidate_count": 1133,
+  "candidate_type_counts": {
+    "appendix_only": 893,
+    "boundary_case": 304,
+    "region_prototype": 405,
+    "region_representative": 529,
+    "tension_case": 199
+  },
   "negative_margin_count": 95,
   "descriptor_conflict_count": 95,
   "modality_consistent_with_directional_descriptor_count": 65,
+  "main_text_modality_consistent_directional_conflict_count": 0,
   "explicit_or_encoding_issue_count": 26,
   "min_region_typicality": 0.001474926253687281,
   "max_region_typicality": 1.0,

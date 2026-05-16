@@ -230,6 +230,40 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 **A085-69 English**: The song is assigned to Volatile Intensity and is highly prototypical, with region typicality 93.3% and assigned-region soft confidence 98.8%; it is clearly separated from the nearest alternative region, C0 Subdued Melancholy (region margin=2.890). The calibrated cross-modal tension / audio-lyric contrast profile is C2-T1 / lyric-intensified + high cross-modal tension, with tension strength percentile 65.8%; the lyrics darken the affect relative to the audio; the lyrics are more activating. The top descriptor profile is: aggressive, high arousal, negative-active, tense, volatile intensity.
 
 
+## Final Paper Candidate Table
+
+| role | rank | song_id | title | artist | cluster | candidate type | region typicality | confidence | tension strength | external evidence |
+|---|---:|---|---|---|---|---|---:|---:|---:|---|
+| region_candidate | 1 | MT0010468178 | My Sweet Prince | Placebo | Subdued Melancholy | region_prototype | 100.0% | 87.3% | 39.8% | not_checked |
+| region_candidate | 2 | MT0009769814 | Tortoise Regrets Hare | James Yorkston | Subdued Melancholy | region_prototype | 99.8% | 86.8% | 66.5% | not_checked |
+| region_candidate | 3 | MT0004485367 | Create Me | Neil Diamond | Subdued Melancholy | region_prototype | 99.7% | 87.3% | 35.8% | not_checked |
+| tension_case | 1 | MT0003504525 | Ain't No Santa | Trick Daddy | Subdued Melancholy | tension_case | 4.4% | 61.9% | 94.5% | not_checked |
+| tension_case | 2 | MT0002986568 | When Things Go Wrong | Robin Lane & The Chartbusters | Subdued Melancholy | tension_case | 98.0% | 86.4% | 92.7% | not_checked |
+| region_candidate | 1 | MT0030499533 | Lately | Tyrese | Gentle Warmth | tension_case | 100.0% | 93.1% | 88.8% | not_checked |
+| region_candidate | 2 | MT0006137300 | How Far Am I from Canaan? | Sam Cooke | Gentle Warmth | region_prototype | 99.9% | 91.5% | 43.1% | not_checked |
+| region_candidate | 3 | MT0003044417 | Just Because | Paul McCartney | Gentle Warmth | region_prototype | 99.7% | 91.4% | 63.1% | not_checked |
+| tension_case | 1 | MT0000638634 | Heaven Help | Lenny Kravitz | Gentle Warmth | tension_case | 62.1% | 86.6% | 94.1% | not_checked |
+| tension_case | 2 | MT0028335228 | Love of My Life | Jim Brickman | Gentle Warmth | tension_case | 43.5% | 64.0% | 93.8% | not_checked |
+| region_candidate | 1 | MT0001738256 | Price You Pay | Agnostic Front | Volatile Intensity | tension_case | 100.0% | 98.6% | 89.4% | not_checked |
+| region_candidate | 2 | MT0030184605 | Give Me It | The Cure | Volatile Intensity | region_prototype | 99.3% | 98.7% | 57.1% | not_checked |
+| region_candidate | 3 | A055 | Born In The U.S.A. | Bruce Springsteen | Volatile Intensity | region_prototype | 98.7% | 97.6% | 27.2% | not_checked |
+| tension_case | 1 | MT0010857270 | Reaganomics | D.R.I. | Volatile Intensity | tension_case | 1.1% | 100.0% | 92.6% | not_checked |
+| tension_case | 2 | MT0030435905 | My Face Would Crack | Alec Empire | Volatile Intensity | tension_case | 55.6% | 81.8% | 91.3% | not_checked |
+| region_candidate | 1 | MT0005674518 | Ain't That a Shame | John Lennon | Playful Vitality | region_prototype | 100.0% | 98.3% | 98.8% | not_checked |
+| region_candidate | 2 | MT0001169715 | Red Blue Jeans and a Pony Tail | Gene Vincent | Playful Vitality | tension_case | 99.8% | 99.1% | 77.5% | not_checked |
+| region_candidate | 3 | MT0033512773 | Do You Believe in Love | Huey Lewis & the News | Playful Vitality | region_prototype | 99.5% | 98.3% | 20.4% | not_checked |
+| tension_case | 1 | MT0000948111 | Hot Dog | Elvis Presley | Playful Vitality | tension_case | 20.9% | 100.0% | 92.0% | not_checked |
+| tension_case | 2 | MT0001217651 | Choppa Style | Choppa | Playful Vitality | tension_case | 4.7% | 100.0% | 91.8% | not_checked |
+
+### Full-table boundary coverage
+
+| song_id | title | artist | cluster | region role | tension | main text | region typicality | tension strength | top descriptors |
+|---|---|---|---|---|---|---|---:|---:|---|
+| MT0027002641 | All We Got | Michael McDonald | Playful Vitality | boundary | C3-T0 / modality-consistent | no | 29.1% | 8.0% | boundary between assigned region and nearest alternative, affective concordance, audio-lyric agreement, assigned region: Playful Vitality, nearest alternative: C1 Gentle Warmth |
+| MT0013612461 | The Christmas Song | David Banner | Gentle Warmth | boundary | C1-T1 / lyric-brightened + lyric-intensified | no | 2.8% | 91.9% | boundary between assigned region and nearest alternative, lyric valence uplift, lyrics brighten the affect, nearest alternative: C3 Playful Vitality, assigned region: Gentle Warmth |
+| MT0026973618 | I'm Satisfied | Mississippi John Hurt | Subdued Melancholy | boundary | C0-T0 / modality-consistent | no | 1.6% | 37.2% | boundary between assigned region and nearest alternative, nearest alternative: C1 Gentle Warmth, affective concordance, audio-lyric agreement, assigned region: Subdued Melancholy |
+| MT0012900592 | This Is Radio Clash | The Clash | Volatile Intensity | boundary | C2-T2 / lyric-brightened + high cross-modal tension | no | 1.8% | 75.1% | boundary between assigned region and nearest alternative, lyric arousal softening, lyrics soften the affect, nearest alternative: C3 Playful Vitality, assigned region: Volatile Intensity |
+
 ## Cluster Representatives
 
 ### C3 Playful Vitality

@@ -63,6 +63,14 @@ DIRECTIONAL_TENSION_DESCRIPTORS = {
     for key in DIRECTIONAL_TENSION_KEYS
     for descriptor in TENSION_DESCRIPTORS[key]
 }
+FINAL_CANDIDATE_TYPES = {"region_prototype", "region_representative", "tension_case"}
+C2_SUPPLEMENT_TITLE_HINTS = {
+    "born in the u.s.a.",
+    "price you pay",
+    "give me it",
+    "maimed and slaughtered",
+    "room 13",
+}
 EXPLICIT_TITLE_PATTERN = re.compile(
     r"\b(fuck(?:ing|er|ed)?|shit|bitch|cunt|dick|pussy|asshole|bastard|motherfucker|whore|slut)\b",
     re.IGNORECASE,
@@ -605,6 +613,14 @@ def _selected_role(row: pd.Series) -> str:
     return "appendix_only"
 
 
+def _is_tension_case(row: pd.Series) -> bool:
+    return (
+        float(row["tension_strength_percentile"]) >= 0.75
+        and float(row["tension_typicality"]) >= 0.50
+        and float(row["region_margin"]) > 0.0
+    )
+
+
 def _add_descriptor_weight(weights: Dict[str, float], descriptors: Iterable[str], weight: float) -> None:
     if not math.isfinite(weight) or weight <= 0.0:
         return
@@ -919,7 +935,10 @@ def _write_selected_outputs(
             "cluster_name": row_dict.get("cluster_name", ""),
             "region_role": row_dict.get("region_role", ""),
             "selected_role": row_dict.get("selected_role", ""),
+            "candidate_type": row_dict.get("candidate_type", ""),
             "main_text_eligible": bool(row_dict.get("main_text_eligible", False)),
+            "final_main_candidate": bool(row_dict.get("final_main_candidate", False)),
+            "external_evidence_status": row_dict.get("external_evidence_status", "not_checked"),
             "tension_label": row_dict.get("tension_label", ""),
             "tension_name": row_dict.get("tension_name", ""),
             "descriptors": json.loads(row_dict["top_descriptors_json"]),
@@ -980,10 +999,165 @@ def _selected_role_rows(selected_profile: pd.DataFrame, roles: Sequence[str]) ->
 
 
 def _main_text_safe_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    return frame[frame["main_text_eligible"].astype(bool)]
+    candidate_column = "final_main_candidate" if "final_main_candidate" in frame.columns else "main_text_eligible"
+    return frame[frame[candidate_column].astype(bool)]
 
 
-def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir: Path, output_suffix: str) -> None:
+def _rank_region_candidates(rows: pd.DataFrame) -> pd.DataFrame:
+    ranked = rows.copy()
+    ranked["_review_hint_priority"] = [
+        1
+        if _cluster_int(row["cluster_id"]) == 2 and str(row["title"]).strip().lower() in C2_SUPPLEMENT_TITLE_HINTS
+        else 0
+        for _, row in ranked.iterrows()
+    ]
+    return ranked.sort_values(
+        ["_review_hint_priority", "region_typicality", "region_confidence", "tension_strength_percentile", "song_id"],
+        ascending=[False, False, False, False, True],
+    )
+
+
+def _rank_tension_candidates(rows: pd.DataFrame) -> pd.DataFrame:
+    return rows.sort_values(
+        ["tension_strength_percentile", "tension_typicality", "region_confidence", "song_id"],
+        ascending=[False, False, False, True],
+    )
+
+
+def _final_candidate_columns(frame: pd.DataFrame) -> List[str]:
+    preferred = [
+        "final_table_role",
+        "final_table_rank",
+        "song_id",
+        "title",
+        "artist",
+        "cluster_id",
+        "cluster_name",
+        "candidate_type",
+        "region_role",
+        "final_main_candidate",
+        "main_text_eligible",
+        "external_evidence_status",
+        "region_typicality",
+        "region_confidence",
+        "region_margin",
+        "tension_label",
+        "tension_name",
+        "tension_typicality",
+        "tension_strength_percentile",
+        "top_descriptor_raw_score",
+        "top_descriptor_display_weight",
+        "top_descriptors_json",
+        "english_interpretation",
+        "chinese_interpretation",
+    ]
+    return [column for column in preferred if column in frame.columns]
+
+
+def _build_final_paper_candidate_table(profile: pd.DataFrame, clusters: Sequence[Any]) -> pd.DataFrame:
+    rows: List[pd.Series] = []
+    seen_song_ids: set[str] = set()
+    for cluster in clusters:
+        group = profile[profile["cluster_id"].eq(cluster)]
+        final_group = _main_text_safe_rows(group)
+
+        region_candidates = final_group[final_group["region_role"].isin(["prototype", "representative"])]
+        for rank, (_, row) in enumerate(_rank_region_candidates(region_candidates).head(3).iterrows(), start=1):
+            row_copy = row.copy()
+            row_copy["final_table_role"] = "region_candidate"
+            row_copy["final_table_rank"] = rank
+            rows.append(row_copy)
+            seen_song_ids.add(str(row["song_id"]))
+
+        tension_candidates = final_group[
+            final_group["candidate_type"].eq("tension_case")
+            & ~final_group["song_id"].astype(str).isin(seen_song_ids)
+        ]
+        for rank, (_, row) in enumerate(_rank_tension_candidates(tension_candidates).head(2).iterrows(), start=1):
+            row_copy = row.copy()
+            row_copy["final_table_role"] = "tension_case"
+            row_copy["final_table_rank"] = rank
+            rows.append(row_copy)
+            seen_song_ids.add(str(row["song_id"]))
+
+    if not rows:
+        return pd.DataFrame(columns=_final_candidate_columns(profile))
+    frame = pd.DataFrame(rows)
+    return frame[_final_candidate_columns(frame)]
+
+
+def _write_final_paper_candidate_table(
+    profile: pd.DataFrame,
+    clusters: Sequence[Any],
+    out_dir: Path,
+    output_suffix: str,
+) -> pd.DataFrame:
+    final_candidates = _build_final_paper_candidate_table(profile, clusters)
+    final_candidates.to_csv(
+        _output_file(out_dir, "final_paper_candidate_table", output_suffix, "csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
+    return final_candidates
+
+
+def _boundary_case_coverage_rows(profile: pd.DataFrame, clusters: Sequence[Any]) -> pd.DataFrame:
+    rows: List[pd.Series] = []
+    for cluster in clusters:
+        group = profile[profile["cluster_id"].eq(cluster)]
+        boundary_rows = group[group["candidate_type"].eq("boundary_case")]
+        ranked = boundary_rows.sort_values(
+            ["region_margin", "region_confidence", "song_id"],
+            ascending=[True, False, True],
+        )
+        if not ranked.empty:
+            rows.append(ranked.iloc[0].copy())
+    if not rows:
+        return profile.iloc[0:0].copy()
+    return pd.DataFrame(rows)
+
+
+def _append_final_candidate_table(lines: List[str], final_candidates: pd.DataFrame) -> None:
+    lines.extend(["", "## Final Paper Candidate Table", ""])
+    if final_candidates.empty:
+        lines.append("No final main-text candidates passed the strict gates.")
+        return
+    lines.append(
+        "| role | rank | song_id | title | artist | cluster | candidate type | region typicality | confidence | tension strength | external evidence |"
+    )
+    lines.append("|---|---:|---|---|---|---|---|---:|---:|---:|---|")
+    for _, row in final_candidates.iterrows():
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_escape(row["final_table_role"]),
+                    str(int(row["final_table_rank"])),
+                    _markdown_escape(row["song_id"]),
+                    _markdown_escape(row["title"]),
+                    _markdown_escape(row["artist"]),
+                    _markdown_escape(row["cluster_name"]),
+                    _markdown_escape(row["candidate_type"]),
+                    _format_percent(float(row["region_typicality"])),
+                    _format_percent(float(row["region_confidence"])),
+                    _format_percent(float(row["tension_strength_percentile"])),
+                    _markdown_escape(row["external_evidence_status"]),
+                ]
+            )
+            + " |"
+        )
+
+
+def _make_report(
+    profile: pd.DataFrame,
+    selected_profile: pd.DataFrame,
+    out_dir: Path,
+    output_suffix: str,
+    final_candidates: Optional[pd.DataFrame] = None,
+) -> None:
+    clusters = list(profile["cluster_id"].drop_duplicates().tolist())
+    if final_candidates is None:
+        final_candidates = _build_final_paper_candidate_table(profile, clusters)
     lines: List[str] = [
         "# Song Affective Profile Report",
         "",
@@ -1023,6 +1197,11 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
         for _, row in selected_profile.iterrows():
             lines.extend(["", f"**{_markdown_escape(row['song_id'])} Chinese**: {row['chinese_interpretation']}", ""])
             lines.extend([f"**{_markdown_escape(row['song_id'])} English**: {row['english_interpretation']}", ""])
+
+    _append_final_candidate_table(lines, final_candidates)
+
+    boundary_rows = _boundary_case_coverage_rows(profile, clusters)
+    _append_song_table(lines, "Full-table boundary coverage", boundary_rows)
 
     lines.extend(["", "## Cluster Representatives", ""])
     for cluster, group in profile.groupby("cluster_id", sort=False):
@@ -1146,6 +1325,10 @@ def _ordered_output_columns(profile: pd.DataFrame, clusters: Sequence[Any]) -> L
         "explicit_title_flag",
         "main_text_eligible",
         "selected_role",
+        "candidate_type",
+        "final_main_candidate",
+        "external_evidence_status",
+        "modality_consistent_directional_conflict_flag",
         "balanced_valence",
         "balanced_arousal",
         "region_typicality",
@@ -1212,6 +1395,36 @@ def _has_directional_descriptor(raw: str) -> bool:
     return bool(descriptors.intersection(DIRECTIONAL_TENSION_DESCRIPTORS))
 
 
+def _has_modality_consistent_directional_conflict(row: pd.Series) -> bool:
+    return _is_modality_consistent(row) and _has_directional_descriptor(str(row["top_descriptors_json"]))
+
+
+def _add_final_candidate_flags(profile: pd.DataFrame) -> pd.DataFrame:
+    result = profile.copy()
+    modality_conflict = [
+        _has_modality_consistent_directional_conflict(row)
+        for _, row in result.iterrows()
+    ]
+    result["modality_consistent_directional_conflict_flag"] = modality_conflict
+    result["candidate_type"] = result["selected_role"].astype(str)
+
+    appendix_mask = result["encoding_issue_flag"].astype(bool) | result["explicit_title_flag"].astype(bool)
+    boundary_mask = result["boundary_flag"].astype(bool) | result["descriptor_conflict_flag"].astype(bool)
+    result.loc[appendix_mask, "candidate_type"] = "appendix_only"
+    result.loc[boundary_mask & ~appendix_mask, "candidate_type"] = "boundary_case"
+    result.loc[result["modality_consistent_directional_conflict_flag"].astype(bool), "candidate_type"] = "appendix_only"
+    result["selected_role"] = result["candidate_type"]
+
+    main_text_mask = result["candidate_type"].isin(FINAL_CANDIDATE_TYPES)
+    main_text_mask &= ~result["modality_consistent_directional_conflict_flag"].astype(bool)
+    main_text_mask &= ~appendix_mask
+    main_text_mask &= ~boundary_mask
+    result["main_text_eligible"] = main_text_mask
+    result["final_main_candidate"] = main_text_mask
+    result["external_evidence_status"] = "not_checked"
+    return result
+
+
 def _sanity_check(
     profile: pd.DataFrame,
     *,
@@ -1226,6 +1439,13 @@ def _sanity_check(
         _is_modality_consistent(row) and _has_directional_descriptor(str(row["top_descriptors_json"]))
         for _, row in profile.iterrows()
     ]
+    modality_conflict = pd.Series(modality_consistent, index=profile.index)
+    main_text_modality_conflict = profile["main_text_eligible"].astype(bool) & modality_conflict
+    final_candidates = (
+        profile["final_main_candidate"].astype(bool)
+        if "final_main_candidate" in profile.columns
+        else profile["main_text_eligible"].astype(bool)
+    )
     return {
         "random_seed": RANDOM_SEED,
         "source_files": dict(source_files),
@@ -1237,9 +1457,15 @@ def _sanity_check(
         "selected_found_count": int(selected_found_count),
         "selected_missing_count": int(selected_missing_count),
         "selected_main_text_eligible_count": int(selected_profile["main_text_eligible"].sum()),
+        "final_main_candidate_count": int(final_candidates.sum()),
+        "candidate_type_counts": {
+            str(key): int(value)
+            for key, value in profile["candidate_type"].value_counts().sort_index().items()
+        } if "candidate_type" in profile.columns else {},
         "negative_margin_count": int((profile["region_margin"].astype(float) < 0.0).sum()),
         "descriptor_conflict_count": int(profile["descriptor_conflict_flag"].sum()),
         "modality_consistent_with_directional_descriptor_count": int(sum(modality_consistent)),
+        "main_text_modality_consistent_directional_conflict_count": int(main_text_modality_conflict.sum()),
         "explicit_or_encoding_issue_count": int((profile["explicit_title_flag"] | profile["encoding_issue_flag"]).sum()),
         "min_region_typicality": float(profile["region_typicality"].min()),
         "max_region_typicality": float(profile["region_typicality"].max()),
@@ -1299,6 +1525,7 @@ def run_posthoc_profile(
         float(descriptors[0]["display_descriptor_weight"]) if descriptors else 0.0
         for descriptors in descriptor_profiles
     ]
+    profile = _add_final_candidate_flags(profile)
     interpretations = [_make_interpretations(row) for _, row in profile.iterrows()]
     profile["chinese_interpretation"] = [item[0] for item in interpretations]
     profile["english_interpretation"] = [item[1] for item in interpretations]
@@ -1310,6 +1537,7 @@ def run_posthoc_profile(
         index=False,
         encoding="utf-8-sig",
     )
+    final_candidates = _write_final_paper_candidate_table(profile, clusters, output_path, output_suffix)
 
     selected_profile, selected_found_count, selected_missing_count = _write_selected_outputs(
         profile,
@@ -1317,7 +1545,7 @@ def run_posthoc_profile(
         output_path,
         output_suffix,
     )
-    _make_report(profile, selected_profile, output_path, output_suffix)
+    _make_report(profile, selected_profile, output_path, output_suffix, final_candidates)
     if make_figures:
         _write_figures(selected_profile, output_path)
 

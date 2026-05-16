@@ -50,6 +50,9 @@ def _report_row(
         "explicit_title_flag": explicit_title_flag,
         "main_text_eligible": main_text_eligible,
         "selected_role": selected_role,
+        "candidate_type": selected_role,
+        "final_main_candidate": main_text_eligible,
+        "external_evidence_status": "not_checked",
         "region_typicality": region_typicality,
         "region_confidence": region_confidence,
         "region_margin": region_margin,
@@ -209,6 +212,7 @@ def test_run_posthoc_profile_writes_all_selected_report_and_sanity_check(tmp_pat
     all_profile = pd.read_csv(out_dir / "song_affective_profile_all_v2.csv")
     selected_profile = pd.read_csv(out_dir / "song_affective_profile_selected_v2.csv")
     missing_selected = pd.read_csv(out_dir / "missing_selected_songs_v2.csv")
+    final_candidates = pd.read_csv(out_dir / "final_paper_candidate_table_v2.csv")
     sanity = json.loads((out_dir / "sanity_check_v2.json").read_text(encoding="utf-8"))
 
     assert summary["total_songs"] == 8
@@ -234,11 +238,20 @@ def test_run_posthoc_profile_writes_all_selected_report_and_sanity_check(tmp_pat
     assert "calibrated cross-modal tension" in selected_profile.iloc[0]["english_interpretation"]
     assert "Subdued Melancholy" in selected_profile.iloc[0]["chinese_interpretation"]
 
-    assert {"region_role", "boundary_flag", "descriptor_conflict_flag", "main_text_eligible"}.issubset(
-        all_profile.columns
-    )
+    assert {
+        "region_role",
+        "boundary_flag",
+        "descriptor_conflict_flag",
+        "main_text_eligible",
+        "candidate_type",
+        "final_main_candidate",
+        "external_evidence_status",
+    }.issubset(all_profile.columns)
+    assert final_candidates["final_main_candidate"].astype(bool).all()
+    assert final_candidates["candidate_type"].isin(["region_prototype", "region_representative", "tension_case"]).all()
     assert (out_dir / "song_affective_profile_report_v2.md").exists()
     assert (out_dir / "descriptor_weights_selected_v2.json").exists()
+    assert (out_dir / "final_paper_candidate_table_v2.csv").exists()
 
 
 def test_posthoc_profile_applies_review_gates_and_report_sections(tmp_path):
@@ -255,6 +268,7 @@ def test_posthoc_profile_applies_review_gates_and_report_sections(tmp_path):
         ("P1B", 1, 0.88, 0.88),
         ("P1C", 1, 0.86, 0.86),
         ("C1", 1, 0.91, 0.91),
+        ("MC_DIR", 1, 0.875, 0.875),
         ("X1", 1, 0.89, 0.89),
     ]
     _write_csv(
@@ -345,6 +359,15 @@ def test_posthoc_profile_applies_review_gates_and_report_sections(tmp_path):
                 "tension_norm": 0.04,
             },
             {
+                "identifier": "MC_DIR",
+                "cluster_id": 1,
+                "tension_label": "C1-T0",
+                "tension_subtype_label": "modality-consistent",
+                "tension_dv": 0.70,
+                "tension_da": 0.80,
+                "tension_norm": 1.20,
+            },
+            {
                 "identifier": "X1",
                 "cluster_id": 1,
                 "tension_label": "C1-T1",
@@ -382,6 +405,7 @@ def test_posthoc_profile_applies_review_gates_and_report_sections(tmp_path):
     out_dir = tmp_path / "out"
     all_profile = pd.read_csv(out_dir / "song_affective_profile_all_v2.csv").set_index("song_id")
     selected_profile = pd.read_csv(out_dir / "song_affective_profile_selected_v2.csv").set_index("song_id")
+    final_candidates = pd.read_csv(out_dir / "final_paper_candidate_table_v2.csv")
     report = (out_dir / "song_affective_profile_report_v2.md").read_text(encoding="utf-8-sig")
     sanity = json.loads((out_dir / "sanity_check_v2.json").read_text(encoding="utf-8"))
 
@@ -397,12 +421,24 @@ def test_posthoc_profile_applies_review_gates_and_report_sections(tmp_path):
     assert forbidden.isdisjoint({item["descriptor"] for item in consistent_descriptors[:5]})
     assert "audio-lyric agreement" in {item["descriptor"] for item in consistent_descriptors}
 
+    modal_directional = json.loads(all_profile.loc["MC_DIR", "top_descriptors_json"])
+    assert any(item["descriptor"] == "lyric arousal intensification" for item in modal_directional)
+    assert bool(all_profile.loc["MC_DIR", "modality_consistent_directional_conflict_flag"])
+    assert not bool(all_profile.loc["MC_DIR", "main_text_eligible"])
+    assert not bool(all_profile.loc["MC_DIR", "final_main_candidate"])
+
     assert not bool(selected_profile.loc["X1", "main_text_eligible"])
     assert bool(selected_profile.loc["X1", "explicit_title_flag"])
+    assert "MC_DIR" not in final_candidates["song_id"].astype(str).tolist()
+    assert {"candidate_type", "final_main_candidate", "external_evidence_status"}.issubset(final_candidates.columns)
+    assert final_candidates["external_evidence_status"].eq("not_checked").all()
     assert summary["negative_margin_count"] >= 1
     assert sanity["explicit_or_encoding_issue_count"] >= 1
+    assert sanity["modality_consistent_with_directional_descriptor_count"] >= 1
+    assert sanity["main_text_modality_consistent_directional_conflict_count"] == 0
     assert "Region prototype songs" in report
     assert "Tension case-study songs" in report
     assert "Boundary / ambiguity cases" in report
     assert "Appendix-only candidates" in report
+    assert "Final Paper Candidate Table" in report
     assert "For each candidate region k" in report
