@@ -1,0 +1,45 @@
+{
+  "random_seed": 42,
+  "source_files": {
+    "cluster_assignments": "C:\\Users\\LHan1\\Downloads\\v20_3_acl_main\\all\\cluster_assignments.csv",
+    "balanced_va": "C:\\Users\\LHan1\\Downloads\\v20_3_acl_main\\all\\cluster_assignments.csv",
+    "tension_assignments": "C:\\Users\\LHan1\\Downloads\\v20_3_acl_main\\all\\tension_subtype_assignments.csv",
+    "tension_values": "C:\\Users\\LHan1\\Downloads\\v20_3_acl_main\\all\\tension_subtype_assignments.csv",
+    "metadata": "C:\\Users\\LHan1\\Downloads\\unimodal_va.csv"
+  },
+  "total_songs": 2330,
+  "number_of_clusters": 4,
+  "cluster_sizes": {
+    "0": 615,
+    "1": 678,
+    "2": 611,
+    "3": 426
+  },
+  "subtype_sizes": {
+    "C0-T0": 343,
+    "C0-T1": 272,
+    "C1-T0": 430,
+    "C1-T1": 248,
+    "C2-T0": 340,
+    "C2-T1": 46,
+    "C2-T2": 225,
+    "C3-T0": 253,
+    "C3-T1": 173
+  },
+  "missing_metadata_count": 0,
+  "selected_found_count": 31,
+  "selected_missing_count": 0,
+  "selected_main_text_eligible_count": 21,
+  "negative_margin_count": 95,
+  "descriptor_conflict_count": 95,
+  "modality_consistent_with_directional_descriptor_count": 65,
+  "explicit_or_encoding_issue_count": 26,
+  "min_region_typicality": 0.001474926253687281,
+  "max_region_typicality": 1.0,
+  "min_tension_typicality": 0.0023255813953488857,
+  "max_tension_typicality": 1.0,
+  "min_descriptor_weight": 0.0,
+  "max_descriptor_weight": 1.0,
+  "min_raw_descriptor_score": 0.0,
+  "max_raw_descriptor_score": 1.651576
+}

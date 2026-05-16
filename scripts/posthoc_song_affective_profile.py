@@ -57,6 +57,17 @@ TENSION_DESCRIPTORS = {
     "high_tension": ["high cross-modal tension", "audio-lyric contrast"],
 }
 
+DIRECTIONAL_TENSION_KEYS = {"uplift", "tempering", "intensification", "softening", "high_tension"}
+DIRECTIONAL_TENSION_DESCRIPTORS = {
+    descriptor
+    for key in DIRECTIONAL_TENSION_KEYS
+    for descriptor in TENSION_DESCRIPTORS[key]
+}
+EXPLICIT_TITLE_PATTERN = re.compile(
+    r"\b(fuck(?:ing|er|ed)?|shit|bitch|cunt|dick|pussy|asshole|bastard|motherfucker|whore|slut)\b",
+    re.IGNORECASE,
+)
+
 
 def _normalize_column_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
@@ -67,6 +78,11 @@ def _read_csv(path: Path, **kwargs: Any) -> pd.DataFrame:
         return pd.read_csv(path, encoding="utf-8-sig", low_memory=False, **kwargs)
     except UnicodeDecodeError:
         return pd.read_csv(path, low_memory=False, **kwargs)
+
+
+def _output_file(out_dir: Path, stem: str, output_suffix: str, extension: str) -> Path:
+    suffix = output_suffix if output_suffix.startswith("_") or output_suffix == "" else f"_{output_suffix}"
+    return out_dir / f"{stem}{suffix}.{extension}"
 
 
 def _find_column(frame: pd.DataFrame, candidates: Sequence[str]) -> Optional[str]:
@@ -526,6 +542,69 @@ def _compute_tension_profiles(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _region_role(row: pd.Series) -> str:
+    margin = float(row["region_margin"])
+    confidence = float(row["region_confidence"])
+    typicality = float(row["region_typicality"])
+    if margin < 0.0 or confidence < 0.60:
+        return "boundary"
+    if typicality >= 0.80 and confidence >= 0.75 and margin >= 0.50:
+        return "prototype"
+    if typicality >= 0.50 and confidence >= 0.70 and margin >= 0.30:
+        return "representative"
+    return "peripheral"
+
+
+def _has_encoding_issue(*values: Any) -> bool:
+    text = " ".join(str(value) for value in values if value is not None)
+    return "\ufffd" in text or "锟" in text
+
+
+def _has_explicit_title(*values: Any) -> bool:
+    text = " ".join(str(value) for value in values if value is not None)
+    return EXPLICIT_TITLE_PATTERN.search(text) is not None
+
+
+def _add_review_flags(profile: pd.DataFrame) -> pd.DataFrame:
+    result = profile.copy()
+    result["region_role"] = [_region_role(row) for _, row in result.iterrows()]
+    result["boundary_flag"] = result["region_role"].eq("boundary")
+    result["descriptor_conflict_flag"] = result["nearest_alt_cluster_weight"].astype(float).gt(
+        result["region_confidence"].astype(float)
+    )
+    result["encoding_issue_flag"] = [
+        _has_encoding_issue(row["title"], row["artist"])
+        for _, row in result.iterrows()
+    ]
+    result["explicit_title_flag"] = [
+        _has_explicit_title(row["title"], row["artist"])
+        for _, row in result.iterrows()
+    ]
+    result["selected_role"] = [_selected_role(row) for _, row in result.iterrows()]
+    result["main_text_eligible"] = result["selected_role"].isin(
+        ["region_prototype", "region_representative", "tension_case"]
+    )
+    return result
+
+
+def _selected_role(row: pd.Series) -> str:
+    if bool(row["encoding_issue_flag"]) or bool(row["explicit_title_flag"]):
+        return "appendix_only"
+    if bool(row["boundary_flag"]) or bool(row["descriptor_conflict_flag"]):
+        return "boundary_case"
+    if (
+        float(row["tension_strength_percentile"]) >= 0.75
+        and float(row["tension_typicality"]) >= 0.50
+        and float(row["region_margin"]) > 0.0
+    ):
+        return "tension_case"
+    if row["region_role"] == "prototype":
+        return "region_prototype"
+    if row["region_role"] == "representative":
+        return "region_representative"
+    return "appendix_only"
+
+
 def _add_descriptor_weight(weights: Dict[str, float], descriptors: Iterable[str], weight: float) -> None:
     if not math.isfinite(weight) or weight <= 0.0:
         return
@@ -533,8 +612,32 @@ def _add_descriptor_weight(weights: Dict[str, float], descriptors: Iterable[str]
         weights[descriptor] = max(float(weights.get(descriptor, 0.0)), float(weight))
 
 
-def _tension_descriptor_keys(tension_label: str, tension_name: str, strength_percentile: float) -> List[str]:
-    text = f"{tension_label} {tension_name}".lower()
+def _is_modality_consistent(row: pd.Series) -> bool:
+    text = f"{row['tension_label']} {row['tension_name']}".lower()
+    return any(token in text for token in ("consistent", "concordant", "agreement", "aligned"))
+
+
+def _directional_tension_allowed(row: pd.Series) -> bool:
+    strength = float(row["tension_strength_percentile"])
+    if strength < 0.35:
+        return False
+    if not _is_modality_consistent(row):
+        return True
+    max_abs_delta_percentile = max(
+        float(row["abs_dv_percentile_within_region"]),
+        float(row["abs_da_percentile_within_region"]),
+    )
+    return strength >= 0.60 and max_abs_delta_percentile >= 0.75
+
+
+def _tension_descriptor_keys(row: pd.Series) -> List[str]:
+    text = f"{row['tension_label']} {row['tension_name']}".lower()
+    strength_percentile = float(row["tension_strength_percentile"])
+    if _is_modality_consistent(row) and not _directional_tension_allowed(row):
+        return ["concordant"]
+    if strength_percentile < 0.35:
+        return ["concordant"]
+
     keys: List[str] = []
     if any(token in text for token in ("consistent", "concordant", "agreement", "aligned")):
         keys.append("concordant")
@@ -557,79 +660,149 @@ def _descriptor_profile(row: pd.Series, clusters: Sequence[Any]) -> List[Dict[st
     assigned_cluster_number = _cluster_int(assigned_cluster)
     assigned_token = _cluster_token(assigned_cluster)
     assigned_region_weight = float(row.get(f"w_region_{assigned_token}", 0.0))
-    _add_descriptor_weight(
-        descriptor_weights,
-        REGION_DESCRIPTORS.get(int(assigned_cluster_number), [_cluster_name(assigned_cluster)])
-        if assigned_cluster_number is not None
-        else [_cluster_name(assigned_cluster)],
-        assigned_region_weight * float(row["region_typicality"]),
-    )
+    if bool(row.get("boundary_flag", False)):
+        _add_descriptor_weight(
+            descriptor_weights,
+            ["boundary between assigned region and nearest alternative"],
+            1.0 + max(assigned_region_weight, float(row["nearest_alt_cluster_weight"]), 0.01),
+        )
+        _add_descriptor_weight(
+            descriptor_weights,
+            [f"assigned region: {_cluster_name(assigned_cluster)}"],
+            assigned_region_weight * 0.50,
+        )
+        _add_descriptor_weight(
+            descriptor_weights,
+            [f"nearest alternative: {row['nearest_alt_cluster']}"],
+            float(row["nearest_alt_cluster_weight"]) * 0.50,
+        )
+    else:
+        _add_descriptor_weight(
+            descriptor_weights,
+            REGION_DESCRIPTORS.get(int(assigned_cluster_number), [_cluster_name(assigned_cluster)])
+            if assigned_cluster_number is not None
+            else [_cluster_name(assigned_cluster)],
+            assigned_region_weight * max(0.25, float(row["region_typicality"])),
+        )
 
-    for cluster in clusters:
-        if cluster == assigned_cluster:
-            continue
-        token = _cluster_token(cluster)
-        weight = float(row.get(f"w_region_{token}", 0.0))
-        if weight >= 0.15:
-            cluster_number = _cluster_int(cluster)
-            descriptors = (
-                REGION_DESCRIPTORS.get(int(cluster_number), [_cluster_name(cluster)])
-                if cluster_number is not None
-                else [_cluster_name(cluster)]
-            )
-            _add_descriptor_weight(descriptor_weights, descriptors, weight * 0.50)
+        for cluster in clusters:
+            if cluster == assigned_cluster:
+                continue
+            token = _cluster_token(cluster)
+            weight = float(row.get(f"w_region_{token}", 0.0))
+            if weight >= 0.15:
+                cluster_number = _cluster_int(cluster)
+                descriptors = (
+                    REGION_DESCRIPTORS.get(int(cluster_number), [_cluster_name(cluster)])
+                    if cluster_number is not None
+                    else [_cluster_name(cluster)]
+                )
+                capped_weight = min(weight * 0.25, max(assigned_region_weight * 0.75, 0.01))
+                _add_descriptor_weight(descriptor_weights, descriptors, capped_weight)
 
     tension_base_weight = (
         float(row["w_tension_assigned"])
         * max(0.35, float(row["tension_strength_percentile"]))
         * float(row["tension_typicality"])
     )
-    for key in _tension_descriptor_keys(str(row["tension_label"]), str(row["tension_name"]), float(row["tension_strength_percentile"])):
+    for key in _tension_descriptor_keys(row):
         _add_descriptor_weight(descriptor_weights, TENSION_DESCRIPTORS[key], tension_base_weight)
 
     strength_weight = max(0.35, float(row["tension_strength_percentile"])) * max(0.50, float(row["tension_typicality"]))
-    if float(row["tension_dv"]) > EPS:
-        _add_descriptor_weight(
-            descriptor_weights,
-            TENSION_DESCRIPTORS["uplift"],
-            strength_weight * float(row["dv_percentile_within_region"]),
-        )
-    elif float(row["tension_dv"]) < -EPS:
-        _add_descriptor_weight(
-            descriptor_weights,
-            TENSION_DESCRIPTORS["tempering"],
-            strength_weight * float(row["abs_dv_percentile_within_region"]),
-        )
+    if _directional_tension_allowed(row):
+        if float(row["tension_dv"]) > EPS:
+            _add_descriptor_weight(
+                descriptor_weights,
+                TENSION_DESCRIPTORS["uplift"],
+                strength_weight * float(row["dv_percentile_within_region"]),
+            )
+        elif float(row["tension_dv"]) < -EPS:
+            _add_descriptor_weight(
+                descriptor_weights,
+                TENSION_DESCRIPTORS["tempering"],
+                strength_weight * float(row["abs_dv_percentile_within_region"]),
+            )
 
-    if float(row["tension_da"]) > EPS:
-        _add_descriptor_weight(
-            descriptor_weights,
-            TENSION_DESCRIPTORS["intensification"],
-            strength_weight * float(row["da_percentile_within_region"]),
-        )
-    elif float(row["tension_da"]) < -EPS:
-        _add_descriptor_weight(
-            descriptor_weights,
-            TENSION_DESCRIPTORS["softening"],
-            strength_weight * float(row["abs_da_percentile_within_region"]),
-        )
+        if float(row["tension_da"]) > EPS:
+            _add_descriptor_weight(
+                descriptor_weights,
+                TENSION_DESCRIPTORS["intensification"],
+                strength_weight * float(row["da_percentile_within_region"]),
+            )
+        elif float(row["tension_da"]) < -EPS:
+            _add_descriptor_weight(
+                descriptor_weights,
+                TENSION_DESCRIPTORS["softening"],
+                strength_weight * float(row["abs_da_percentile_within_region"]),
+            )
 
     if not descriptor_weights:
         return []
     max_weight = max(descriptor_weights.values())
-    normalized = [
-        {"descriptor": descriptor, "weight": round(float(weight / max_weight), 6)}
+    descriptors = [
+        {
+            "descriptor": descriptor,
+            "raw_descriptor_score": round(float(weight), 6),
+            "display_descriptor_weight": round(float(weight / max_weight), 6),
+            "weight": round(float(weight / max_weight), 6),
+        }
         for descriptor, weight in descriptor_weights.items()
     ]
-    normalized.sort(key=lambda item: (-item["weight"], item["descriptor"]))
-    return normalized[:8]
+    descriptors.sort(key=lambda item: (-item["raw_descriptor_score"], item["descriptor"]))
+    return descriptors[:8]
 
 
 def _format_percent(value: float) -> str:
     return f"{100.0 * float(value):.1f}%"
 
 
+def _margin_phrase(row: pd.Series) -> Tuple[str, str]:
+    margin = float(row["region_margin"])
+    nearest = row["nearest_alt_cluster"]
+    if margin >= 1.0:
+        return (
+            f"该样本与最近替代区域 {nearest} 明显分离",
+            f"it is clearly separated from the nearest alternative region, {nearest}",
+        )
+    if margin >= 0.30:
+        return (
+            f"该样本与最近替代区域 {nearest} 有一定接近性，但仍保留正 margin",
+            f"it is moderately close to the nearest alternative region, {nearest}, while retaining a positive margin",
+        )
+    if margin >= 0.0:
+        return (
+            f"该样本靠近 {nearest} 的边界，适合作为边界邻近样本讨论",
+            f"it is boundary-adjacent to {nearest}",
+        )
+    return (
+        f"该样本在 post-hoc prototype 距离下更接近 {nearest}，只能作为边界/歧义案例使用",
+        f"post-hoc prototype distance places it closer to {nearest}; use it only as a boundary or ambiguity case",
+    )
+
+
+def _role_phrase(row: pd.Series) -> Tuple[str, str]:
+    role = str(row["region_role"])
+    phrases = {
+        "prototype": ("高度原型样本", "highly prototypical"),
+        "representative": ("有代表性但并非最中心的样本", "representative but not central"),
+        "peripheral": ("所属区域内的外围样本", "peripheral within the assigned region"),
+        "boundary": ("边界样本，不应用作主区域证据", "a boundary case, not used as main region evidence"),
+    }
+    return phrases.get(role, phrases["peripheral"])
+
+
 def _direction_phrases(row: pd.Series) -> Tuple[str, str]:
+    if not _directional_tension_allowed(row):
+        if float(row["tension_strength_percentile"]) < 0.35:
+            return (
+                "张力强度较低，因此不把小的音频-歌词方向差解释为主要证据",
+                "tension strength is low, so small audio-lyric directional differences are not used as primary evidence",
+            )
+        return (
+            "该样本标记为 modality-consistent，方向差未达到门控阈值，因此解释为音频与歌词基本一致",
+            "the sample is modality-consistent and directional deltas do not pass the gate, so it is interpreted as broad audio-lyric agreement",
+        )
+
     phrases_zh: List[str] = []
     phrases_en: List[str] = []
     dv = float(row["tension_dv"])
@@ -652,7 +825,7 @@ def _direction_phrases(row: pd.Series) -> Tuple[str, str]:
     else:
         phrases_zh.append("唤醒度方向差异很小")
         phrases_en.append("the arousal contrast is small")
-    return "，".join(phrases_zh), "; ".join(phrases_en)
+    return "；".join(phrases_zh), "; ".join(phrases_en)
 
 
 def _make_interpretations(row: pd.Series) -> Tuple[str, str]:
@@ -661,21 +834,22 @@ def _make_interpretations(row: pd.Series) -> Tuple[str, str]:
     descriptor_text_en = ", ".join(item["descriptor"] for item in descriptors[:5]) or "no dominant descriptor"
     tension_display = f"{row['tension_label']} / {row['tension_name']}"
     direction_zh, direction_en = _direction_phrases(row)
+    margin_zh, margin_en = _margin_phrase(row)
+    role_zh, role_en = _role_phrase(row)
     chinese = (
-        f"该歌曲属于 {row['cluster_name']} 区域，region typicality 为 {_format_percent(row['region_typicality'])}，"
-        f"其 balanced VA 位置相对该区域原型的 soft confidence 为 {_format_percent(row['region_confidence'])}。"
-        f"最近的替代区域是 {row['nearest_alt_cluster']}（region margin={float(row['region_margin']):.3f}），"
-        f"说明它与相邻情绪区域的距离关系可用于定性解释。"
-        f"其 calibrated cross-modal tension / audio-lyric contrast profile 被标注为 {tension_display}，"
-        f"tension strength percentile 为 {_format_percent(row['tension_strength_percentile'])}；{direction_zh}。"
+        f"该歌曲属于 {row['cluster_name']} 区域，是{role_zh}；region typicality 为 "
+        f"{_format_percent(row['region_typicality'])}，其 balanced VA 位置相对该区域原型的 "
+        f"soft confidence 为 {_format_percent(row['region_confidence'])}。{margin_zh}"
+        f"（region margin={float(row['region_margin']):.3f}）。其 calibrated cross-modal tension / "
+        f"audio-lyric contrast profile 被标注为 {tension_display}，tension strength percentile 为 "
+        f"{_format_percent(row['tension_strength_percentile'])}；{direction_zh}。"
         f"综合 descriptor profile 的高权重词包括：{descriptor_text}。"
     )
     english = (
-        f"The song is assigned to {row['cluster_name']} with region typicality "
+        f"The song is assigned to {row['cluster_name']} and is {role_en}, with region typicality "
         f"{_format_percent(row['region_typicality'])} and assigned-region soft confidence "
-        f"{_format_percent(row['region_confidence'])}. Its nearest alternative region is "
-        f"{row['nearest_alt_cluster']} (region margin={float(row['region_margin']):.3f}), which indicates how close "
-        f"the balanced VA location is to neighboring affective regions. The calibrated cross-modal tension / "
+        f"{_format_percent(row['region_confidence'])}; {margin_en} "
+        f"(region margin={float(row['region_margin']):.3f}). The calibrated cross-modal tension / "
         f"audio-lyric contrast profile is {tension_display}, with tension strength percentile "
         f"{_format_percent(row['tension_strength_percentile'])}; {direction_en}. The top descriptor profile is: "
         f"{descriptor_text_en}."
@@ -705,9 +879,10 @@ def _write_selected_outputs(
     profile: pd.DataFrame,
     selected_songs_csv: Optional[Path],
     out_dir: Path,
+    output_suffix: str,
 ) -> Tuple[pd.DataFrame, int, int]:
     if selected_songs_csv is None:
-        (out_dir / "descriptor_weights_selected.json").write_text("{}", encoding="utf-8")
+        _output_file(out_dir, "descriptor_weights_selected", output_suffix, "json").write_text("{}", encoding="utf-8")
         return profile.iloc[0:0].copy(), 0, 0
     selected_raw = _read_csv(selected_songs_csv)
     selected_id_col = _select_song_id_column(selected_raw, set(profile["song_id"].astype(str).tolist()))
@@ -722,11 +897,19 @@ def _write_selected_outputs(
     )
     found = selected_profile["song_id"].notna()
     found_profile = selected_profile.loc[found, profile.columns].copy()
-    found_profile.to_csv(out_dir / "song_affective_profile_selected.csv", index=False, encoding="utf-8-sig")
+    found_profile.to_csv(
+        _output_file(out_dir, "song_affective_profile_selected", output_suffix, "csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
     missing = selected.loc[~selected["_selected_song_id"].isin(set(profile["song_id"].astype(str).tolist()))].drop(
         columns=["_selected_song_id"]
     )
-    missing.to_csv(out_dir / "missing_selected_songs.csv", index=False, encoding="utf-8-sig")
+    missing.to_csv(
+        _output_file(out_dir, "missing_selected_songs", output_suffix, "csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
     descriptor_payload: Dict[str, Any] = {}
     for row in found_profile.itertuples(index=False):
         row_dict = row._asdict()
@@ -734,6 +917,9 @@ def _write_selected_outputs(
             "title": row_dict.get("title", ""),
             "artist": row_dict.get("artist", ""),
             "cluster_name": row_dict.get("cluster_name", ""),
+            "region_role": row_dict.get("region_role", ""),
+            "selected_role": row_dict.get("selected_role", ""),
+            "main_text_eligible": bool(row_dict.get("main_text_eligible", False)),
             "tension_label": row_dict.get("tension_label", ""),
             "tension_name": row_dict.get("tension_name", ""),
             "descriptors": json.loads(row_dict["top_descriptors_json"]),
@@ -744,7 +930,7 @@ def _write_selected_outputs(
             },
             "tension_weights": json.loads(row_dict.get("tension_weights_json", "{}")),
         }
-    (out_dir / "descriptor_weights_selected.json").write_text(
+    _output_file(out_dir, "descriptor_weights_selected", output_suffix, "json").write_text(
         json.dumps(descriptor_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -755,7 +941,41 @@ def _markdown_escape(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir: Path) -> None:
+def _descriptor_labels(row: pd.Series, limit: int = 5) -> str:
+    return ", ".join(item["descriptor"] for item in json.loads(row["top_descriptors_json"])[:limit])
+
+
+def _append_song_table(lines: List[str], title: str, rows: pd.DataFrame) -> None:
+    lines.extend(["", f"### {title}", ""])
+    if rows.empty:
+        lines.append("No songs matched this role.")
+        return
+    lines.append(
+        "| song_id | title | artist | cluster | region role | tension | main text | region typicality | tension strength | top descriptors |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---:|---:|---|")
+    for _, row in rows.iterrows():
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_escape(row["song_id"]),
+                    _markdown_escape(row["title"]),
+                    _markdown_escape(row["artist"]),
+                    _markdown_escape(row["cluster_name"]),
+                    _markdown_escape(row["region_role"]),
+                    _markdown_escape(f"{row['tension_label']} / {row['tension_name']}"),
+                    "yes" if bool(row["main_text_eligible"]) else "no",
+                    _format_percent(float(row["region_typicality"])),
+                    _format_percent(float(row["tension_strength_percentile"])),
+                    _markdown_escape(_descriptor_labels(row)),
+                ]
+            )
+            + " |"
+        )
+
+
+def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir: Path, output_suffix: str) -> None:
     lines: List[str] = [
         "# Song Affective Profile Report",
         "",
@@ -766,7 +986,7 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
         "## Distance Definitions",
         "",
         "- Region prototypes are cluster means in balanced valence-arousal space.",
-        "- Region distance is Euclidean distance divided by the assigned cluster's median in-cluster radius.",
+        "- For each candidate region k, region distance is Euclidean distance to region prototype k divided by the median in-cluster radius of region k.",
         "- Region soft weights use exp(-0.5 * D^2) over all main regions.",
         "- Tension subtype prototypes are computed in region-local robust-scaled (tension_dv, tension_da) space.",
         "- tension_norm is used only as a strength percentile, not as a subtype-distance coordinate.",
@@ -783,26 +1003,29 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
     if selected_profile.empty:
         lines.append("No selected song profile was generated.")
     else:
-        lines.append("| song_id | title | artist | cluster | tension | region typicality | tension strength | top descriptors |")
-        lines.append("|---|---|---|---|---|---:|---:|---|")
+        region_rows = selected_profile[
+            selected_profile["main_text_eligible"]
+            & selected_profile["region_role"].isin(["prototype", "representative"])
+        ]
+        tension_rows = selected_profile[
+            selected_profile["main_text_eligible"]
+            & selected_profile["tension_strength_percentile"].astype(float).ge(0.75)
+            & selected_profile["tension_typicality"].astype(float).ge(0.50)
+            & selected_profile["region_margin"].astype(float).gt(0.0)
+        ]
+        boundary_rows = selected_profile[
+            selected_profile["boundary_flag"] | selected_profile["descriptor_conflict_flag"]
+        ]
+        appendix_rows = selected_profile[
+            (~selected_profile["main_text_eligible"])
+            | selected_profile["region_role"].eq("peripheral")
+        ]
+        _append_song_table(lines, "Region prototype songs", region_rows)
+        _append_song_table(lines, "Tension case-study songs", tension_rows)
+        _append_song_table(lines, "Boundary / ambiguity cases", boundary_rows)
+        _append_song_table(lines, "Appendix-only candidates", appendix_rows)
+        lines.extend(["", "### Selected Song Interpretations", ""])
         for _, row in selected_profile.iterrows():
-            descriptors = ", ".join(item["descriptor"] for item in json.loads(row["top_descriptors_json"])[:5])
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        _markdown_escape(row["song_id"]),
-                        _markdown_escape(row["title"]),
-                        _markdown_escape(row["artist"]),
-                        _markdown_escape(row["cluster_name"]),
-                        _markdown_escape(f"{row['tension_label']} / {row['tension_name']}"),
-                        _format_percent(float(row["region_typicality"])),
-                        _format_percent(float(row["tension_strength_percentile"])),
-                        _markdown_escape(descriptors),
-                    ]
-                )
-                + " |"
-            )
             lines.extend(["", f"**{_markdown_escape(row['song_id'])} Chinese**: {row['chinese_interpretation']}", ""])
             lines.extend([f"**{_markdown_escape(row['song_id'])} English**: {row['english_interpretation']}", ""])
 
@@ -837,7 +1060,10 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
                 f"{_format_percent(float(row['tension_strength_percentile']))} |"
             )
         lines.append("")
-    (out_dir / "song_affective_profile_report.md").write_text("\n".join(lines), encoding="utf-8-sig")
+    _output_file(out_dir, "song_affective_profile_report", output_suffix, "md").write_text(
+        "\n".join(lines),
+        encoding="utf-8-sig",
+    )
 
 
 def _safe_filename(value: str) -> str:
@@ -905,6 +1131,13 @@ def _ordered_output_columns(profile: pd.DataFrame, clusters: Sequence[Any]) -> L
         "artist",
         "cluster_id",
         "cluster_name",
+        "region_role",
+        "boundary_flag",
+        "descriptor_conflict_flag",
+        "encoding_issue_flag",
+        "explicit_title_flag",
+        "main_text_eligible",
+        "selected_role",
         "balanced_valence",
         "balanced_arousal",
         "region_typicality",
@@ -924,6 +1157,8 @@ def _ordered_output_columns(profile: pd.DataFrame, clusters: Sequence[Any]) -> L
         "dv_percentile_within_region",
         "da_percentile_within_region",
         "top_descriptors_json",
+        "top_descriptor_raw_score",
+        "top_descriptor_display_weight",
         "chinese_interpretation",
         "english_interpretation",
     ]
@@ -949,20 +1184,40 @@ def _ordered_output_columns(profile: pd.DataFrame, clusters: Sequence[Any]) -> L
 def _descriptor_weight_bounds(profile: pd.DataFrame) -> Tuple[float, float]:
     values: List[float] = []
     for raw in profile["top_descriptors_json"].tolist():
-        values.extend(float(item["weight"]) for item in json.loads(raw))
+        values.extend(float(item["display_descriptor_weight"]) for item in json.loads(raw))
     if not values:
         return 0.0, 0.0
     return float(min(values)), float(max(values))
 
 
+def _raw_descriptor_score_bounds(profile: pd.DataFrame) -> Tuple[float, float]:
+    values: List[float] = []
+    for raw in profile["top_descriptors_json"].tolist():
+        values.extend(float(item["raw_descriptor_score"]) for item in json.loads(raw))
+    if not values:
+        return 0.0, 0.0
+    return float(min(values)), float(max(values))
+
+
+def _has_directional_descriptor(raw: str) -> bool:
+    descriptors = {str(item["descriptor"]) for item in json.loads(raw)}
+    return bool(descriptors.intersection(DIRECTIONAL_TENSION_DESCRIPTORS))
+
+
 def _sanity_check(
     profile: pd.DataFrame,
     *,
+    selected_profile: pd.DataFrame,
     selected_found_count: int,
     selected_missing_count: int,
     source_files: Mapping[str, str],
 ) -> Dict[str, Any]:
     min_descriptor_weight, max_descriptor_weight = _descriptor_weight_bounds(profile)
+    min_raw_descriptor_score, max_raw_descriptor_score = _raw_descriptor_score_bounds(profile)
+    modality_consistent = [
+        _is_modality_consistent(row) and _has_directional_descriptor(str(row["top_descriptors_json"]))
+        for _, row in profile.iterrows()
+    ]
     return {
         "random_seed": RANDOM_SEED,
         "source_files": dict(source_files),
@@ -973,12 +1228,19 @@ def _sanity_check(
         "missing_metadata_count": int(((profile["title"] == "") & (profile["artist"] == "")).sum()),
         "selected_found_count": int(selected_found_count),
         "selected_missing_count": int(selected_missing_count),
+        "selected_main_text_eligible_count": int(selected_profile["main_text_eligible"].sum()),
+        "negative_margin_count": int((profile["region_margin"].astype(float) < 0.0).sum()),
+        "descriptor_conflict_count": int(profile["descriptor_conflict_flag"].sum()),
+        "modality_consistent_with_directional_descriptor_count": int(sum(modality_consistent)),
+        "explicit_or_encoding_issue_count": int((profile["explicit_title_flag"] | profile["encoding_issue_flag"]).sum()),
         "min_region_typicality": float(profile["region_typicality"].min()),
         "max_region_typicality": float(profile["region_typicality"].max()),
         "min_tension_typicality": float(profile["tension_typicality"].min()),
         "max_tension_typicality": float(profile["tension_typicality"].max()),
         "min_descriptor_weight": min_descriptor_weight,
         "max_descriptor_weight": max_descriptor_weight,
+        "min_raw_descriptor_score": min_raw_descriptor_score,
+        "max_raw_descriptor_score": max_raw_descriptor_score,
     }
 
 
@@ -989,6 +1251,7 @@ def run_posthoc_profile(
     selected_songs_csv: Optional[Path | str],
     out_dir: Path | str,
     make_figures: bool = True,
+    output_suffix: str = "",
 ) -> Dict[str, Any]:
     np.random.seed(RANDOM_SEED)
     run_path = Path(run_dir).expanduser()
@@ -1017,9 +1280,16 @@ def run_posthoc_profile(
 
     profile, clusters = _compute_region_profiles(profile)
     profile = _compute_tension_profiles(profile)
-    profile["top_descriptors_json"] = [
-        json.dumps(_descriptor_profile(row, clusters), ensure_ascii=False)
-        for _, row in profile.iterrows()
+    profile = _add_review_flags(profile)
+    descriptor_profiles = [_descriptor_profile(row, clusters) for _, row in profile.iterrows()]
+    profile["top_descriptors_json"] = [json.dumps(descriptors, ensure_ascii=False) for descriptors in descriptor_profiles]
+    profile["top_descriptor_raw_score"] = [
+        float(descriptors[0]["raw_descriptor_score"]) if descriptors else 0.0
+        for descriptors in descriptor_profiles
+    ]
+    profile["top_descriptor_display_weight"] = [
+        float(descriptors[0]["display_descriptor_weight"]) if descriptors else 0.0
+        for descriptors in descriptor_profiles
     ]
     interpretations = [_make_interpretations(row) for _, row in profile.iterrows()]
     profile["chinese_interpretation"] = [item[0] for item in interpretations]
@@ -1027,24 +1297,30 @@ def run_posthoc_profile(
 
     ordered_columns = _ordered_output_columns(profile, clusters)
     profile = profile[ordered_columns]
-    profile.to_csv(output_path / "song_affective_profile_all.csv", index=False, encoding="utf-8-sig")
+    profile.to_csv(
+        _output_file(output_path, "song_affective_profile_all", output_suffix, "csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
 
     selected_profile, selected_found_count, selected_missing_count = _write_selected_outputs(
         profile,
         selected_path,
         output_path,
+        output_suffix,
     )
-    _make_report(profile, selected_profile, output_path)
+    _make_report(profile, selected_profile, output_path, output_suffix)
     if make_figures:
         _write_figures(selected_profile, output_path)
 
     sanity = _sanity_check(
         profile,
+        selected_profile=selected_profile,
         selected_found_count=selected_found_count,
         selected_missing_count=selected_missing_count,
         source_files={**cluster_sources, **tension_sources, "metadata": str(metadata_path)},
     )
-    (output_path / "sanity_check.json").write_text(
+    _output_file(output_path, "sanity_check", output_suffix, "json").write_text(
         json.dumps(sanity, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -1059,6 +1335,7 @@ def main() -> None:
     parser.add_argument("--song_metadata_csv", required=True, help="CSV containing song_id/title/artist metadata.")
     parser.add_argument("--selected_songs_csv", default=None, help="Optional representative song candidate CSV.")
     parser.add_argument("--out_dir", required=True, help="Output directory for profile CSV/JSON/Markdown files.")
+    parser.add_argument("--output_suffix", default="_v2", help="Suffix appended before output file extensions.")
     parser.add_argument("--no_figures", action="store_true", help="Skip optional selected-song helper charts.")
     args = parser.parse_args()
 
@@ -1068,6 +1345,7 @@ def main() -> None:
         selected_songs_csv=args.selected_songs_csv,
         out_dir=args.out_dir,
         make_figures=not args.no_figures,
+        output_suffix=args.output_suffix,
     )
     print(json.dumps(sanity, ensure_ascii=False, indent=2))
 

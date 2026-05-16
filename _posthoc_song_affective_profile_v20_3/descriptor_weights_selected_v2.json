@@ -1,0 +1,2084 @@
+{
+  "A157-71": {
+    "title": "Yesterday",
+    "artist": "The Beatles",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C0-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.793187,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.793187,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "melancholic",
+        "raw_descriptor_score": 0.793187,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "somber",
+        "raw_descriptor_score": 0.793187,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "subdued melancholy",
+        "raw_descriptor_score": 0.793187,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.307226,
+        "display_descriptor_weight": 0.387331,
+        "weight": 0.387331
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.307226,
+        "display_descriptor_weight": 0.387331,
+        "weight": 0.387331
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.8338635628058232,
+      "C1": 0.141994881007745,
+      "C2": 0.023985064553539926,
+      "C3": 0.0001564916328918696
+    },
+    "tension_weights": {
+      "C0-T0": 0.8960761332093956,
+      "C0-T1": 0.10392386679060431
+    }
+  },
+  "A004": {
+    "title": "I'm So Lonesome I Could Cry",
+    "artist": "Johnny Cash",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "boundary",
+    "selected_role": "boundary_case",
+    "main_text_eligible": false,
+    "tension_label": "C0-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "boundary between assigned region and nearest alternative",
+        "raw_descriptor_score": 1.520347,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "nearest alternative: C2 Volatile Intensity",
+        "raw_descriptor_score": 0.260173,
+        "display_descriptor_weight": 0.171128,
+        "weight": 0.171128
+      },
+      {
+        "descriptor": "assigned region: Subdued Melancholy",
+        "raw_descriptor_score": 0.23642,
+        "display_descriptor_weight": 0.155504,
+        "weight": 0.155504
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.1625,
+        "display_descriptor_weight": 0.106884,
+        "weight": 0.106884
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.1625,
+        "display_descriptor_weight": 0.106884,
+        "weight": 0.106884
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.47284002878185616,
+      "C1": 0.006800100354434697,
+      "C2": 0.5203465392381262,
+      "C3": 1.3331625582936876e-05
+    },
+    "tension_weights": {
+      "C0-T0": 0.931287600257022,
+      "C0-T1": 0.06871239974297806
+    }
+  },
+  "A048": {
+    "title": "Everybody Hurts",
+    "artist": "R.E.M.",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "boundary",
+    "selected_role": "boundary_case",
+    "main_text_eligible": false,
+    "tension_label": "C0-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "boundary between assigned region and nearest alternative",
+        "raw_descriptor_score": 1.581355,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "assigned region: Subdued Melancholy",
+        "raw_descriptor_score": 0.290678,
+        "display_descriptor_weight": 0.183815,
+        "weight": 0.183815
+      },
+      {
+        "descriptor": "nearest alternative: C1 Gentle Warmth",
+        "raw_descriptor_score": 0.200869,
+        "display_descriptor_weight": 0.127023,
+        "weight": 0.127023
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.145817,
+        "display_descriptor_weight": 0.09221,
+        "weight": 0.09221
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.145817,
+        "display_descriptor_weight": 0.09221,
+        "weight": 0.09221
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.5813550164198136,
+      "C1": 0.40173758540066146,
+      "C2": 0.015980638026871413,
+      "C3": 0.000926760152653662
+    },
+    "tension_weights": {
+      "C0-T0": 0.9787685681863022,
+      "C0-T1": 0.021231431813697785
+    }
+  },
+  "A045": {
+    "title": "Hurt",
+    "artist": "Johnny Cash",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "peripheral",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C0-T1",
+    "tension_name": "lyric-brightened + lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.558777,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.234246,
+        "display_descriptor_weight": 0.419211,
+        "weight": 0.419211
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.234246,
+        "display_descriptor_weight": 0.419211,
+        "weight": 0.419211
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.9369822100992439,
+      "C1": 0.003096230236964095,
+      "C2": 0.05992132879069683,
+      "C3": 2.3087309522445251e-07
+    },
+    "tension_weights": {
+      "C0-T0": 0.03961600270708912,
+      "C0-T1": 0.9603839972929109
+    }
+  },
+  "A034": {
+    "title": "Natural Disaster",
+    "artist": "Anathema",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "peripheral",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C0-T1",
+    "tension_name": "lyric-brightened + lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.586666,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.210742,
+        "display_descriptor_weight": 0.35922,
+        "weight": 0.35922
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.210742,
+        "display_descriptor_weight": 0.35922,
+        "weight": 0.35922
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.8429681180976292,
+      "C1": 0.008135469851274585,
+      "C2": 0.1488926169711902,
+      "C3": 3.7950799058783233e-06
+    },
+    "tension_weights": {
+      "C0-T0": 0.13163406985452977,
+      "C0-T1": 0.8683659301454703
+    }
+  },
+  "A061-66": {
+    "title": "Mad World",
+    "artist": "Gary Jules",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C0-T1",
+    "tension_name": "lyric-brightened + lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.830368,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.830368,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "melancholic",
+        "raw_descriptor_score": 0.830368,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "somber",
+        "raw_descriptor_score": 0.830368,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "subdued melancholy",
+        "raw_descriptor_score": 0.830368,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.27021,
+        "display_descriptor_weight": 0.32541,
+        "weight": 0.32541
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.27021,
+        "display_descriptor_weight": 0.32541,
+        "weight": 0.32541
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.071413,
+        "display_descriptor_weight": 0.086001,
+        "weight": 0.086001
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.8426997297429054,
+      "C1": 0.10410155981843841,
+      "C2": 0.05303321291784852,
+      "C3": 0.00016549752080762773
+    },
+    "tension_weights": {
+      "C0-T0": 0.42538212686434634,
+      "C0-T1": 0.5746178731356536
+    }
+  },
+  "A171": {
+    "title": "Say Something",
+    "artist": "A Great Big World",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "prototype",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C0-T1",
+    "tension_name": "lyric-brightened + lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.874369,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.874369,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "melancholic",
+        "raw_descriptor_score": 0.874369,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "somber",
+        "raw_descriptor_score": 0.874369,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "subdued melancholy",
+        "raw_descriptor_score": 0.874369,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.74481,
+        "display_descriptor_weight": 0.851825,
+        "weight": 0.851825
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.74481,
+        "display_descriptor_weight": 0.851825,
+        "weight": 0.851825
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.74481,
+        "display_descriptor_weight": 0.851825,
+        "weight": 0.851825
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.8844361688562796,
+      "C1": 0.07249744735305041,
+      "C2": 0.04299252642395716,
+      "C3": 7.385736671280688e-05
+    },
+    "tension_weights": {
+      "C0-T0": 0.09377219087194784,
+      "C0-T1": 0.9062278091280521
+    }
+  },
+  "MT0003274067": {
+    "title": "Driving",
+    "artist": "Arab Strap",
+    "cluster_name": "Subdued Melancholy",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C0-T1",
+    "tension_name": "lyric-brightened + lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "introspective",
+        "raw_descriptor_score": 0.665847,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "low arousal",
+        "raw_descriptor_score": 0.665847,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "melancholic",
+        "raw_descriptor_score": 0.665847,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "somber",
+        "raw_descriptor_score": 0.665847,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "subdued melancholy",
+        "raw_descriptor_score": 0.665847,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.484672,
+        "display_descriptor_weight": 0.727902,
+        "weight": 0.727902
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.484672,
+        "display_descriptor_weight": 0.727902,
+        "weight": 0.727902
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.465477,
+        "display_descriptor_weight": 0.699075,
+        "weight": 0.699075
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.763985211535591,
+      "C1": 0.20659836843937296,
+      "C2": 0.029050316373453254,
+      "C3": 0.00036610365158286427
+    },
+    "tension_weights": {
+      "C0-T0": 0.003089100996604981,
+      "C0-T1": 0.9969108990033949
+    }
+  },
+  "A024": {
+    "title": "Paradise",
+    "artist": "Sade",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C1-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.271285,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.271285,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.225007,
+        "display_descriptor_weight": 0.829411,
+        "weight": 0.829411
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.225007,
+        "display_descriptor_weight": 0.829411,
+        "weight": 0.829411
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.225007,
+        "display_descriptor_weight": 0.829411,
+        "weight": 0.829411
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.225007,
+        "display_descriptor_weight": 0.829411,
+        "weight": 0.829411
+      },
+      {
+        "descriptor": "warm",
+        "raw_descriptor_score": 0.225007,
+        "display_descriptor_weight": 0.829411,
+        "weight": 0.829411
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.0003306031658163666,
+      "C1": 0.9000266935151169,
+      "C2": 3.4807218787630774e-05,
+      "C3": 0.0996078961002792
+    },
+    "tension_weights": {
+      "C1-T0": 0.9131306416671501,
+      "C1-T1": 0.08686935833284998
+    }
+  },
+  "A017": {
+    "title": "Just The Way You Are",
+    "artist": "Billy Joel",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C1-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "lyric valence tempering",
+        "raw_descriptor_score": 0.316215,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics darken the affect",
+        "raw_descriptor_score": 0.316215,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.257279,
+        "display_descriptor_weight": 0.81362,
+        "weight": 0.81362
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.257279,
+        "display_descriptor_weight": 0.81362,
+        "weight": 0.81362
+      },
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.189412,
+        "display_descriptor_weight": 0.598996,
+        "weight": 0.598996
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.189412,
+        "display_descriptor_weight": 0.598996,
+        "weight": 0.598996
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.189412,
+        "display_descriptor_weight": 0.598996,
+        "weight": 0.598996
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.189412,
+        "display_descriptor_weight": 0.598996,
+        "weight": 0.598996
+      }
+    ],
+    "cluster_weights": {
+      "C0": 4.563323082661504e-05,
+      "C1": 0.7576465116948815,
+      "C2": 1.1505962610019678e-05,
+      "C3": 0.24229634911168188
+    },
+    "tension_weights": {
+      "C1-T0": 0.9945205094633673,
+      "C1-T1": 0.005479490536632572
+    }
+  },
+  "A021": {
+    "title": "That's What Friends Are For",
+    "artist": "Dionne Warwick",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "representative",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C1-T1",
+    "tension_name": "lyric-brightened + lyric-intensified",
+    "descriptors": [
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.67567,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.477058,
+        "display_descriptor_weight": 0.706052,
+        "weight": 0.706052
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.477058,
+        "display_descriptor_weight": 0.706052,
+        "weight": 0.706052
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.08990648877980434,
+      "C1": 0.906009508494489,
+      "C2": 0.0009470410668921123,
+      "C3": 0.0031369616588143878
+    },
+    "tension_weights": {
+      "C1-T0": 0.0926019995578392,
+      "C1-T1": 0.9073980004421608
+    }
+  },
+  "A029": {
+    "title": "Tears in Heaven",
+    "artist": "Eric Clapton",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "prototype",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C1-T1",
+    "tension_name": "lyric-brightened + lyric-intensified",
+    "descriptors": [
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.812724,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.812724,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.812724,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.812724,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "warm",
+        "raw_descriptor_score": 0.812724,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.720168,
+        "display_descriptor_weight": 0.886117,
+        "weight": 0.886117
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.720168,
+        "display_descriptor_weight": 0.886117,
+        "weight": 0.886117
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.720168,
+        "display_descriptor_weight": 0.886117,
+        "weight": 0.886117
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.071739108382126,
+      "C1": 0.9168495341150364,
+      "C2": 0.0024721510116746124,
+      "C3": 0.008939206491162853
+    },
+    "tension_weights": {
+      "C1-T0": 0.06095301100705336,
+      "C1-T1": 0.9390469889929466
+    }
+  },
+  "MT0005344437": {
+    "title": "Send One Your Love",
+    "artist": "Stevie Wonder",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "prototype",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C1-T1",
+    "tension_name": "lyric-brightened + lyric-intensified",
+    "descriptors": [
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.929731,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.929731,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.929731,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.929731,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "warm",
+        "raw_descriptor_score": 0.929731,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.714981,
+        "display_descriptor_weight": 0.769019,
+        "weight": 0.769019
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.714981,
+        "display_descriptor_weight": 0.769019,
+        "weight": 0.769019
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.714981,
+        "display_descriptor_weight": 0.769019,
+        "weight": 0.769019
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.031022844528008634,
+      "C1": 0.9338626716470588,
+      "C2": 0.003731324141778438,
+      "C3": 0.031383159683154055
+    },
+    "tension_weights": {
+      "C1-T0": 0.07588695644715773,
+      "C1-T1": 0.9241130435528423
+    }
+  },
+  "A013": {
+    "title": "London Calling",
+    "artist": "The Clash",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C2-T0",
+    "tension_name": "lyric-brightened",
+    "descriptors": [
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.44635,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.44635,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.44635,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.44635,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.44635,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.207514,
+        "display_descriptor_weight": 0.464912,
+        "weight": 0.464912
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.207514,
+        "display_descriptor_weight": 0.464912,
+        "weight": 0.464912
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.0006416773769122795,
+      "C1": 0.003019385082542933,
+      "C2": 0.9881161546539985,
+      "C3": 0.008222782886546364
+    },
+    "tension_weights": {
+      "C2-T0": 0.7148393788435173,
+      "C2-T1": 0.0817424532265772,
+      "C2-T2": 0.2034181679299055
+    }
+  },
+  "A010": {
+    "title": "Animal",
+    "artist": "Pearl Jam",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C2-T1",
+    "tension_name": "lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.487773,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.487773,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.25571,
+        "display_descriptor_weight": 0.524239,
+        "weight": 0.524239
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.25571,
+        "display_descriptor_weight": 0.524239,
+        "weight": 0.524239
+      },
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.244692,
+        "display_descriptor_weight": 0.50165,
+        "weight": 0.50165
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.244692,
+        "display_descriptor_weight": 0.50165,
+        "weight": 0.50165
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.244692,
+        "display_descriptor_weight": 0.50165,
+        "weight": 0.50165
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.244692,
+        "display_descriptor_weight": 0.50165,
+        "weight": 0.50165
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.02117031712657842,
+      "C1": 6.3370693259724e-05,
+      "C2": 0.9787661631513235,
+      "C3": 1.4902883844381948e-07
+    },
+    "tension_weights": {
+      "C2-T0": 0.00014015690491022158,
+      "C2-T1": 0.9998577272988822,
+      "C2-T2": 2.1157962076429328e-06
+    }
+  },
+  "A151-172": {
+    "title": "War Pigs",
+    "artist": "Black Sabbath",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "representative",
+    "selected_role": "region_representative",
+    "main_text_eligible": true,
+    "tension_label": "C2-T1",
+    "tension_name": "lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.656775,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.656775,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.656775,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.656775,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.656775,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.365898,
+        "display_descriptor_weight": 0.557113,
+        "weight": 0.557113
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.365898,
+        "display_descriptor_weight": 0.557113,
+        "weight": 0.557113
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.302668,
+        "display_descriptor_weight": 0.460839,
+        "weight": 0.460839
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.006132838051025568,
+      "C1": 0.0005312504874736847,
+      "C2": 0.9932914694260787,
+      "C3": 4.444203542190184e-05
+    },
+    "tension_weights": {
+      "C2-T0": 0.03851562957504296,
+      "C2-T1": 0.9587261661116612,
+      "C2-T2": 0.0027582043132959315
+    }
+  },
+  "A183": {
+    "title": "Killing in the Name",
+    "artist": "Rage Against the Machine",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C2-T0",
+    "tension_name": "lyric-brightened",
+    "descriptors": [
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.498141,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.498141,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.498141,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.498141,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.498141,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.152525,
+        "display_descriptor_weight": 0.306188,
+        "weight": 0.306188
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.152525,
+        "display_descriptor_weight": 0.306188,
+        "weight": 0.306188
+      },
+      {
+        "descriptor": "lyric arousal softening",
+        "raw_descriptor_score": 0.127538,
+        "display_descriptor_weight": 0.256027,
+        "weight": 0.256027
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.00027763201396818104,
+      "C1": 0.0005444744944220174,
+      "C2": 0.9979151582588237,
+      "C3": 0.0012627352327860386
+    },
+    "tension_weights": {
+      "C2-T0": 0.620468418892125,
+      "C2-T1": 0.06197560922029816,
+      "C2-T2": 0.3175559718875768
+    }
+  },
+  "MT0007075838": {
+    "title": "Sleep Now in the Fire",
+    "artist": "Rage Against the Machine",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C2-T2",
+    "tension_name": "lyric-brightened + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.941888,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.941888,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.941888,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.941888,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.941888,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.441869,
+        "display_descriptor_weight": 0.469131,
+        "weight": 0.469131
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.441869,
+        "display_descriptor_weight": 0.469131,
+        "weight": 0.469131
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.376267,
+        "display_descriptor_weight": 0.399482,
+        "weight": 0.399482
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.02268416728570291,
+      "C1": 0.007584320833527505,
+      "C2": 0.9688443570951268,
+      "C3": 0.0008871547856427687
+    },
+    "tension_weights": {
+      "C2-T0": 0.07345141819456706,
+      "C2-T1": 0.14277868885937017,
+      "C2-T2": 0.7837698929460627
+    }
+  },
+  "A049": {
+    "title": "Highway to Hell",
+    "artist": "AC/DC",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "boundary",
+    "selected_role": "boundary_case",
+    "main_text_eligible": false,
+    "tension_label": "C2-T1",
+    "tension_name": "lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "boundary between assigned region and nearest alternative",
+        "raw_descriptor_score": 1.546229,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "nearest alternative: C3 Playful Vitality",
+        "raw_descriptor_score": 0.273114,
+        "display_descriptor_weight": 0.176633,
+        "weight": 0.176633
+      },
+      {
+        "descriptor": "assigned region: Volatile Intensity",
+        "raw_descriptor_score": 0.226461,
+        "display_descriptor_weight": 0.14646,
+        "weight": 0.14646
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.037951,
+        "display_descriptor_weight": 0.024544,
+        "weight": 0.024544
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.037951,
+        "display_descriptor_weight": 0.024544,
+        "weight": 0.024544
+      }
+    ],
+    "cluster_weights": {
+      "C0": 5.596080207505346e-07,
+      "C1": 0.0008481646071735789,
+      "C2": 0.4529223294071101,
+      "C3": 0.5462289463776957
+    },
+    "tension_weights": {
+      "C2-T0": 0.0024401927522965136,
+      "C2-T1": 0.9975597288473493,
+      "C2-T2": 7.840035411129224e-08
+    }
+  },
+  "A014": {
+    "title": "Feels Just Like It Should",
+    "artist": "Jamiroquai",
+    "cluster_name": "Playful Vitality",
+    "region_role": "representative",
+    "selected_role": "region_representative",
+    "main_text_eligible": true,
+    "tension_label": "C3-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.612622,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.612622,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.612622,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.612622,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.612622,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.187304,
+        "display_descriptor_weight": 0.305742,
+        "weight": 0.305742
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.187304,
+        "display_descriptor_weight": 0.305742,
+        "weight": 0.305742
+      }
+    ],
+    "cluster_weights": {
+      "C0": 3.430051983850225e-05,
+      "C1": 0.11041760911775048,
+      "C2": 0.001871679600059507,
+      "C3": 0.8876764107623515
+    },
+    "tension_weights": {
+      "C3-T0": 0.820571293602079,
+      "C3-T1": 0.17942870639792097
+    }
+  },
+  "A001": {
+    "title": "What a Wonderful World",
+    "artist": "Louis Armstrong",
+    "cluster_name": "Playful Vitality",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C3-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.179741,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.179741,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.179741,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.179741,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.179741,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.070259,
+        "display_descriptor_weight": 0.390889,
+        "weight": 0.390889
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.070259,
+        "display_descriptor_weight": 0.390889,
+        "weight": 0.390889
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.070259,
+        "display_descriptor_weight": 0.390889,
+        "weight": 0.390889
+      }
+    ],
+    "cluster_weights": {
+      "C0": 1.062662729332544e-06,
+      "C1": 0.2810345660821112,
+      "C2": 2.1198797038681715e-06,
+      "C3": 0.7189622513754556
+    },
+    "tension_weights": {
+      "C3-T0": 0.8547410235878375,
+      "C3-T1": 0.14525897641216237
+    }
+  },
+  "A019": {
+    "title": "California Girls",
+    "artist": "The Beach Boys",
+    "cluster_name": "Playful Vitality",
+    "region_role": "representative",
+    "selected_role": "region_representative",
+    "main_text_eligible": true,
+    "tension_label": "C3-T1",
+    "tension_name": "lyric-darkened + lyric-softened + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.772697,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.772697,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.772697,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.772697,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.772697,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal softening",
+        "raw_descriptor_score": 0.246494,
+        "display_descriptor_weight": 0.319004,
+        "weight": 0.319004
+      },
+      {
+        "descriptor": "lyric valence tempering",
+        "raw_descriptor_score": 0.246494,
+        "display_descriptor_weight": 0.319004,
+        "weight": 0.319004
+      },
+      {
+        "descriptor": "lyrics darken the affect",
+        "raw_descriptor_score": 0.246494,
+        "display_descriptor_weight": 0.319004,
+        "weight": 0.319004
+      }
+    ],
+    "cluster_weights": {
+      "C0": 2.0863201210149927e-07,
+      "C1": 0.020284558306029377,
+      "C2": 4.538297219018981e-05,
+      "C3": 0.9796698500897684
+    },
+    "tension_weights": {
+      "C3-T0": 0.2749797075841305,
+      "C3-T1": 0.7250202924158696
+    }
+  },
+  "MT0006683875": {
+    "title": "Mary's Place",
+    "artist": "Bruce Springsteen",
+    "cluster_name": "Playful Vitality",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C3-T1",
+    "tension_name": "lyric-darkened + lyric-softened + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.968475,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.968475,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.968475,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.968475,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.968475,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence tempering",
+        "raw_descriptor_score": 0.441629,
+        "display_descriptor_weight": 0.456004,
+        "weight": 0.456004
+      },
+      {
+        "descriptor": "lyrics darken the affect",
+        "raw_descriptor_score": 0.441629,
+        "display_descriptor_weight": 0.456004,
+        "weight": 0.456004
+      },
+      {
+        "descriptor": "lyric arousal softening",
+        "raw_descriptor_score": 0.341698,
+        "display_descriptor_weight": 0.352821,
+        "weight": 0.352821
+      }
+    ],
+    "cluster_weights": {
+      "C0": 1.3883808343109914e-07,
+      "C1": 0.00804833072316288,
+      "C2": 0.00019548994357738119,
+      "C3": 0.9917560404951763
+    },
+    "tension_weights": {
+      "C3-T0": 0.0075728101385472936,
+      "C3-T1": 0.9924271898614527
+    }
+  },
+  "A005": {
+    "title": "U Got the Look",
+    "artist": "Prince",
+    "cluster_name": "Playful Vitality",
+    "region_role": "peripheral",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C3-T1",
+    "tension_name": "lyric-darkened + lyric-softened + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal softening",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence tempering",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics darken the affect",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics soften the affect",
+        "raw_descriptor_score": 0.4914,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.249994,
+        "display_descriptor_weight": 0.508739,
+        "weight": 0.508739
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.249994,
+        "display_descriptor_weight": 0.508739,
+        "weight": 0.508739
+      }
+    ],
+    "cluster_weights": {
+      "C0": 9.13822811056739e-14,
+      "C1": 2.3464399921947342e-05,
+      "C2": 1.066136938226262e-07,
+      "C3": 0.9999764289862929
+    },
+    "tension_weights": {
+      "C3-T0": 0.027519491408347085,
+      "C3-T1": 0.9724805085916529
+    }
+  },
+  "MT0027072382": {
+    "title": "Express Yourself",
+    "artist": "Madonna",
+    "cluster_name": "Playful Vitality",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C3-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.925061,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.925061,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.925061,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.925061,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.925061,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.32193,
+        "display_descriptor_weight": 0.34801,
+        "weight": 0.34801
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.32193,
+        "display_descriptor_weight": 0.34801,
+        "weight": 0.34801
+      }
+    ],
+    "cluster_weights": {
+      "C0": 1.4781006211612485e-06,
+      "C1": 0.023997109418295262,
+      "C2": 0.0005659748562962661,
+      "C3": 0.9754354376247875
+    },
+    "tension_weights": {
+      "C3-T0": 0.9736802645295913,
+      "C3-T1": 0.026319735470408747
+    }
+  },
+  "MT0004141823": {
+    "title": "Conga",
+    "artist": "Miami Sound Machine",
+    "cluster_name": "Playful Vitality",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C3-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.954765,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.954765,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.954765,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.954765,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.954765,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.069636,
+        "display_descriptor_weight": 0.072935,
+        "weight": 0.072935
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.069636,
+        "display_descriptor_weight": 0.072935,
+        "weight": 0.072935
+      }
+    ],
+    "cluster_weights": {
+      "C0": 5.990273492752261e-07,
+      "C1": 0.01473640604208205,
+      "C2": 0.0004445330591295739,
+      "C3": 0.9848184618714391
+    },
+    "tension_weights": {
+      "C3-T0": 0.7865148655174405,
+      "C3-T1": 0.21348513448255943
+    }
+  },
+  "MT0033512773": {
+    "title": "Do You Believe in Love",
+    "artist": "Huey Lewis & the News",
+    "cluster_name": "Playful Vitality",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C3-T0",
+    "tension_name": "modality-consistent",
+    "descriptors": [
+      {
+        "descriptor": "bright",
+        "raw_descriptor_score": 0.978491,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "danceable",
+        "raw_descriptor_score": 0.978491,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "energetic",
+        "raw_descriptor_score": 0.978491,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "playful vitality",
+        "raw_descriptor_score": 0.978491,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "positive-active",
+        "raw_descriptor_score": 0.978491,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "affective concordance",
+        "raw_descriptor_score": 0.318952,
+        "display_descriptor_weight": 0.325963,
+        "weight": 0.325963
+      },
+      {
+        "descriptor": "audio-lyric agreement",
+        "raw_descriptor_score": 0.318952,
+        "display_descriptor_weight": 0.325963,
+        "weight": 0.325963
+      }
+    ],
+    "cluster_weights": {
+      "C0": 4.380904789211992e-07,
+      "C1": 0.016686172525666388,
+      "C2": 0.0002068332357267163,
+      "C3": 0.9831065561481279
+    },
+    "tension_weights": {
+      "C3-T0": 0.9852842411389998,
+      "C3-T1": 0.014715758861000313
+    }
+  },
+  "MT0002360219": {
+    "title": "Keepin' the Summer Alive",
+    "artist": "The Beach Boys",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C1-T1",
+    "tension_name": "lyric-brightened + lyric-intensified",
+    "descriptors": [
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.923398,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.923398,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.923398,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.923398,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "warm",
+        "raw_descriptor_score": 0.923398,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.481687,
+        "display_descriptor_weight": 0.521646,
+        "weight": 0.521646
+      },
+      {
+        "descriptor": "lyrics brighten the affect",
+        "raw_descriptor_score": 0.481687,
+        "display_descriptor_weight": 0.521646,
+        "weight": 0.521646
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.386353,
+        "display_descriptor_weight": 0.418404,
+        "weight": 0.418404
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.025319147564750843,
+      "C1": 0.9358207648344778,
+      "C2": 0.0032694073216642462,
+      "C3": 0.03559068027910678
+    },
+    "tension_weights": {
+      "C1-T0": 0.014526134803755746,
+      "C1-T1": 0.9854738651962442
+    }
+  },
+  "MT0000151451": {
+    "title": "Love You 'Till the End",
+    "artist": "The Pogues",
+    "cluster_name": "Gentle Warmth",
+    "region_role": "prototype",
+    "selected_role": "tension_case",
+    "main_text_eligible": true,
+    "tension_label": "C1-T1",
+    "tension_name": "lyric-brightened + lyric-intensified",
+    "descriptors": [
+      {
+        "descriptor": "calm-positive",
+        "raw_descriptor_score": 0.864684,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "gentle warmth",
+        "raw_descriptor_score": 0.864684,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "romantic",
+        "raw_descriptor_score": 0.864684,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "soft",
+        "raw_descriptor_score": 0.864684,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "warm",
+        "raw_descriptor_score": 0.864684,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "audio-lyric contrast",
+        "raw_descriptor_score": 0.675528,
+        "display_descriptor_weight": 0.781242,
+        "weight": 0.781242
+      },
+      {
+        "descriptor": "high cross-modal tension",
+        "raw_descriptor_score": 0.675528,
+        "display_descriptor_weight": 0.781242,
+        "weight": 0.781242
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.675528,
+        "display_descriptor_weight": 0.781242,
+        "weight": 0.781242
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.07289336952500226,
+      "C1": 0.8936828581661612,
+      "C2": 0.00995695693271714,
+      "C3": 0.023466815376119343
+    },
+    "tension_weights": {
+      "C1-T0": 0.11203430075437952,
+      "C1-T1": 0.8879656992456205
+    }
+  },
+  "A028": {
+    "title": "I Fucking Hate You",
+    "artist": "Godsmack",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "peripheral",
+    "selected_role": "appendix_only",
+    "main_text_eligible": false,
+    "tension_label": "C2-T0",
+    "tension_name": "lyric-brightened",
+    "descriptors": [
+      {
+        "descriptor": "lyric arousal softening",
+        "raw_descriptor_score": 0.312174,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyrics soften the affect",
+        "raw_descriptor_score": 0.312174,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.234348,
+        "display_descriptor_weight": 0.750698,
+        "weight": 0.750698
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.234348,
+        "display_descriptor_weight": 0.750698,
+        "weight": 0.750698
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.234348,
+        "display_descriptor_weight": 0.750698,
+        "weight": 0.750698
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.234348,
+        "display_descriptor_weight": 0.750698,
+        "weight": 0.750698
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.234348,
+        "display_descriptor_weight": 0.750698,
+        "weight": 0.750698
+      },
+      {
+        "descriptor": "lyric valence uplift",
+        "raw_descriptor_score": 0.088163,
+        "display_descriptor_weight": 0.282416,
+        "weight": 0.282416
+      }
+    ],
+    "cluster_weights": {
+      "C0": 1.6548881270611902e-09,
+      "C1": 6.0582504505767106e-06,
+      "C2": 0.9373922519604336,
+      "C3": 0.06260168813422766
+    },
+    "tension_weights": {
+      "C2-T0": 0.727955759476531,
+      "C2-T1": 0.1484253297174644,
+      "C2-T2": 0.12361891080600464
+    }
+  },
+  "A085-69": {
+    "title": "Dying in the Sun",
+    "artist": "The Cranberries",
+    "cluster_name": "Volatile Intensity",
+    "region_role": "prototype",
+    "selected_role": "region_prototype",
+    "main_text_eligible": true,
+    "tension_label": "C2-T1",
+    "tension_name": "lyric-intensified + high cross-modal tension",
+    "descriptors": [
+      {
+        "descriptor": "aggressive",
+        "raw_descriptor_score": 0.921685,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "high arousal",
+        "raw_descriptor_score": 0.921685,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "negative-active",
+        "raw_descriptor_score": 0.921685,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "tense",
+        "raw_descriptor_score": 0.921685,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "volatile intensity",
+        "raw_descriptor_score": 0.921685,
+        "display_descriptor_weight": 1.0,
+        "weight": 1.0
+      },
+      {
+        "descriptor": "lyric arousal intensification",
+        "raw_descriptor_score": 0.543327,
+        "display_descriptor_weight": 0.589493,
+        "weight": 0.589493
+      },
+      {
+        "descriptor": "lyrics intensify the affect",
+        "raw_descriptor_score": 0.543327,
+        "display_descriptor_weight": 0.589493,
+        "weight": 0.589493
+      },
+      {
+        "descriptor": "lyric valence tempering",
+        "raw_descriptor_score": 0.069385,
+        "display_descriptor_weight": 0.07528,
+        "weight": 0.07528
+      }
+    ],
+    "cluster_weights": {
+      "C0": 0.00571487264284555,
+      "C1": 0.004573460531779212,
+      "C2": 0.9879815518040812,
+      "C3": 0.0017301150212939449
+    },
+    "tension_weights": {
+      "C2-T0": 0.0003433252764008895,
+      "C2-T1": 0.9996566427094266,
+      "C2-T2": 3.2014172673183385e-08
+    }
+  }
+}
