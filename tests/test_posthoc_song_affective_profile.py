@@ -2,11 +2,129 @@ import json
 
 import pandas as pd
 
-from scripts.posthoc_song_affective_profile import run_posthoc_profile
+from scripts.posthoc_song_affective_profile import _make_report, run_posthoc_profile
 
 
 def _write_csv(path, rows):
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _report_section(report: str, title: str) -> str:
+    rest = report.split(f"### {title}", 1)[1]
+    next_section = rest.find("\n### ")
+    return rest if next_section == -1 else rest[:next_section]
+
+
+def _report_row(
+    song_id,
+    *,
+    selected_role,
+    region_role="peripheral",
+    main_text_eligible=True,
+    boundary_flag=False,
+    descriptor_conflict_flag=False,
+    title=None,
+    artist="Artist",
+    cluster_id=0,
+    cluster_name="Subdued Melancholy",
+    tension_label="C0-T1",
+    tension_name="lyric-brightened",
+    region_typicality=0.65,
+    region_confidence=0.80,
+    region_margin=0.50,
+    tension_typicality=0.75,
+    tension_strength_percentile=0.80,
+    encoding_issue_flag=False,
+    explicit_title_flag=False,
+):
+    return {
+        "song_id": song_id,
+        "title": title or f"Title {song_id}",
+        "artist": artist,
+        "cluster_id": cluster_id,
+        "cluster_name": cluster_name,
+        "region_role": region_role,
+        "boundary_flag": boundary_flag,
+        "descriptor_conflict_flag": descriptor_conflict_flag,
+        "encoding_issue_flag": encoding_issue_flag,
+        "explicit_title_flag": explicit_title_flag,
+        "main_text_eligible": main_text_eligible,
+        "selected_role": selected_role,
+        "region_typicality": region_typicality,
+        "region_confidence": region_confidence,
+        "region_margin": region_margin,
+        "tension_label": tension_label,
+        "tension_name": tension_name,
+        "tension_typicality": tension_typicality,
+        "tension_strength_percentile": tension_strength_percentile,
+        "top_descriptors_json": json.dumps(
+            [{"descriptor": "audio-lyric contrast", "display_descriptor_weight": 1.0, "raw_descriptor_score": 0.8}]
+        ),
+        "chinese_interpretation": f"{song_id} Chinese",
+        "english_interpretation": f"{song_id} English",
+    }
+
+
+def test_report_sections_are_exclusive_and_representatives_are_main_text_safe(tmp_path):
+    selected_profile = pd.DataFrame(
+        [
+            _report_row(
+                "REGION",
+                selected_role="region_prototype",
+                region_role="prototype",
+                tension_strength_percentile=0.40,
+            ),
+            _report_row("TENSION", selected_role="tension_case", region_role="peripheral"),
+            _report_row(
+                "BOUNDARY",
+                selected_role="boundary_case",
+                region_role="boundary",
+                main_text_eligible=False,
+                boundary_flag=True,
+            ),
+            _report_row("APPENDIX", selected_role="appendix_only", main_text_eligible=False),
+        ]
+    )
+    profile = pd.DataFrame(
+        [
+            _report_row("CLEAN_REGION", selected_role="region_prototype", region_role="prototype"),
+            _report_row(
+                "BAD_ENCODING",
+                selected_role="appendix_only",
+                main_text_eligible=False,
+                title="Broken � title",
+                encoding_issue_flag=True,
+                region_typicality=1.0,
+                tension_typicality=1.0,
+            ),
+            _report_row(
+                "EXPLICIT_TITLE",
+                selected_role="appendix_only",
+                main_text_eligible=False,
+                title="I Fucking Hate You",
+                explicit_title_flag=True,
+                region_typicality=0.99,
+                tension_typicality=0.99,
+            ),
+            _report_row("CLEAN_TENSION", selected_role="tension_case", tension_label="C0-T2", tension_name="contrast"),
+        ]
+    )
+
+    _make_report(profile, selected_profile, tmp_path, "_v2")
+    report = (tmp_path / "song_affective_profile_report_v2.md").read_text(encoding="utf-8-sig")
+
+    assert "REGION" in _report_section(report, "Region prototype songs")
+    assert "TENSION" in _report_section(report, "Tension case-study songs")
+    assert "BOUNDARY" in _report_section(report, "Boundary / ambiguity cases")
+    appendix_section = _report_section(report, "Appendix-only candidates")
+    assert "APPENDIX" in appendix_section
+    assert "TENSION" not in appendix_section
+    assert "BOUNDARY" not in appendix_section
+
+    assert "CLEAN_REGION" in report
+    assert "CLEAN_TENSION" in report
+    assert "BAD_ENCODING" not in report
+    assert "EXPLICIT_TITLE" not in report
 
 
 def test_run_posthoc_profile_writes_all_selected_report_and_sanity_check(tmp_path):

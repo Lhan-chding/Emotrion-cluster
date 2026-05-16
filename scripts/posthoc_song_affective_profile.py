@@ -975,6 +975,14 @@ def _append_song_table(lines: List[str], title: str, rows: pd.DataFrame) -> None
         )
 
 
+def _selected_role_rows(selected_profile: pd.DataFrame, roles: Sequence[str]) -> pd.DataFrame:
+    return selected_profile[selected_profile["selected_role"].isin(roles)]
+
+
+def _main_text_safe_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[frame["main_text_eligible"].astype(bool)]
+
+
 def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir: Path, output_suffix: str) -> None:
     lines: List[str] = [
         "# Song Affective Profile Report",
@@ -1003,23 +1011,10 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
     if selected_profile.empty:
         lines.append("No selected song profile was generated.")
     else:
-        region_rows = selected_profile[
-            selected_profile["main_text_eligible"]
-            & selected_profile["region_role"].isin(["prototype", "representative"])
-        ]
-        tension_rows = selected_profile[
-            selected_profile["main_text_eligible"]
-            & selected_profile["tension_strength_percentile"].astype(float).ge(0.75)
-            & selected_profile["tension_typicality"].astype(float).ge(0.50)
-            & selected_profile["region_margin"].astype(float).gt(0.0)
-        ]
-        boundary_rows = selected_profile[
-            selected_profile["boundary_flag"] | selected_profile["descriptor_conflict_flag"]
-        ]
-        appendix_rows = selected_profile[
-            (~selected_profile["main_text_eligible"])
-            | selected_profile["region_role"].eq("peripheral")
-        ]
+        region_rows = _selected_role_rows(selected_profile, ["region_prototype", "region_representative"])
+        tension_rows = _selected_role_rows(selected_profile, ["tension_case"])
+        boundary_rows = _selected_role_rows(selected_profile, ["boundary_case"])
+        appendix_rows = _selected_role_rows(selected_profile, ["appendix_only"])
         _append_song_table(lines, "Region prototype songs", region_rows)
         _append_song_table(lines, "Tension case-study songs", tension_rows)
         _append_song_table(lines, "Boundary / ambiguity cases", boundary_rows)
@@ -1031,9 +1026,15 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
 
     lines.extend(["", "## Cluster Representatives", ""])
     for cluster, group in profile.groupby("cluster_id", sort=False):
-        ranked = group.sort_values(["region_typicality", "region_confidence"], ascending=False).head(10)
+        candidates = _main_text_safe_rows(group)
+        candidates = candidates[candidates["region_role"].isin(["prototype", "representative"])]
+        ranked = candidates.sort_values(["region_typicality", "region_confidence"], ascending=False).head(10)
         lines.append(f"### {_cluster_display(cluster)}")
         lines.append("")
+        if ranked.empty:
+            lines.append("No main-text eligible representative songs matched this cluster.")
+            lines.append("")
+            continue
         lines.append("| rank | song_id | title | artist | region typicality | confidence |")
         lines.append("|---:|---|---|---|---:|---:|")
         for rank, (_, row) in enumerate(ranked.iterrows(), start=1):
@@ -1046,10 +1047,17 @@ def _make_report(profile: pd.DataFrame, selected_profile: pd.DataFrame, out_dir:
 
     lines.extend(["", "## Tension Subtype Representatives", ""])
     for tension_label, group in profile.groupby("tension_label", sort=True):
-        ranked = group.sort_values(["tension_typicality", "tension_strength_percentile"], ascending=False).head(10)
+        ranked = _main_text_safe_rows(group).sort_values(
+            ["tension_typicality", "tension_strength_percentile"],
+            ascending=False,
+        ).head(10)
         tension_name = ranked["tension_name"].iloc[0] if not ranked.empty else ""
         lines.append(f"### {_markdown_escape(tension_label)} / {_markdown_escape(tension_name)}")
         lines.append("")
+        if ranked.empty:
+            lines.append("No main-text eligible representative songs matched this tension subtype.")
+            lines.append("")
+            continue
         lines.append("| rank | song_id | title | artist | cluster | tension typicality | strength percentile |")
         lines.append("|---:|---|---|---|---|---:|---:|")
         for rank, (_, row) in enumerate(ranked.iterrows(), start=1):

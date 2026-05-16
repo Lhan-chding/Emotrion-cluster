@@ -27,11 +27,7 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 |---|---|---|---|---|---|---|---:|---:|---|
 | A157-71 | Yesterday | The Beatles | Subdued Melancholy | prototype | C0-T0 / modality-consistent | yes | 95.1% | 13.8% | introspective, low arousal, melancholic, somber, subdued melancholy |
 | A061-66 | Mad World | Gary Jules | Subdued Melancholy | prototype | C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension | yes | 98.5% | 59.3% | introspective, low arousal, melancholic, somber, subdued melancholy |
-| A171 | Say Something | A Great Big World | Subdued Melancholy | prototype | C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension | yes | 98.9% | 83.4% | introspective, low arousal, melancholic, somber, subdued melancholy |
 | MT0003274067 | Driving | Arab Strap | Subdued Melancholy | prototype | C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension | yes | 87.2% | 98.4% | introspective, low arousal, melancholic, somber, subdued melancholy |
-| A021 | That's What Friends Are For | Dionne Warwick | Gentle Warmth | representative | C1-T1 / lyric-brightened + lyric-intensified | yes | 52.7% | 81.7% | audio-lyric contrast, high cross-modal tension, lyric arousal intensification, lyric valence uplift, lyrics brighten the affect |
-| A029 | Tears in Heaven | Eric Clapton | Gentle Warmth | prototype | C1-T1 / lyric-brightened + lyric-intensified | yes | 88.6% | 88.1% | calm-positive, gentle warmth, romantic, soft, warm |
-| MT0005344437 | Send One Your Love | Stevie Wonder | Gentle Warmth | prototype | C1-T1 / lyric-brightened + lyric-intensified | yes | 99.6% | 86.4% | calm-positive, gentle warmth, romantic, soft, warm |
 | A151-172 | War Pigs | Black Sabbath | Volatile Intensity | representative | C2-T1 / lyric-intensified + high cross-modal tension | yes | 66.1% | 76.4% | aggressive, high arousal, negative-active, tense, volatile intensity |
 | MT0007075838 | Sleep Now in the Fire | Rage Against the Machine | Volatile Intensity | prototype | C2-T2 / lyric-brightened + high cross-modal tension | yes | 97.2% | 92.1% | aggressive, high arousal, negative-active, tense, volatile intensity |
 | A014 | Feels Just Like It Should | Jamiroquai | Playful Vitality | representative | C3-T0 / modality-consistent | yes | 69.0% | 28.6% | bright, danceable, energetic, playful vitality, positive-active |
@@ -41,7 +37,6 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 | MT0004141823 | Conga | Miami Sound Machine | Playful Vitality | prototype | C3-T0 / modality-consistent | yes | 96.9% | 23.5% | bright, danceable, energetic, playful vitality, positive-active |
 | MT0033512773 | Do You Believe in Love | Huey Lewis & the News | Playful Vitality | prototype | C3-T0 / modality-consistent | yes | 99.5% | 20.4% | bright, danceable, energetic, playful vitality, positive-active |
 | MT0002360219 | Keepin' the Summer Alive | The Beach Boys | Gentle Warmth | prototype | C1-T1 / lyric-brightened + lyric-intensified | yes | 98.7% | 97.2% | calm-positive, gentle warmth, romantic, soft, warm |
-| MT0000151451 | Love You 'Till the End | The Pogues | Gentle Warmth | prototype | C1-T1 / lyric-brightened + lyric-intensified | yes | 96.8% | 81.0% | calm-positive, gentle warmth, romantic, soft, warm |
 | A085-69 | Dying in the Sun | The Cranberries | Volatile Intensity | prototype | C2-T1 / lyric-intensified + high cross-modal tension | yes | 93.3% | 65.8% | aggressive, high arousal, negative-active, tense, volatile intensity |
 
 ### Tension case-study songs
@@ -69,18 +64,12 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 
 | song_id | title | artist | cluster | region role | tension | main text | region typicality | tension strength | top descriptors |
 |---|---|---|---|---|---|---|---:|---:|---|
-| A004 | I'm So Lonesome I Could Cry | Johnny Cash | Subdued Melancholy | boundary | C0-T0 / modality-consistent | no | 5.0% | 14.1% | boundary between assigned region and nearest alternative, nearest alternative: C2 Volatile Intensity, assigned region: Subdued Melancholy, affective concordance, audio-lyric agreement |
-| A048 | Everybody Hurts | R.E.M. | Subdued Melancholy | boundary | C0-T0 / modality-consistent | no | 50.2% | 1.5% | boundary between assigned region and nearest alternative, assigned region: Subdued Melancholy, nearest alternative: C1 Gentle Warmth, affective concordance, audio-lyric agreement |
-| A045 | Hurt | Johnny Cash | Subdued Melancholy | peripheral | C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension | yes | 1.3% | 89.9% | audio-lyric contrast, high cross-modal tension, lyric arousal intensification, lyric valence uplift, lyrics brighten the affect |
-| A034 | Natural Disaster | Anathema | Subdued Melancholy | peripheral | C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension | yes | 12.0% | 75.9% | audio-lyric contrast, high cross-modal tension, lyric arousal intensification, lyric valence uplift, lyrics brighten the affect |
 | A024 | Paradise | Sade | Gentle Warmth | peripheral | C1-T0 / modality-consistent | no | 8.1% | 10.2% | affective concordance, audio-lyric agreement, calm-positive, gentle warmth, romantic |
 | A017 | Just The Way You Are | Billy Joel | Gentle Warmth | peripheral | C1-T0 / modality-consistent | no | 2.4% | 76.8% | lyric valence tempering, lyrics darken the affect, lyric arousal intensification, lyrics intensify the affect, calm-positive |
 | A013 | London Calling | The Clash | Volatile Intensity | peripheral | C2-T0 / lyric-brightened | no | 45.2% | 22.9% | aggressive, high arousal, negative-active, tense, volatile intensity |
 | A010 | Animal | Pearl Jam | Volatile Intensity | peripheral | C2-T1 / lyric-intensified + high cross-modal tension | no | 2.6% | 98.0% | lyric arousal intensification, lyrics intensify the affect, audio-lyric contrast, high cross-modal tension, aggressive |
 | A183 | Killing in the Name | Rage Against the Machine | Volatile Intensity | peripheral | C2-T0 / lyric-brightened | no | 49.9% | 36.5% | aggressive, high arousal, negative-active, tense, volatile intensity |
-| A049 | Highway to Hell | AC/DC | Volatile Intensity | boundary | C2-T1 / lyric-intensified + high cross-modal tension | no | 1.6% | 23.6% | boundary between assigned region and nearest alternative, nearest alternative: C3 Playful Vitality, assigned region: Volatile Intensity, affective concordance, audio-lyric agreement |
 | A001 | What a Wonderful World | Louis Armstrong | Playful Vitality | peripheral | C3-T0 / modality-consistent | no | 4.9% | 39.7% | bright, danceable, energetic, playful vitality, positive-active |
-| A005 | U Got the Look | Prince | Playful Vitality | peripheral | C3-T1 / lyric-darkened + lyric-softened + high cross-modal tension | yes | 10.3% | 89.2% | audio-lyric contrast, high cross-modal tension, lyric arousal softening, lyric valence tempering, lyrics darken the affect |
 | A028 | I Fucking Hate You | Godsmack | Volatile Intensity | peripheral | C2-T0 / lyric-brightened | no | 0.5% | 67.8% | lyric arousal softening, lyrics soften the affect, aggressive, high arousal, negative-active |
 
 ### Selected Song Interpretations
@@ -311,15 +300,15 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
 | 1 | MT0002969144 | All Through the Night | Ella Fitzgerald | Subdued Melancholy | 100.0% | 17.9% |
-| 2 | MT0030153479 | Sometimes I Feel Like Elvis | Wynonna Judd | Subdued Melancholy | 99.7% | 17.4% |
-| 3 | MT0008969183 | Sub-Culture | New Order | Subdued Melancholy | 99.4% | 20.2% |
-| 4 | MT0015664499 | Rivers of Babylon | Don Carlos | Subdued Melancholy | 99.1% | 16.9% |
-| 5 | MT0010630017 | This Heartache Never Sleeps | Mark Chesnutt | Subdued Melancholy | 98.8% | 19.2% |
-| 6 | MT0003102331 | The Fever | Bruce Springsteen | Subdued Melancholy | 98.5% | 12.8% |
-| 7 | MT0011755407 | MMM, MMM, MMM, MMM | Crash Test Dummies | Subdued Melancholy | 98.3% | 21.0% |
-| 8 | A157-71 | Yesterday | The Beatles | Subdued Melancholy | 98.0% | 13.8% |
-| 9 | MT0001102610 | You'll Think of Me | Keith Urban | Subdued Melancholy | 97.7% | 21.5% |
-| 10 | MT0000829765 | When a Love Song Sings the Blues | Trisha Yearwood | Subdued Melancholy | 97.4% | 22.3% |
+| 2 | MT0008969183 | Sub-Culture | New Order | Subdued Melancholy | 99.4% | 20.2% |
+| 3 | MT0015664499 | Rivers of Babylon | Don Carlos | Subdued Melancholy | 99.1% | 16.9% |
+| 4 | MT0010630017 | This Heartache Never Sleeps | Mark Chesnutt | Subdued Melancholy | 98.8% | 19.2% |
+| 5 | A157-71 | Yesterday | The Beatles | Subdued Melancholy | 98.0% | 13.8% |
+| 6 | MT0000829765 | When a Love Song Sings the Blues | Trisha Yearwood | Subdued Melancholy | 97.4% | 22.3% |
+| 7 | MT0034992958 | Slavery Days | Burning Spear | Subdued Melancholy | 96.8% | 11.7% |
+| 8 | MT0009495285 | Forgotten | Neil Diamond | Subdued Melancholy | 96.5% | 9.6% |
+| 9 | MT0003420996 | Ballad of the Sad Young Men | Roberta Flack | Subdued Melancholy | 96.2% | 20.5% |
+| 10 | MT0005941732 | How Low? | Against Me! | Subdued Melancholy | 95.6% | 24.2% |
 
 ### C0-T1 / lyric-brightened + lyric-intensified + high cross-modal tension
 
@@ -332,24 +321,24 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 | 5 | A171 | Say Something | A Great Big World | Subdued Melancholy | 98.5% | 83.4% |
 | 6 | MT0004317784 | Weightless Again | The Handsome Family | Subdued Melancholy | 98.2% | 83.9% |
 | 7 | MT0004869271 | This Place | Joni Mitchell | Subdued Melancholy | 97.8% | 82.4% |
-| 8 | MT0006036535 | Love Me or Leave Me | Kansas City Five | Subdued Melancholy | 97.4% | 81.8% |
-| 9 | MT0015694210 | 7th Heaven | Prodigy | Subdued Melancholy | 97.1% | 75.1% |
-| 10 | MT0008421900 | Over the Next Hill (We'll Be Home) | Johnny Cash | Subdued Melancholy | 96.7% | 77.9% |
+| 8 | MT0008421900 | Over the Next Hill (We'll Be Home) | Johnny Cash | Subdued Melancholy | 96.7% | 77.9% |
+| 9 | MT0003907045 | Various Stages | Great Lake Swimmers | Subdued Melancholy | 96.3% | 73.5% |
+| 10 | MT0000091781 | Love in the Afternoon | Marianne Faithfull | Subdued Melancholy | 96.0% | 81.0% |
 
 ### C1-T0 / modality-consistent
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
-| 1 | MT0009741760 | Silent Night | Los Lonely Boys | Gentle Warmth | 100.0% | 1.8% |
-| 2 | MT0003792475 | Rifles | Black Rebel Motorcycle Club | Gentle Warmth | 99.8% | 1.9% |
-| 3 | MT0031544440 | Look What You Done for Me | Al Green | Gentle Warmth | 99.5% | 3.4% |
-| 4 | MT0003081304 | Time Travelin' (A Tribute to Fela) | Common | Gentle Warmth | 99.3% | 2.4% |
-| 5 | MT0000854722 | Mr. Man | Alicia Keys | Gentle Warmth | 99.1% | 1.2% |
-| 6 | MT0001042055 | All I Want for Christmas Is a Real Good Tan | Kenny Chesney | Gentle Warmth | 98.8% | 2.7% |
-| 7 | MT0007978643 | It's Sand, Man! | Natalie Cole | Gentle Warmth | 98.6% | 4.1% |
-| 8 | MT0007039082 | Five Candles (You Were There) | Jars of Clay | Gentle Warmth | 98.4% | 5.2% |
-| 9 | A088-136 | Fly Me to the Moon | Diana Krall | Gentle Warmth | 98.1% | 2.2% |
-| 10 | MT0000318279 | Stella by Starlight | Tony Bennett | Gentle Warmth | 97.9% | 3.8% |
+| 1 | MT0003792475 | Rifles | Black Rebel Motorcycle Club | Gentle Warmth | 99.8% | 1.9% |
+| 2 | MT0003081304 | Time Travelin' (A Tribute to Fela) | Common | Gentle Warmth | 99.3% | 2.4% |
+| 3 | MT0000854722 | Mr. Man | Alicia Keys | Gentle Warmth | 99.1% | 1.2% |
+| 4 | MT0007039082 | Five Candles (You Were There) | Jars of Clay | Gentle Warmth | 98.4% | 5.2% |
+| 5 | MT0008673460 | Feels Like the First Time | Isaac Hayes | Gentle Warmth | 97.2% | 1.5% |
+| 6 | MT0006044445 | The Unclouded Day | Randy Travis | Gentle Warmth | 97.0% | 2.9% |
+| 7 | MT0000850050 | Baby, Now That I've Found You | Alison Krauss | Gentle Warmth | 96.5% | 7.4% |
+| 8 | MT0029133325 | Tomorrow Started | Talk Talk | Gentle Warmth | 96.0% | 0.3% |
+| 9 | MT0030438262 | London You're a Lady | The Pogues | Gentle Warmth | 95.1% | 6.0% |
+| 10 | MT0000714708 | Music | Madonna | Gentle Warmth | 94.7% | 9.3% |
 
 ### C1-T1 / lyric-brightened + lyric-intensified
 
@@ -357,86 +346,86 @@ This report is post-hoc only. It reads fixed Dataset-S v20.3 cluster assignments
 |---:|---|---|---|---|---:|---:|
 | 1 | MT0032093528 | East of the Sun | Ella Fitzgerald | Gentle Warmth | 100.0% | 77.9% |
 | 2 | MT0003213617 | Got to Make a Comeback | Robert Cray | Gentle Warmth | 99.6% | 79.1% |
-| 3 | MT0001369981 | Lover Man (Oh, Where Can You Be) | Billie Holiday | Gentle Warmth | 99.2% | 76.1% |
-| 4 | MT0013955066 | Scarborough Fair | Sergio Mendes | Gentle Warmth | 98.8% | 81.4% |
-| 5 | MT0000906888 | The Way I Am | Merle Haggard | Gentle Warmth | 98.4% | 82.0% |
-| 6 | MT0008236217 | It's a Beautiful Day (Reprise) | Queen | Gentle Warmth | 98.0% | 82.9% |
-| 7 | MT0006813360 | Is This Desire? | PJ Harvey | Gentle Warmth | 97.6% | 82.6% |
-| 8 | MT0028697763 | Have You Seen Her? | MC Hammer | Gentle Warmth | 97.2% | 78.6% |
-| 9 | MT0028603801 | Mighty Love | Lisa Stansfield | Gentle Warmth | 96.8% | 72.1% |
-| 10 | MT0015709701 | Don't Go Breaking My Heart | Burt Bacharach | Gentle Warmth | 96.4% | 71.8% |
+| 3 | MT0013955066 | Scarborough Fair | Sergio Mendes | Gentle Warmth | 98.8% | 81.4% |
+| 4 | MT0000906888 | The Way I Am | Merle Haggard | Gentle Warmth | 98.4% | 82.0% |
+| 5 | MT0008236217 | It's a Beautiful Day (Reprise) | Queen | Gentle Warmth | 98.0% | 82.9% |
+| 6 | MT0006813360 | Is This Desire? | PJ Harvey | Gentle Warmth | 97.6% | 82.6% |
+| 7 | MT0028697763 | Have You Seen Her? | MC Hammer | Gentle Warmth | 97.2% | 78.6% |
+| 8 | MT0028603801 | Mighty Love | Lisa Stansfield | Gentle Warmth | 96.8% | 72.1% |
+| 9 | MT0015709701 | Don't Go Breaking My Heart | Burt Bacharach | Gentle Warmth | 96.4% | 71.8% |
+| 10 | MT0007556029 | Hallelujah, I Love Her So | Harry Belafonte | Gentle Warmth | 96.0% | 77.6% |
 
 ### C2-T0 / lyric-brightened
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
-| 1 | MT0003816162 | Black & White People | Matchbox Twenty | Volatile Intensity | 100.0% | 14.7% |
-| 2 | MT0002711792 | Skinfather | Dismember | Volatile Intensity | 99.7% | 17.2% |
-| 3 | MT0003728288 | Odious & Devious | ...And Oceans | Volatile Intensity | 99.4% | 16.7% |
-| 4 | MT0003503243 | I F****** Hate You | Godsmack | Volatile Intensity | 99.1% | 17.3% |
-| 5 | MT0008084656 | Pennywise | Pennywise | Volatile Intensity | 98.8% | 12.3% |
-| 6 | MT0005287506 | Rentboy | Within Reach | Volatile Intensity | 98.5% | 14.1% |
-| 7 | MT0000463371 | Necrophiliac | Slayer | Volatile Intensity | 98.2% | 18.5% |
-| 8 | MT0005550288 | In Vain | Biohazard | Volatile Intensity | 97.9% | 18.7% |
-| 9 | MT0012030863 | Another Nigger in the Morgue | Geto Boys | Volatile Intensity | 97.6% | 11.3% |
-| 10 | MT0010736281 | Giant | Throwing Muses | Volatile Intensity | 97.4% | 13.3% |
+| 1 | MT0002711792 | Skinfather | Dismember | Volatile Intensity | 99.7% | 17.2% |
+| 2 | MT0003728288 | Odious & Devious | ...And Oceans | Volatile Intensity | 99.4% | 16.7% |
+| 3 | MT0008084656 | Pennywise | Pennywise | Volatile Intensity | 98.8% | 12.3% |
+| 4 | MT0005287506 | Rentboy | Within Reach | Volatile Intensity | 98.5% | 14.1% |
+| 5 | MT0012030863 | Another Nigger in the Morgue | Geto Boys | Volatile Intensity | 97.6% | 11.3% |
+| 6 | A174 | Renegade | Eminem | Volatile Intensity | 96.8% | 19.8% |
+| 7 | MT0028348785 | Straight to Hell | Flotsam and Jetsam | Volatile Intensity | 96.2% | 19.6% |
+| 8 | MT0003762339 | Fading Dimensions | Darkane | Volatile Intensity | 95.9% | 19.5% |
+| 9 | MT0006409530 | Use the Man | Megadeth | Volatile Intensity | 95.3% | 21.6% |
+| 10 | MT0001974130 | Wormwood | Easy Rider | Volatile Intensity | 95.0% | 20.0% |
 
 ### C2-T1 / lyric-intensified + high cross-modal tension
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
-| 1 | MT0004811602 | Wargods | Demonoid | Volatile Intensity | 100.0% | 63.2% |
-| 2 | MT0010490157 | Maimed and Slaughtered | Discharge | Volatile Intensity | 97.8% | 70.5% |
-| 3 | MT0000426771 | Schwindel | Einst�rzende Neubauten | Volatile Intensity | 95.7% | 61.4% |
-| 4 | MT0007627521 | Beneath the Crimson Vaults of Cydonia | Bal-Sagoth | Volatile Intensity | 93.5% | 57.8% |
-| 5 | MT0001852290 | Same Shit - Different Asshole | Pungent Stench | Volatile Intensity | 91.3% | 71.7% |
-| 6 | MT0009631750 | Break Down | Final Breath | Volatile Intensity | 89.1% | 25.5% |
-| 7 | MT0002949712 | Inflikted | Cavalera Conspiracy | Volatile Intensity | 87.0% | 86.9% |
-| 8 | MT0012009054 | Evil Walks | AC/DC | Volatile Intensity | 84.8% | 32.9% |
-| 9 | A085-69 | Dying in the Sun | The Cranberries | Volatile Intensity | 82.6% | 65.8% |
-| 10 | MT0015514030 | Nie Wieder | Sido | Volatile Intensity | 80.4% | 59.7% |
+| 1 | MT0007627521 | Beneath the Crimson Vaults of Cydonia | Bal-Sagoth | Volatile Intensity | 93.5% | 57.8% |
+| 2 | MT0009631750 | Break Down | Final Breath | Volatile Intensity | 89.1% | 25.5% |
+| 3 | MT0002949712 | Inflikted | Cavalera Conspiracy | Volatile Intensity | 87.0% | 86.9% |
+| 4 | MT0012009054 | Evil Walks | AC/DC | Volatile Intensity | 84.8% | 32.9% |
+| 5 | A085-69 | Dying in the Sun | The Cranberries | Volatile Intensity | 82.6% | 65.8% |
+| 6 | MT0008999728 | Rush of Deliverance | Vital Remains | Volatile Intensity | 76.1% | 32.7% |
+| 7 | MT0010489498 | Mi Vida | Gipsy Kings | Volatile Intensity | 71.7% | 82.5% |
+| 8 | MT0027320606 | La Dona | Gipsy Kings | Volatile Intensity | 71.7% | 82.5% |
+| 9 | MT0031914705 | Vamos a Bailar | Gipsy Kings | Volatile Intensity | 71.7% | 82.5% |
+| 10 | MT0007413949 | Tribulation | Divine Empire | Volatile Intensity | 63.0% | 51.7% |
 
 ### C2-T2 / lyric-brightened + high cross-modal tension
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
-| 1 | MT0014880463 | Touch It or Not | Cam'ron | Volatile Intensity | 100.0% | 75.0% |
-| 2 | MT0031555265 | City of Light Restrung | Hilltop Hoods | Volatile Intensity | 99.6% | 74.0% |
-| 3 | MT0002842988 | Train of Consequences | Megadeth | Volatile Intensity | 99.1% | 74.8% |
-| 4 | MT0006695707 | Beast and the Harlot | Avenged Sevenfold | Volatile Intensity | 98.7% | 76.3% |
-| 5 | MT0010487366 | Spiritual Law | Slayer | Volatile Intensity | 98.2% | 72.0% |
-| 6 | MT0011945841 | Foreclosure of a Dream | Megadeth | Volatile Intensity | 97.8% | 77.1% |
-| 7 | MT0026987140 | Pistol Grip Pump | Rage Against the Machine | Volatile Intensity | 97.3% | 76.8% |
-| 8 | MT0027317557 | I Ain't With Being Broke | Geto Boys | Volatile Intensity | 96.9% | 73.2% |
-| 9 | MT0010612023 | Dirty Mack | Ice Cube | Volatile Intensity | 96.4% | 69.1% |
-| 10 | MT0008147388 | War Zone | Slayer | Volatile Intensity | 96.0% | 74.3% |
+| 1 | MT0002842988 | Train of Consequences | Megadeth | Volatile Intensity | 99.1% | 74.8% |
+| 2 | MT0006695707 | Beast and the Harlot | Avenged Sevenfold | Volatile Intensity | 98.7% | 76.3% |
+| 3 | MT0011945841 | Foreclosure of a Dream | Megadeth | Volatile Intensity | 97.8% | 77.1% |
+| 4 | MT0026987140 | Pistol Grip Pump | Rage Against the Machine | Volatile Intensity | 97.3% | 76.8% |
+| 5 | MT0027317557 | I Ain't With Being Broke | Geto Boys | Volatile Intensity | 96.9% | 73.2% |
+| 6 | MT0010612023 | Dirty Mack | Ice Cube | Volatile Intensity | 96.4% | 69.1% |
+| 7 | MT0026985012 | AmeriKKKa's Most Wanted | Ice Cube | Volatile Intensity | 95.6% | 68.4% |
+| 8 | MT0026681751 | Catatonic | Slayer | Volatile Intensity | 95.1% | 80.5% |
+| 9 | MT0010616215 | The Predator | Ice Cube | Volatile Intensity | 94.7% | 71.8% |
+| 10 | MT0031964947 | Berkertex Bribe | Crass | Volatile Intensity | 94.2% | 77.9% |
 
 ### C3-T0 / modality-consistent
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
 | 1 | MT0011950450 | Hark! The Herald Angels Sing | Neil Diamond | Playful Vitality | 100.0% | 10.8% |
-| 2 | MT0010169019 | Jump Off | Twista | Playful Vitality | 99.6% | 8.2% |
-| 3 | MT0027002641 | All We Got | Michael McDonald | Playful Vitality | 99.2% | 8.0% |
-| 4 | MT0008363189 | Magic Road | Al Green | Playful Vitality | 98.8% | 14.6% |
-| 5 | MT0032782452 | Da Booty | A Tribe Called Quest | Playful Vitality | 98.4% | 15.7% |
-| 6 | MT0004469135 | Satisfaction Guaranteed (Or Take Your Love Back) | Harold Melvin & the Blue Notes | Playful Vitality | 98.0% | 11.3% |
-| 7 | MT0008684978 | Keep It Comin' Love | KC & the Sunshine Band | Playful Vitality | 97.6% | 9.2% |
-| 8 | MT0030362299 | Lover | Frank Sinatra | Playful Vitality | 97.2% | 6.6% |
-| 9 | MT0026900439 | 8 Days of Christmas | Destiny's Child | Playful Vitality | 96.8% | 16.2% |
-| 10 | MT0015680193 | Love It When You Call | The Feeling | Playful Vitality | 96.4% | 12.9% |
+| 2 | MT0008363189 | Magic Road | Al Green | Playful Vitality | 98.8% | 14.6% |
+| 3 | MT0004469135 | Satisfaction Guaranteed (Or Take Your Love Back) | Harold Melvin & the Blue Notes | Playful Vitality | 98.0% | 11.3% |
+| 4 | MT0030362299 | Lover | Frank Sinatra | Playful Vitality | 97.2% | 6.6% |
+| 5 | MT0026900439 | 8 Days of Christmas | Destiny's Child | Playful Vitality | 96.8% | 16.2% |
+| 6 | MT0015680193 | Love It When You Call | The Feeling | Playful Vitality | 96.4% | 12.9% |
+| 7 | MT0000225806 | I Need Your Love Tonight | Elvis Presley | Playful Vitality | 94.9% | 17.6% |
+| 8 | MT0027072382 | Express Yourself | Madonna | Playful Vitality | 94.5% | 19.2% |
+| 9 | MT0008029439 | I Love This Bar | Toby Keith | Playful Vitality | 93.7% | 16.0% |
+| 10 | MT0033512773 | Do You Believe in Love | Huey Lewis & the News | Playful Vitality | 92.5% | 20.4% |
 
 ### C3-T1 / lyric-darkened + lyric-softened + high cross-modal tension
 
 | rank | song_id | title | artist | cluster | tension typicality | strength percentile |
 |---:|---|---|---|---|---:|---:|
-| 1 | MT0010835061 | All or Nothing | Cher | Playful Vitality | 100.0% | 73.7% |
-| 2 | MT0000664362 | Hello Dolly | Harry Connick, Jr. | Playful Vitality | 99.4% | 73.9% |
-| 3 | MT0028445777 | Early Mornin' | Britney Spears | Playful Vitality | 98.8% | 71.8% |
-| 4 | MT0014555701 | Beep | The Pussycat Dolls | Playful Vitality | 98.3% | 70.2% |
-| 5 | MT0007274054 | Sex Machine (Part 1) | James Brown | Playful Vitality | 97.7% | 83.1% |
-| 6 | MT0006406298 | Sally Sue Brown | Bob Dylan | Playful Vitality | 97.1% | 80.3% |
-| 7 | MT0006431807 | Beer for My Horses | Toby Keith | Playful Vitality | 96.5% | 82.9% |
-| 8 | MT0013064857 | Evening of the Day | Supergrass | Playful Vitality | 96.0% | 70.0% |
-| 9 | MT0010290924 | Objection [Tango] | Shakira | Playful Vitality | 95.4% | 79.8% |
-| 10 | MT0012863101 | You're Only Human (Second Wind) | Billy Joel | Playful Vitality | 94.8% | 81.9% |
+| 1 | MT0000664362 | Hello Dolly | Harry Connick, Jr. | Playful Vitality | 99.4% | 73.9% |
+| 2 | MT0028445777 | Early Mornin' | Britney Spears | Playful Vitality | 98.8% | 71.8% |
+| 3 | MT0007274054 | Sex Machine (Part 1) | James Brown | Playful Vitality | 97.7% | 83.1% |
+| 4 | MT0006406298 | Sally Sue Brown | Bob Dylan | Playful Vitality | 97.1% | 80.3% |
+| 5 | MT0006431807 | Beer for My Horses | Toby Keith | Playful Vitality | 96.5% | 82.9% |
+| 6 | MT0013064857 | Evening of the Day | Supergrass | Playful Vitality | 96.0% | 70.0% |
+| 7 | MT0010290924 | Objection [Tango] | Shakira | Playful Vitality | 95.4% | 79.8% |
+| 8 | MT0012863101 | You're Only Human (Second Wind) | Billy Joel | Playful Vitality | 94.8% | 81.9% |
+| 9 | MT0013389935 | Shut Up | The Black Eyed Peas | Playful Vitality | 94.2% | 67.6% |
+| 10 | MT0000110175 | Over You | Aaron Neville | Playful Vitality | 93.6% | 83.8% |
