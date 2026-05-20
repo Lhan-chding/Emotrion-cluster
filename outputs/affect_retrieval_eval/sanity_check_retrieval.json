@@ -1,0 +1,52 @@
+{
+  "total_songs": 2330,
+  "missing_feature_counts": {
+    "title": 0,
+    "artist": 0,
+    "cluster_id": 0,
+    "cluster_name": 0,
+    "balanced_valence": 0,
+    "balanced_arousal": 0,
+    "region_typicality": 0,
+    "region_confidence": 0,
+    "region_margin": 0,
+    "nearest_alt_cluster": 0,
+    "w_region_C0": 0,
+    "w_region_C1": 0,
+    "w_region_C2": 0,
+    "w_region_C3": 0,
+    "tension_label": 0,
+    "tension_name": 0,
+    "tension_dv": 0,
+    "tension_da": 0,
+    "tension_norm": 0,
+    "tension_strength_percentile": 0,
+    "affective_complexity_score": 0,
+    "complexity_level": 0,
+    "final_interpretation_label": 0
+  },
+  "cluster_conflict_counts": {},
+  "tension_conflict_counts": {},
+  "input_paths": {
+    "cluster_csv": "",
+    "tension_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\outputs\\affect_retrieval_eval\\_generated_interpretation_v3\\song_affective_interpretation_all_v3.csv",
+    "interpretation_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\outputs\\affect_retrieval_eval\\_generated_interpretation_v3\\song_affective_interpretation_all_v3.csv"
+  },
+  "number_of_queries": 6,
+  "systems": [
+    "va_only",
+    "va_cluster",
+    "va_tension_complexity"
+  ],
+  "topK": [
+    5,
+    10,
+    20
+  ],
+  "annotation_pool_size": 266,
+  "verified_external_labels_count": 0,
+  "unverified_count": 266,
+  "contradiction_count": 0,
+  "metrics_available": false,
+  "whether_any_external_label_used_in_scoring": false
+}
