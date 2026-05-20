@@ -171,6 +171,7 @@ def test_run_affect_retrieval_eval_builds_outputs_without_external_labels(tmp_pa
         top_k=(2, 3),
         retrieval_depth=3,
         make_figures=False,
+        mirror_report_path=None,
     )
 
     out_dir = tmp_path / "out"

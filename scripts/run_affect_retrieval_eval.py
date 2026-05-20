@@ -30,6 +30,7 @@ def run_affect_retrieval_eval(
     top_k: Sequence[int] = (5, 10, 20),
     retrieval_depth: int | None = None,
     make_figures: bool = True,
+    mirror_report_path: Path | str | None = "reports/affect_retrieval_report.md",
 ) -> dict[str, Any]:
     return _run_affect_retrieval_eval(
         cluster_csv=cluster_csv,
@@ -42,6 +43,7 @@ def run_affect_retrieval_eval(
         top_k=top_k,
         retrieval_depth=retrieval_depth,
         make_figures=make_figures,
+        mirror_report_path=mirror_report_path,
     )
 
 

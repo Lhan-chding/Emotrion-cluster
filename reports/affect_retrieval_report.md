@@ -49,24 +49,24 @@ No cross-query summary is available until at least one external label is verifie
 
 | query_id | title | artist | system_sources | cluster_name | tension_strength_percentile | affective_complexity_score | annotation_status |
 |---|---|---|---|---|---|---|---|
-| audio_led_exuberance_dark_lyrics | Bright Dark | Artist E | va_cluster;va_only;va_tension_complexity | Playful Vitality | 1.00 | 0.82 | needs_external_review |
-| audio_led_exuberance_dark_lyrics | Prototype | Artist F | va_cluster;va_only | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| audio_led_exuberance_dark_lyrics | High Volatile | Artist A | va_tension_complexity | Volatile Intensity | 1.00 | 0.91 | needs_external_review |
-| audio_led_exuberance_dark_lyrics | Warm Song | Artist D | va_cluster;va_only;va_tension_complexity | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| bittersweet_lyrical_lift | Lifted Melancholy | Artist C | va_cluster;va_only;va_tension_complexity | Subdued Melancholy | 1.00 | 0.65 | needs_external_review |
-| bittersweet_lyrical_lift | Prototype | Artist F | va_cluster;va_only | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| bittersweet_lyrical_lift | High Volatile | Artist A | va_tension_complexity | Volatile Intensity | 1.00 | 0.91 | needs_external_review |
-| bittersweet_lyrical_lift | Warm Song | Artist D | va_cluster;va_only;va_tension_complexity | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| boundary_or_ambivalent_affect | Bright Dark | Artist E | va_cluster;va_only;va_tension_complexity | Playful Vitality | 1.00 | 0.82 | needs_external_review |
-| boundary_or_ambivalent_affect | Lifted Melancholy | Artist C | va_cluster;va_only;va_tension_complexity | Subdued Melancholy | 1.00 | 0.65 | needs_external_review |
-| boundary_or_ambivalent_affect | Prototype | Artist F | va_cluster;va_only | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| boundary_or_ambivalent_affect | High Volatile | Artist A | va_tension_complexity | Volatile Intensity | 1.00 | 0.91 | needs_external_review |
-| concordant_region_prototype | Bright Dark | Artist E | va_cluster;va_only | Playful Vitality | 1.00 | 0.82 | needs_external_review |
-| concordant_region_prototype | Lifted Melancholy | Artist C | va_cluster;va_only | Subdued Melancholy | 1.00 | 0.65 | needs_external_review |
-| concordant_region_prototype | Prototype | Artist F | va_cluster;va_only;va_tension_complexity | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| concordant_region_prototype | Low Volatile | Artist B | va_tension_complexity | Volatile Intensity | 0.50 | 0.20 | needs_external_review |
-| concordant_region_prototype | Warm Song | Artist D | va_tension_complexity | Gentle Warmth | 1.00 | 0.20 | needs_external_review |
-| gentle_warmth_lyrical_lift | Lifted Melancholy | Artist C | va_cluster;va_only;va_tension_complexity | Subdued Melancholy | 1.00 | 0.65 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Twist and Shout | The Beatles | va_cluster;va_only | Playful Vitality | 0.51 | 0.19 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Over You | Aaron Neville | va_cluster;va_tension_complexity | Playful Vitality | 0.84 | 0.47 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Party | Elvis Presley | va_cluster | Playful Vitality | 0.66 | 0.39 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | South America, Take It Away! | The Andrews Sisters | va_cluster | Playful Vitality | 0.62 | 0.38 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Red Blue Jeans and a Pony Tail | Gene Vincent | va_cluster;va_only;va_tension_complexity | Playful Vitality | 0.77 | 0.42 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Won't You Come Home, Bill Bailey? | Harry Connick, Jr. | va_tension_complexity | Playful Vitality | 0.88 | 0.51 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Ac-Cent-Tchu-Ate the Positive | The Andrews Sisters | va_only | Playful Vitality | 0.50 | 0.18 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Stomp | Kirk Franklin | va_only | Playful Vitality | 0.41 | 0.15 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Shoplifting Clothes | Paul Simon | va_tension_complexity | Playful Vitality | 0.87 | 0.49 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Don't Say Goodbye | Rick Astley | va_only | Playful Vitality | 0.11 | 0.05 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | I Like | The Isley Brothers | va_tension_complexity | Playful Vitality | 0.94 | 0.54 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Come Together | Third Day | va_only | Playful Vitality | 0.20 | 0.08 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Conga | Miami Sound Machine | va_only | Playful Vitality | 0.23 | 0.09 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Witch Doktor | Armand Van Helden | va_cluster;va_only | Playful Vitality | 0.69 | 0.40 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Your Sister Can't Twist (But She Can Rock 'n Roll) | Elton John | va_tension_complexity | Playful Vitality | 0.90 | 0.52 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Ain't That a Shame | John Lennon | va_cluster;va_only;va_tension_complexity | Playful Vitality | 0.99 | 0.50 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | On a Night Like This | Bob Dylan | va_cluster;va_tension_complexity | Playful Vitality | 0.92 | 0.50 | needs_external_review |
+| audio_led_exuberance_dark_lyrics | Mary's Place | Bruce Springsteen | va_cluster;va_only;va_tension_complexity | Playful Vitality | 0.92 | 0.48 | needs_external_review |
 
 ## Limitations
 
@@ -79,7 +79,7 @@ No cross-query summary is available until at least one external label is verifie
 
 ```json
 {
-  "total_songs": 6,
+  "total_songs": 2330,
   "missing_feature_counts": {
     "title": 0,
     "artist": 0,
@@ -106,17 +106,11 @@ No cross-query summary is available until at least one external label is verifie
     "final_interpretation_label": 0
   },
   "cluster_conflict_counts": {},
-  "tension_conflict_counts": {
-    "tension_label": 4,
-    "tension_name": 4,
-    "tension_dv": 2,
-    "tension_da": 2,
-    "tension_norm": 2
-  },
+  "tension_conflict_counts": {},
   "input_paths": {
-    "cluster_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\.pytest_affect_retrieval_full_env\\test_run_affect_retrieval_eval0\\dataset_s_cluster_assignments.csv",
-    "tension_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\.pytest_affect_retrieval_full_env\\test_run_affect_retrieval_eval0\\dataset_s_tension_assignments.csv",
-    "interpretation_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\.pytest_affect_retrieval_full_env\\test_run_affect_retrieval_eval0\\song_affective_interpretation_all_v3.csv"
+    "cluster_csv": "",
+    "tension_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\outputs\\affect_retrieval_eval\\_generated_interpretation_v3\\song_affective_interpretation_all_v3.csv",
+    "interpretation_csv": "C:\\Users\\LHan1\\Desktop\\CVCL\\cluster\\outputs\\affect_retrieval_eval\\_generated_interpretation_v3\\song_affective_interpretation_all_v3.csv"
   },
   "number_of_queries": 6,
   "systems": [
@@ -125,12 +119,13 @@ No cross-query summary is available until at least one external label is verifie
     "va_tension_complexity"
   ],
   "topK": [
-    2,
-    3
+    5,
+    10,
+    20
   ],
-  "annotation_pool_size": 23,
+  "annotation_pool_size": 266,
   "verified_external_labels_count": 0,
-  "unverified_count": 23,
+  "unverified_count": 266,
   "contradiction_count": 0,
   "metrics_available": false,
   "whether_any_external_label_used_in_scoring": false
